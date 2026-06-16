@@ -3,6 +3,7 @@ module github.com/yasyf/cc-interact
 go 1.26.2
 
 require (
+	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.42.0
 	modernc.org/sqlite v1.52.0
