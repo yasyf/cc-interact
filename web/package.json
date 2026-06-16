@@ -1,0 +1,36 @@
+{
+  "name": "@cc-interact/react",
+  "version": "0.0.0",
+  "description": "Opt-in React client for cc-interact: realtime event-stream and query primitives for a human-in-the-loop Claude agent UI.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "files": ["dist"],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./base.css": "./dist/base.css"
+  },
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "typescript": "^5",
+    "vite": "^6"
+  }
+}
