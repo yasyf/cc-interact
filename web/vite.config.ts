@@ -11,6 +11,9 @@ export default defineConfig({
       entry: fileURLToPath(new URL('src/index.ts', import.meta.url)),
       formats: ['es', 'cjs'],
       fileName: (format) => (format === 'es' ? 'index.js' : 'index.cjs'),
+      // Emit the bundled chrome as dist/base.css; consumers import it explicitly
+      // via the package's ./base.css export.
+      cssFileName: 'base',
     },
     rollupOptions: {
       external: ['react', 'react-dom', 'react/jsx-runtime', '@tanstack/react-query'],

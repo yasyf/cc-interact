@@ -17,7 +17,7 @@
     "./base.css": "./dist/base.css"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && tsc",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
