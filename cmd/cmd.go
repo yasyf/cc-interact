@@ -38,6 +38,10 @@ type Deps struct {
 	// ClaudePID resolves the window identity stamped on every envelope (cc-review:
 	// procs.ClaudePID). 0 is a pid-less consumer outside any Claude window.
 	ClaudePID func() int
+	// WindowAlive reports whether a window pid still lives (cc-review:
+	// procs.LiveClaude). A pid-bound stream consumer exits once its window dies;
+	// nil means consumers never self-terminate on window death.
+	WindowAlive func(pid int) bool
 	// TerminalEvent reports whether an event type ends a watch (cc-review: "submit").
 	TerminalEvent func(eventType string) bool
 	// Serve runs the long-lived daemon (consumer builds daemon.New(Config).Serve).

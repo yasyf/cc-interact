@@ -24,6 +24,11 @@ import (
 // the SSE connection drops.
 const reconnectDelay = 2 * time.Second
 
+// livenessInterval is how often a pid-bound consumer checks that its owning
+// window is still alive; a parked Read only wakes on the context cancel this
+// triggers, never on keepalive comments.
+var livenessInterval = 5 * time.Second
+
 // EventHandler is invoked once per delivered event with its seq and raw data
 // payload. Returning stop=true ends consumption (e.g. on a terminal event).
 type EventHandler func(seq int64, data string) (stop bool, err error)
@@ -39,8 +44,13 @@ type StreamSource struct {
 	ClaudePID int
 	// Paths locates the per-consumer cursor file via
 	// Paths.ConsumerCursorPath(SubjectID, Consumer).
-	Paths   paths.Paths
-	Refresh func(ctx context.Context) (port int, err error)
+	Paths paths.Paths
+	// WindowAlive reports whether the owning window (ClaudePID) still lives.
+	// When set alongside a non-zero ClaudePID, the consumer exits once the window
+	// dies instead of leaking and draining events from a freshly-attached session;
+	// nil (or a pid-less ClaudePID 0) means the consumer never self-terminates.
+	WindowAlive func(pid int) bool
+	Refresh     func(ctx context.Context) (port int, err error)
 }
 
 // ConsumeEvents streams a subject's events (excluding the agent's own) to
@@ -50,18 +60,39 @@ type StreamSource struct {
 // signals stop or ctx is cancelled. The cursor advances only after handle
 // returns, so a crash mid-delivery re-delivers rather than skips (at-least-once).
 func ConsumeEvents(ctx context.Context, src StreamSource, handle EventHandler) error {
+	if err := src.Paths.EnsureSubjectDir(src.SubjectID); err != nil {
+		return err // the cursor lives under the subject dir; without it writeCursor can't persist
+	}
 	cursorPath := src.Paths.ConsumerCursorPath(src.SubjectID, src.Consumer)
 	cursor, err := readCursor(cursorPath)
 	if err != nil {
 		return err // a corrupt cursor would silently replay the whole backlog; fail loud
 	}
+	watched := src.ClaudePID != 0 && src.WindowAlive != nil
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		stop, next, fatal := readStream(ctx, streamURL(src), cursor, cursorPath, handle)
+		// A consumer whose owning window is already gone exits instead of holding
+		// the SSE connection (and advancing the shared cursor) forever.
+		if watched && !src.WindowAlive(src.ClaudePID) {
+			return nil
+		}
+		// Cancel the connection when the window dies mid-stream: a parked Read
+		// never wakes on its own, so the liveness watchdog cancels its context.
+		connCtx, cancel := context.WithCancel(ctx)
+		if watched {
+			go watchLiveness(connCtx, src.ClaudePID, src.WindowAlive, cancel)
+		}
+		stop, next, fatal := readStream(connCtx, streamURL(src), cursor, cursorPath, handle)
+		cancel()
 		cursor = next
 		if stop || ctx.Err() != nil {
+			return nil
+		}
+		// A liveness cancel and a transient drop both surface as fatal==nil, so
+		// the re-check — not the error — decides exit vs. reconnect.
+		if watched && !src.WindowAlive(src.ClaudePID) {
 			return nil
 		}
 		// Port is the only swap signal now; on a fixed dev port a same-port daemon
@@ -80,6 +111,25 @@ func ConsumeEvents(ctx context.Context, src StreamSource, handle EventHandler) e
 		case <-ctx.Done():
 			return nil
 		case <-time.After(reconnectDelay):
+		}
+	}
+}
+
+// watchLiveness cancels the connection context once the owning window dies,
+// waking a parked Read so the consumer exits. It returns when its context is
+// cancelled (normal connection teardown), so it never outlives its stream.
+func watchLiveness(ctx context.Context, pid int, alive func(pid int) bool, cancel context.CancelFunc) {
+	t := time.NewTicker(livenessInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if !alive(pid) {
+				cancel()
+				return
+			}
 		}
 	}
 }
@@ -131,7 +181,12 @@ func readStream(ctx context.Context, base string, cursor int64, cursorPath strin
 				return false, cursor, nil // delivery failed: don't advance; reconnect re-delivers
 			}
 			cursor = id
-			writeCursor(cursorPath, cursor)
+			if err := writeCursor(cursorPath, cursor); err != nil {
+				// The event was delivered (handle succeeded); we just can't persist
+				// the cursor. Stop loud rather than silently replay it on the next
+				// connection — a vanished subject dir is a real fault, not transient.
+				return s, cursor, err
+			}
 			if s {
 				return true, cursor, nil
 			}
@@ -170,11 +225,16 @@ func readCursor(path string) (int64, error) {
 }
 
 // writeCursor persists the cursor atomically (temp + rename) so a crash can't
-// leave a torn value that resets the consumer to 0.
-func writeCursor(path string, cursor int64) {
+// leave a torn value that resets the consumer to 0. A write failure is surfaced,
+// not swallowed: a silently-unpersisted cursor replays the whole backlog on the
+// next connection.
+func writeCursor(path string, cursor int64) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(cursor, 10)), 0o600); err != nil {
-		return
+		return fmt.Errorf("write cursor %s: %w", path, err)
 	}
-	_ = os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename cursor %s: %w", path, err)
+	}
+	return nil
 }

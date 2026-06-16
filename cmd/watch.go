@@ -44,7 +44,8 @@ func WatchCmd(d Deps) *cobra.Command {
 			out := cmd.OutOrStdout()
 			src := consume.StreamSource{
 				Port: port, SubjectID: subjectID, Consumer: watchConsumer, ClaudePID: claudePID,
-				Paths: d.Paths, Refresh: refreshHandshake(client, session, scope, claudePID, watchConsumer),
+				Paths: d.Paths, WindowAlive: d.WindowAlive,
+				Refresh: refreshHandshake(client, session, scope, claudePID, watchConsumer),
 			}
 			return consume.ConsumeEvents(ctx, src, func(_ int64, data string) (bool, error) {
 				// A failed write must propagate so the cursor doesn't advance past
