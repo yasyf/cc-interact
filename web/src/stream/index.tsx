@@ -5,7 +5,7 @@
 // EventSource lifecycle and the cache-patch / replay-gate / presence
 // choreography.
 
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { FC, ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
@@ -64,6 +64,11 @@ export interface EventStreamConfig<
   // Presence projection for a frame: true/false to set the peer dot, null when
   // the frame is not a presence event.
   peerPresence?: (ev: Ev) => boolean | null;
+  // Seeds peerPresent from the snapshot the first time the cache loads, before
+  // any presence frame — so a consumer that derives the initial peer state from
+  // its GET snapshot renders it without flickering through null. A presence frame
+  // that lands first wins.
+  initialPeerPresence?: (cache: Cache) => boolean | null;
   // Escape hatch for cross-key invalidation and external side-state.
   onEvent?: (ev: Ev, ctx: EventContext<Cache, Subject, Scope>) => void;
 }
@@ -153,6 +158,30 @@ export function createEventStream<
       };
 
       return () => source.close();
+    }, [queryClient, subject, scope]);
+
+    // Seed peerPresent from the snapshot once the cache loads, so the peer dot
+    // does not flicker through null before the first presence frame. The cache
+    // may load after this provider mounts (the query lives in a child), so this
+    // subscribes until the snapshot is present, then seeds once. A presence frame
+    // that arrived first keeps its value (the updater only fills a null).
+    const seededPeer = useRef(false);
+    useEffect(() => {
+      const project = config.initialPeerPresence;
+      if (!project || seededPeer.current) return;
+      const key = config.queryKey(subject, scope as Scope);
+      const seed = () => {
+        const cache = queryClient.getQueryData<Cache>(key);
+        if (cache === undefined) return false;
+        seededPeer.current = true;
+        setPeerPresent((prev) => (prev === null ? project(cache) : prev));
+        return true;
+      };
+      if (seed()) return;
+      const unsub = queryClient.getQueryCache().subscribe(() => {
+        if (seed()) unsub();
+      });
+      return unsub;
     }, [queryClient, subject, scope]);
 
     function dismiss(id: string) {
