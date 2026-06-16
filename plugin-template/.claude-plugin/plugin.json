@@ -1,0 +1,22 @@
+{
+  "name": "{{PLUGIN_NAME}}",
+  "description": "{{DISPLAY_NAME}}: a human-in-the-loop UI for the code Claude is working on — review it in a localhost web UI, stream your feedback back into the session in realtime, and gate Claude's edits until you respond.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Your Name",
+    "email": "you@example.com"
+  },
+  "homepage": "https://github.com/{{RELEASE_REPO}}",
+  "license": "MIT",
+  "mcpServers": {
+    "{{MCP_SERVER_NAME}}": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-channel.sh"
+    }
+  },
+  "channels": [
+    {
+      "server": "{{MCP_SERVER_NAME}}",
+      "displayName": "{{DISPLAY_NAME}}"
+    }
+  ]
+}

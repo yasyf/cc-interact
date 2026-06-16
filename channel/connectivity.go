@@ -18,8 +18,9 @@ const DefaultConnectivityEventType = "channel.changed"
 // emits a presence event when a named consumer connects or disconnects;
 // BootReconcile closes out any subject whose log still says connected, so a
 // daemon death does not leave a subject wedged "connected". Wire all three into
-// daemon.Config: PresenceEventType=c.EventType, OnPresenceChange=c.OnPresenceChange,
-// BootReconcile=c.BootReconcile.
+// daemon.Config: PresenceEventType=c.Type(), OnPresenceChange=c.OnPresenceChange,
+// BootReconcile=c.BootReconcile. Use c.Type() (not c.EventType) so the type sse
+// filters on matches the type these methods emit even for the zero value.
 //
 // This generic variant emits only {"type":EventType,"connected":bool}. A
 // consumer needing a richer payload — cc-review stamps each channel.changed with
@@ -33,7 +34,7 @@ type Connectivity struct {
 // OnPresenceChange appends a presence event for the subject via s.Append. Wire
 // it to daemon.Config.OnPresenceChange.
 func (c Connectivity) OnPresenceChange(ctx context.Context, s *daemon.Server, subjectID string, connected bool) {
-	typ := c.eventType()
+	typ := c.Type()
 	_, _ = s.Append(ctx, &event.Event{
 		SubjectID: subjectID,
 		Origin:    event.OriginSystem,
@@ -48,7 +49,7 @@ func (c Connectivity) OnPresenceChange(ctx context.Context, s *daemon.Server, su
 // boot before the HTTP plane accepts attaches — the presence registry is empty,
 // so every stale connected is provably false.
 func (c Connectivity) BootReconcile(ctx context.Context, s *daemon.Server) error {
-	typ := c.eventType()
+	typ := c.Type()
 	ids, err := staleConnectedSubjects(ctx, s.DB(), typ)
 	if err != nil {
 		return fmt.Errorf("reconcile %s events: %w", typ, err)
@@ -66,7 +67,11 @@ func (c Connectivity) BootReconcile(ctx context.Context, s *daemon.Server) error
 	return nil
 }
 
-func (c Connectivity) eventType() string {
+// Type is the resolved presence event Type: EventType, or
+// DefaultConnectivityEventType when EventType is empty. Wire
+// daemon.Config.PresenceEventType to this so sse filters the same type these
+// methods emit.
+func (c Connectivity) Type() string {
 	if c.EventType == "" {
 		return DefaultConnectivityEventType
 	}
