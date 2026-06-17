@@ -78,14 +78,14 @@ func (s *Store) AppendEvent(ctx context.Context, e *event.Event) (int64, error) 
 }
 
 // EventsSince returns events with seq greater than cursor, oldest first.
-// excludeAgent drops origin=event.OriginAgent rows (the long-poll filter that
-// kills the echo loop); a consumer passes false to see every origin.
-func (s *Store) EventsSince(ctx context.Context, subjectID string, cursor int64, excludeAgent bool) ([]event.Event, error) {
+// excludeOrigin drops rows of that origin (an agent passes its own origin to kill
+// the echo loop); "" sees every origin.
+func (s *Store) EventsSince(ctx context.Context, subjectID string, cursor int64, excludeOrigin string) ([]event.Event, error) {
 	q := `SELECT ` + eventCols + ` FROM events WHERE subject_id=? AND seq>?`
 	args := []any{subjectID, cursor}
-	if excludeAgent {
+	if excludeOrigin != "" {
 		q += ` AND origin<>?`
-		args = append(args, event.OriginAgent)
+		args = append(args, excludeOrigin)
 	}
 	q += ` ORDER BY seq ASC`
 	rows, err := s.db.QueryContext(ctx, q, args...)

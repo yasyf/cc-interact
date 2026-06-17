@@ -42,6 +42,10 @@ type StreamSource struct {
 	SubjectID string
 	Consumer  string
 	ClaudePID int
+	// ExcludeOrigin, when set, drops events of that origin from the stream — set it
+	// to e.g. event.OriginAgent to suppress your own echo. The zero value observes
+	// all origins, so a browser or parent watcher sees every origin.
+	ExcludeOrigin event.Origin
 	// Paths locates the per-consumer cursor file via
 	// Paths.ConsumerCursorPath(SubjectID, Consumer).
 	Paths paths.Paths
@@ -53,9 +57,9 @@ type StreamSource struct {
 	Refresh     func(ctx context.Context) (port int, err error)
 }
 
-// ConsumeEvents streams a subject's events (excluding the agent's own) to
-// handle, persisting a per-consumer cursor so a restart resumes without
-// re-delivering. It reconnects on transient drops — refreshing the handshake
+// ConsumeEvents streams a subject's events (excluding src.ExcludeOrigin, nothing
+// by default) to handle, persisting a per-consumer cursor so a restart resumes
+// without re-delivering. It reconnects on transient drops — refreshing the handshake
 // first, so the stream survives a daemon upgrade — and returns when handle
 // signals stop or ctx is cancelled. The cursor advances only after handle
 // returns, so a crash mid-delivery re-delivers rather than skips (at-least-once).
@@ -135,8 +139,11 @@ func watchLiveness(ctx context.Context, pid int, alive func(pid int) bool, cance
 }
 
 func streamURL(src StreamSource) string {
-	u := fmt.Sprintf("http://127.0.0.1:%d/events?session=%s&exclude_origin=%s&consumer=%s",
-		src.Port, url.QueryEscape(src.SubjectID), event.OriginAgent, url.QueryEscape(src.Consumer))
+	u := fmt.Sprintf("http://127.0.0.1:%d/events?session=%s&consumer=%s",
+		src.Port, url.QueryEscape(src.SubjectID), url.QueryEscape(src.Consumer))
+	if src.ExcludeOrigin != "" {
+		u += "&exclude_origin=" + url.QueryEscape(string(src.ExcludeOrigin))
+	}
 	if src.ClaudePID != 0 {
 		u += "&claude_pid=" + strconv.Itoa(src.ClaudePID)
 	}

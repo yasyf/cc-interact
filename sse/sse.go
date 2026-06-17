@@ -39,9 +39,9 @@ type Backend interface {
 	ResolveSubject(ctx context.Context, ref string) (subjectID string, found bool, err error)
 
 	// EventsSince returns events with seq greater than cursor, oldest first.
-	// excludeAgent drops origin=event.OriginAgent rows so an agent's own consumer
-	// never receives its own echo.
-	EventsSince(ctx context.Context, subjectID string, cursor int64, excludeAgent bool) ([]event.Event, error)
+	// excludeOrigin drops rows of that origin so a consumer can suppress its own
+	// echo; "" (what a browser sends) returns every origin.
+	EventsSince(ctx context.Context, subjectID string, cursor int64, excludeOrigin string) ([]event.Event, error)
 
 	// Subscribe registers a wakeup subscriber for a subject and returns its signal
 	// channel plus a cancel func. The handler Subscribes before its first
@@ -115,8 +115,8 @@ func (s *Server) Handler() http.Handler { return s.mux }
 // handleEvents streams a subject's event log as Server-Sent Events. ?session= is
 // a subject ref — a browser sends the slug, an agent-side consumer sends the
 // canonical id — resolved here to the id that keys the Bus and the events table.
-// A browser omits exclude_origin and sees every origin; an agent consumer passes
-// exclude_origin=<agent> to drop its own echo. Resume is via Last-Event-ID
+// A browser omits exclude_origin and sees every origin; a consumer passes
+// exclude_origin=<origin> to drop that origin (its own echo). Resume is via Last-Event-ID
 // (header, or the ?last_event_id= query fallback for native EventSource, which
 // cannot set headers on the initial request).
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +139,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "stream unsupported", http.StatusInternalServerError)
 		return
 	}
-	excludeAgent := r.URL.Query().Get("exclude_origin") == event.OriginAgent
+	excludeOrigin := r.URL.Query().Get("exclude_origin")
 	// Named stream consumers (the agent's Monitor, the MCP channel) register their
 	// presence with their window pid; a browser sends neither param and is never
 	// registered. An absent claude_pid is a pid-less manual consumer (0), not an
@@ -195,7 +195,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer unsub()
 
 	ctx := r.Context()
-	cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeAgent, consumer != "")
+	cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer != "")
 	io.WriteString(w, ": connected\n\n") // prove liveness + flush proxies
 	flusher.Flush()
 
@@ -209,7 +209,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, ": keepalive\n\n")
 			flusher.Flush()
 		case <-signal:
-			cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeAgent, consumer != "")
+			cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer != "")
 		}
 	}
 }
@@ -220,8 +220,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // not wake it — but the cursor advances past skipped rows too, so a wake never
 // re-queries the filtered tail. One query per wake; no DB handle is held across
 // the select.
-func (s *Server) flushSince(ctx context.Context, w io.Writer, fl http.Flusher, subjectID string, cursor int64, excludeAgent, named bool) int64 {
-	evs, err := s.backend.EventsSince(ctx, subjectID, cursor, excludeAgent)
+func (s *Server) flushSince(ctx context.Context, w io.Writer, fl http.Flusher, subjectID string, cursor int64, excludeOrigin string, named bool) int64 {
+	evs, err := s.backend.EventsSince(ctx, subjectID, cursor, excludeOrigin)
 	if err != nil {
 		return cursor
 	}

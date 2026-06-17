@@ -69,7 +69,7 @@ func (b *fakeBackend) ResolveSubject(_ context.Context, ref string) (string, boo
 	return id, ok, nil
 }
 
-func (b *fakeBackend) EventsSince(_ context.Context, subjectID string, cursor int64, excludeAgent bool) ([]event.Event, error) {
+func (b *fakeBackend) EventsSince(_ context.Context, subjectID string, cursor int64, excludeOrigin string) ([]event.Event, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var out []event.Event
@@ -77,7 +77,7 @@ func (b *fakeBackend) EventsSince(_ context.Context, subjectID string, cursor in
 		if e.Seq <= cursor {
 			continue
 		}
-		if excludeAgent && e.Origin == event.OriginAgent {
+		if excludeOrigin != "" && e.Origin == excludeOrigin {
 			continue
 		}
 		out = append(out, e)
@@ -409,27 +409,50 @@ func TestEventsBrowserConsumerNotRegistered(t *testing.T) {
 	}
 }
 
-func TestEventsExcludeAgentDropsAgentEcho(t *testing.T) {
-	b := newFakeBackend()
-	b.addSubject("s1id")
-	b.seed("s1id",
-		event.Event{Origin: event.OriginAgent, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"agent"}`)},
-		event.Event{Origin: event.OriginHuman, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"human"}`)},
-	)
-	srv := startServer(t, b, Config{PresenceDebounce: 20 * time.Millisecond})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events?session=s1id&exclude_origin="+event.OriginAgent+"&consumer=channel&claude_pid=7", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+// TestEventsExcludeOriginFilter proves exclude_origin is a real per-origin filter:
+// a consumer passing its own origin drops only that origin (suppressing its echo),
+// while an observer omitting the param sees every origin.
+func TestEventsExcludeOriginFilter(t *testing.T) {
+	seed := func(b *fakeBackend) {
+		b.seed("s1id",
+			event.Event{Origin: event.OriginAgent, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"agent"}`)},
+			event.Event{Origin: event.OriginHuman, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"human"}`)},
+		)
 	}
-	defer resp.Body.Close()
+	for _, tc := range []struct {
+		name   string
+		params string
+		want   []string // payload id substrings in delivery order
+	}{
+		{"exclude agent keeps only human", "&exclude_origin=" + event.OriginAgent + "&consumer=channel&claude_pid=7", []string{"human"}},
+		{"exclude human keeps only agent", "&exclude_origin=" + event.OriginHuman + "&consumer=channel&claude_pid=7", []string{"agent"}},
+		{"observer omits exclude_origin and sees both", "", []string{"agent", "human"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newFakeBackend()
+			b.addSubject("s1id")
+			seed(b)
+			srv := startServer(t, b, Config{PresenceDebounce: 20 * time.Millisecond})
 
-	frames := readFramesUntilLive(t, resp.Body)
-	if len(frames) != 1 || frames[0].id != 2 || !strings.Contains(frames[0].data, "human") {
-		t.Fatalf("frames = %+v, want only the human event at seq 2", frames)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events?session=s1id"+tc.params, nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			frames := readFramesUntilLive(t, resp.Body)
+			if len(frames) != len(tc.want) {
+				t.Fatalf("got %d frames %+v, want %d (%v)", len(frames), frames, len(tc.want), tc.want)
+			}
+			for i, id := range tc.want {
+				if !strings.Contains(frames[i].data, id) {
+					t.Fatalf("frame %d = %+v, want payload containing %q", i, frames[i], id)
+				}
+			}
+		})
 	}
 }
 

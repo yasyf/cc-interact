@@ -30,22 +30,31 @@ func TestAppendEventSeqAndOriginFilter(t *testing.T) {
 		}
 	}
 
-	all, _ := s.EventsSince(ctx, r.ID, 0, false)
+	all, _ := s.EventsSince(ctx, r.ID, 0, "")
 	if len(all) != 3 {
 		t.Fatalf("all events = %d, want 3", len(all))
 	}
-	noAgent, _ := s.EventsSince(ctx, r.ID, 0, true)
+	noAgent, _ := s.EventsSince(ctx, r.ID, 0, event.OriginAgent)
 	if len(noAgent) != 2 {
-		t.Fatalf("excludeAgent events = %d, want 2", len(noAgent))
+		t.Fatalf("excludeOrigin=agent events = %d, want 2", len(noAgent))
 	}
 	for _, e := range noAgent {
 		if e.Origin == event.OriginAgent {
 			t.Fatal("agent event leaked through the filter")
 		}
 	}
+	// A real per-origin filter, not a hardcoded agent filter: excluding human drops
+	// only the two human rows and keeps the lone agent row.
+	noHuman, _ := s.EventsSince(ctx, r.ID, 0, event.OriginHuman)
+	if len(noHuman) != 1 {
+		t.Fatalf("excludeOrigin=human events = %d, want 1", len(noHuman))
+	}
+	if noHuman[0].Origin != event.OriginAgent {
+		t.Fatalf("excludeOrigin=human kept origin %q, want agent", noHuman[0].Origin)
+	}
 
 	since := all[1].Seq // 2
-	tail, _ := s.EventsSince(ctx, r.ID, since, false)
+	tail, _ := s.EventsSince(ctx, r.ID, since, "")
 	if len(tail) != 1 || tail[0].Seq != 3 {
 		t.Fatalf("events since %d = %+v, want only seq 3", since, tail)
 	}
@@ -62,11 +71,11 @@ func TestAppendEventPerSubjectSeq(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	bEvents, _ := s.EventsSince(ctx, b.ID, 0, false)
+	bEvents, _ := s.EventsSince(ctx, b.ID, 0, "")
 	if len(bEvents) != 1 || bEvents[0].Seq != 1 {
 		t.Fatalf("subject b events = %+v, want a single seq 1 (per-subject seq)", bEvents)
 	}
-	aEvents, _ := s.EventsSince(ctx, a.ID, 0, false)
+	aEvents, _ := s.EventsSince(ctx, a.ID, 0, "")
 	if len(aEvents) != 2 || aEvents[1].Seq != 2 {
 		t.Fatalf("subject a events = %+v, want seqs 1,2", aEvents)
 	}
@@ -80,7 +89,7 @@ func TestEventPayloadDefaultsToEmptyObject(t *testing.T) {
 	if _, err := s.AppendEvent(ctx, &event.Event{SubjectID: r.ID, Origin: event.OriginSystem, Type: "t"}); err != nil {
 		t.Fatal(err)
 	}
-	all, _ := s.EventsSince(ctx, r.ID, 0, false)
+	all, _ := s.EventsSince(ctx, r.ID, 0, "")
 	if len(all) != 1 || string(all[0].Payload) != "{}" {
 		t.Fatalf("payload = %q, want {}", string(all[0].Payload))
 	}
@@ -96,7 +105,7 @@ func TestEventDedupReturnsExistingSeq(t *testing.T) {
 	if first != second {
 		t.Fatalf("dedup seq mismatch: %d vs %d", first, second)
 	}
-	all, _ := s.EventsSince(ctx, r.ID, 0, false)
+	all, _ := s.EventsSince(ctx, r.ID, 0, "")
 	if len(all) != 1 {
 		t.Fatalf("got %d events, want 1 (deduped)", len(all))
 	}

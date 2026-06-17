@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-interact/consume"
+	"github.com/yasyf/cc-interact/event"
 )
 
 // watchConsumer is the stream-consumer name the watch command registers under,
@@ -46,7 +47,8 @@ func WatchCmd(d Deps) *cobra.Command {
 			out := cmd.OutOrStdout()
 			src := consume.StreamSource{
 				Port: port, SubjectID: subjectID, Consumer: watchConsumer, ClaudePID: claudePID,
-				Paths: d.Paths, WindowAlive: d.WindowAlive,
+				ExcludeOrigin: event.OriginAgent,
+				Paths:         d.Paths, WindowAlive: d.WindowAlive,
 				Refresh: refreshHandshake(client, session, scope, claudePID, watchConsumer),
 			}
 			return consume.ConsumeEvents(ctx, src, func(_ int64, data string) (bool, error) {

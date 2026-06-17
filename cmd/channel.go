@@ -9,6 +9,7 @@ import (
 
 	"github.com/yasyf/cc-interact/channel"
 	"github.com/yasyf/cc-interact/consume"
+	"github.com/yasyf/cc-interact/event"
 )
 
 // channelConsumer is the stream-consumer name the channel server registers under.
@@ -61,7 +62,8 @@ func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, 
 	}
 	src := consume.StreamSource{
 		Port: port, SubjectID: subjectID, Consumer: channelConsumer, ClaudePID: claudePID,
-		Paths: d.Paths, WindowAlive: d.WindowAlive,
+		ExcludeOrigin: event.OriginAgent,
+		Paths:         d.Paths, WindowAlive: d.WindowAlive,
 		Refresh: refreshHandshake(client, session, scope, claudePID, channelConsumer),
 	}
 	// Prove the channel without waiting for traffic: one hello tag at attach lets

@@ -37,8 +37,8 @@ func (s *Server) ResolveSubject(ctx context.Context, ref string) (string, bool, 
 }
 
 // EventsSince returns events past cursor, oldest first. Satisfies sse.Backend.
-func (s *Server) EventsSince(ctx context.Context, subjectID string, cursor int64, excludeAgent bool) ([]event.Event, error) {
-	return s.store.EventsSince(ctx, subjectID, cursor, excludeAgent)
+func (s *Server) EventsSince(ctx context.Context, subjectID string, cursor int64, excludeOrigin string) ([]event.Event, error) {
+	return s.store.EventsSince(ctx, subjectID, cursor, excludeOrigin)
 }
 
 // Subscribe exposes the bus to the SSE plane. Satisfies sse.Backend.

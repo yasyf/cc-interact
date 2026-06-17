@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/paths"
 )
 
@@ -40,6 +41,27 @@ func TestStreamURLClaudePID(t *testing.T) {
 			}
 			if tc.want == "" && strings.Contains(u, "claude_pid") {
 				t.Fatalf("url %q must not carry claude_pid for pid 0", u)
+			}
+		})
+	}
+}
+
+func TestStreamURLExcludeOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		origin  event.Origin
+		present bool
+	}{
+		{"set origin rides the URL", event.OriginAgent, true},
+		{"zero value omits the param", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := streamURL(StreamSource{Port: 1, SubjectID: "r", Consumer: "watch", ExcludeOrigin: tc.origin})
+			if tc.present && !strings.Contains(u, "exclude_origin="+string(tc.origin)) {
+				t.Fatalf("url %q missing exclude_origin=%s", u, tc.origin)
+			}
+			if !tc.present && strings.Contains(u, "exclude_origin") {
+				t.Fatalf("url %q must not carry exclude_origin for the zero value", u)
 			}
 		})
 	}

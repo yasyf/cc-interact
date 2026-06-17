@@ -37,7 +37,7 @@ func seedSubject(t *testing.T, s *daemon.Server, id string) {
 
 func presenceEvents(t *testing.T, s *daemon.Server, subjectID, typ string) []event.Event {
 	t.Helper()
-	evs, err := s.EventsSince(context.Background(), subjectID, 0, false)
+	evs, err := s.EventsSince(context.Background(), subjectID, 0, "")
 	if err != nil {
 		t.Fatalf("events since: %v", err)
 	}
