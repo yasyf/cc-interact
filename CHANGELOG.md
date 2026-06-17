@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-17
+
+### Added
+- `channel`: `ServerInfo.Instructions` is returned as the MCP `initialize` result's top-level `instructions`, so a consumer gives the agent always-present guidance (e.g. that `channel.hello` is a silent handshake). `Deps.ChannelTools` now returns this instructions string alongside the tools and notify method.
+
+### Changed
+- `channel`: the eager `channel.hello` tag carries a `note` ("system handshake; no reply needed") so an agent reading the raw payload does not mistake the attach handshake for a user request.
+
 ## [0.1.0] - 2026-06-16
 
 ### Added
@@ -15,5 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/yasyf/cc-interact/compare/v0.1.3...v0.1.4
 [0.1.0]: https://github.com/yasyf/cc-interact/releases/tag/v0.1.0

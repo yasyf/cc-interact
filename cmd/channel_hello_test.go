@@ -55,8 +55,8 @@ func TestChannelPushesHelloAtAttach(t *testing.T) {
 	})
 	d := testDeps(socket)
 	d.WindowAlive = func(int) bool { return true }
-	d.ChannelTools = func(context.Context, string, string) ([]channel.Tool, string, error) {
-		return []channel.Tool{{Name: "noop", InputSchema: map[string]any{}}}, "notifications/test/channel", nil
+	d.ChannelTools = func(context.Context, string, string) ([]channel.Tool, string, string, error) {
+		return []channel.Tool{{Name: "noop", InputSchema: map[string]any{}}}, "notifications/test/channel", "", nil
 	}
 
 	inR, inW := io.Pipe()

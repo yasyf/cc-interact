@@ -46,10 +46,11 @@ type Deps struct {
 	TerminalEvent func(eventType string) bool
 	// Serve runs the long-lived daemon (consumer builds daemon.New(Config).Serve).
 	Serve func(ctx context.Context) error
-	// ChannelTools supplies the channel server's domain tools and the JSON-RPC
-	// method each subject event is pushed under, built against the resolved
-	// session and scope (cc-review supplies its five review tools).
-	ChannelTools func(ctx context.Context, session, scope string) (tools []channel.Tool, notifyMethod string, err error)
+	// ChannelTools supplies the channel server's domain tools, the JSON-RPC method
+	// each subject event is pushed under, and optional instructions folded into the
+	// agent's prompt at initialize, built against the resolved session and scope
+	// (cc-review supplies its review tools and channel guidance).
+	ChannelTools func(ctx context.Context, session, scope string) (tools []channel.Tool, notifyMethod, instructions string, err error)
 }
 
 // hookInput is the subset of a Claude Code hook's stdin JSON the substrate hooks

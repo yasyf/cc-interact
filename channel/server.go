@@ -28,10 +28,12 @@ type Tool struct {
 	Handler     func(ctx context.Context, args json.RawMessage) (text string, isErr bool)
 }
 
-// ServerInfo is the serverInfo block returned in the initialize handshake.
+// ServerInfo carries the initialize handshake fields: the serverInfo name and
+// version, plus optional top-level instructions folded into the client's prompt.
 type ServerInfo struct {
-	Name    string
-	Version string
+	Name         string
+	Version      string
+	Instructions string
 }
 
 type rpcMessage struct {
@@ -88,11 +90,15 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 		switch msg.Method {
 		case "initialize":
-			s.reply(msg.ID, map[string]any{
+			res := map[string]any{
 				"protocolVersion": mcpProtocolVersion,
 				"capabilities":    map[string]any{"tools": map[string]any{}, "experimental": map[string]any{"claude/channel": map[string]any{}}},
 				"serverInfo":      map[string]any{"name": s.info.Name, "version": s.info.Version},
-			})
+			}
+			if s.info.Instructions != "" {
+				res["instructions"] = s.info.Instructions
+			}
+			s.reply(msg.ID, res)
 		case "tools/list":
 			s.reply(msg.ID, map[string]any{"tools": s.toolSchemas()})
 		case "tools/call":

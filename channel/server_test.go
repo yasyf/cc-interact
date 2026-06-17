@@ -61,6 +61,9 @@ func TestServerInitializeListCall(t *testing.T) {
 	if info["name"] != "cc-test" || info["version"] != "v1.2.3" {
 		t.Fatalf("serverInfo = %+v, want cc-test/v1.2.3", info)
 	}
+	if _, hasInstr := initResult["instructions"]; hasInstr {
+		t.Fatalf("initialize must omit instructions when unset: %+v", initResult)
+	}
 
 	listTools := replies[1]["result"].(map[string]any)["tools"].([]any)
 	if len(listTools) != 1 {
@@ -86,6 +89,21 @@ func TestServerInitializeListCall(t *testing.T) {
 	errObj := replies[4]["error"].(map[string]any)
 	if errObj["code"].(float64) != -32601 {
 		t.Fatalf("bogus method error code = %v, want -32601", errObj["code"])
+	}
+}
+
+func TestServerInitializeInstructions(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "x", Version: "v1", Instructions: "handshakes need no reply"}, nil)
+	var out bytes.Buffer
+	if err := srv.Serve(context.Background(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`), &out); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	replies := decodeReplies(t, &out)
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies, want 1", len(replies))
+	}
+	if instr := replies[0]["result"].(map[string]any)["instructions"]; instr != "handshakes need no reply" {
+		t.Fatalf("initialize instructions = %v, want the configured text", instr)
 	}
 }
 

@@ -35,11 +35,11 @@ func ChannelCmd(d Deps) *cobra.Command {
 				session = os.Getenv("CLAUDE_CODE_SESSION_ID")
 			}
 			scope := mustCwd(cwd)
-			tools, notifyMethod, err := d.ChannelTools(ctx, session, scope)
+			tools, notifyMethod, instructions, err := d.ChannelTools(ctx, session, scope)
 			if err != nil {
 				return err
 			}
-			srv := channel.NewServer(channel.ServerInfo{Name: cmd.Root().Name(), Version: d.Version}, tools)
+			srv := channel.NewServer(channel.ServerInfo{Name: cmd.Root().Name(), Version: d.Version, Instructions: instructions}, tools)
 			go streamToChannel(ctx, d, srv, session, scope, notifyMethod)
 			return srv.Serve(ctx, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
@@ -71,7 +71,7 @@ func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, 
 	// even on a subject that produces none. Best-effort — a failed hello means
 	// stdout is already broken, which StreamEvents surfaces on its own.
 	if err := srv.Notify(notifyMethod, map[string]any{
-		"content": `{"type":"channel.hello"}`,
+		"content": `{"type":"channel.hello","note":"system handshake; no reply needed"}`,
 		"meta":    map[string]any{"type": "channel.hello", "subject_id": subjectID},
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] channel: hello push failed for %s: %v\n", channelConsumer, subjectID, err)

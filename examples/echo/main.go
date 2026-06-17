@@ -209,7 +209,7 @@ func mountREST(s *daemon.Server) {
 // channelTools advertises the one domain tool — reply — to the agent's MCP
 // channel. The handler round-trips to the daemon via opReply because the channel
 // server is a separate stdio process and cannot Append directly.
-func channelTools(ctx context.Context, session, scope string) ([]channel.Tool, string, error) {
+func channelTools(ctx context.Context, session, scope string) ([]channel.Tool, string, string, error) {
 	client := newClient()
 	pid := os.Getpid()
 	reply := channel.Tool{
@@ -236,7 +236,7 @@ func channelTools(ctx context.Context, session, scope string) ([]channel.Tool, s
 			return string(r.Body), false
 		},
 	}
-	return []channel.Tool{reply}, notifyMethod, nil
+	return []channel.Tool{reply}, notifyMethod, "", nil
 }
 
 func deps() cmd.Deps {
