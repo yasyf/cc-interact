@@ -274,6 +274,63 @@ func TestWatchStreamsUntilTerminal(t *testing.T) {
 	}
 }
 
+// TestWatchOnceExitsAfterFirstEvent proves --once stops after the first emitted
+// event (not the terminal one) and advances the cursor, so a second --once run
+// resumes past the event it already delivered.
+func TestWatchOnceExitsAfterFirstEvent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch r.Header.Get("Last-Event-ID") {
+		case "": // first run resumes from nothing: a non-terminal event then the terminal one
+			fmt.Fprint(w, "id: 1\ndata: {\"type\":\"comment.created\"}\n\n")
+			fmt.Fprint(w, "id: 2\ndata: {\"type\":\"submit\"}\n\n")
+		case "1": // second run resumes from the cursor the first --once persisted
+			fmt.Fprint(w, "id: 2\ndata: {\"type\":\"submit\"}\n\n")
+		default:
+			t.Errorf("Last-Event-ID = %q, want \"\" or \"1\"", r.Header.Get("Last-Event-ID"))
+		}
+	}))
+	t.Cleanup(sse.Close)
+	ssePort := mustPort(t, sse)
+
+	socket, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+		return daemon.Reply{OK: true, SubjectID: "sub-1", HTTPPort: ssePort}
+	})
+	d := testDeps(socket)
+	if err := d.Paths.EnsureSubjectDir("sub-1"); err != nil {
+		t.Fatalf("subject dir: %v", err)
+	}
+
+	run := func() string {
+		t.Helper()
+		cmd := WatchCmd(d)
+		var out bytes.Buffer
+		cmd.SetArgs([]string{"--once", "--session", "s1", "--cwd", "/repo"})
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := cmd.ExecuteContext(ctx); err != nil {
+			t.Fatalf("watch --once: %v", err)
+		}
+		return strings.TrimSpace(out.String())
+	}
+
+	first := run()
+	if lines := strings.Split(first, "\n"); len(lines) != 1 || !strings.Contains(first, "comment.created") {
+		t.Fatalf("first --once output = %q, want exactly the comment.created line", first)
+	}
+	if strings.Contains(first, "submit") {
+		t.Fatalf("first --once leaked the terminal event: %q", first)
+	}
+
+	second := run()
+	if lines := strings.Split(second, "\n"); len(lines) != 1 || !strings.Contains(second, "submit") {
+		t.Fatalf("second --once output = %q, want exactly the resumed submit line", second)
+	}
+}
+
 func mustPort(t *testing.T, srv *httptest.Server) int {
 	t.Helper()
 	u, err := url.Parse(srv.URL)

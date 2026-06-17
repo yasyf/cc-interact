@@ -19,6 +19,7 @@ func WatchCmd(d Deps) *cobra.Command {
 	var (
 		session string
 		cwd     string
+		once    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "watch",
@@ -27,7 +28,8 @@ func WatchCmd(d Deps) *cobra.Command {
 			"terminal event. It is meant to run under a Claude Code Monitor so each line\n" +
 			"becomes a chat notification and the agent reacts per event. Output is line-buffered\n" +
 			"and resumes from a persisted cursor, so restarting it re-delivers nothing it\n" +
-			"already emitted.",
+			"already emitted. With --once it exits after the first emitted event instead, so a\n" +
+			"background task can relay one event and relaunch from the cursor.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -53,11 +55,15 @@ func WatchCmd(d Deps) *cobra.Command {
 				if _, err := fmt.Fprintln(out, data); err != nil {
 					return false, err
 				}
+				if once {
+					return true, nil
+				}
 				return d.TerminalEvent(eventType(data)), nil
 			})
 		},
 	}
 	cmd.Flags().StringVar(&session, "session", "", "Claude session id")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "working directory (defaults to the current directory)")
+	cmd.Flags().BoolVar(&once, "once", false, "exit after the first emitted event")
 	return cmd
 }
