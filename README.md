@@ -3,7 +3,7 @@
 ![cc-interact banner](docs/assets/readme-banner.webp)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasyf/cc-interact/ci.yml?branch=main&label=CI)](https://github.com/yasyf/cc-interact/actions/workflows/ci.yml)
-[![License: PolyForm-Noncommercial-1.0.0](https://img.shields.io/badge/License-PolyForm-Noncommercial-1.0.0-blue.svg)](https://github.com/yasyf/cc-interact/blob/main/LICENSE)
+[![License: PolyForm-Noncommercial-1.0.0](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](https://github.com/yasyf/cc-interact/blob/main/LICENSE)
 
 A domain-agnostic framework for human-in-the-loop Claude agents — daemon, event stream, MCP channel, and optional web UI.
 
