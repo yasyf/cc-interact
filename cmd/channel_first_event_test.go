@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,18 +36,19 @@ func (b *safeBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestChannelPushesHelloAtAttach proves the eager channel.hello tag is pushed at
-// attach — before any subject event — so a consumer can prove the channel live
-// even on a subject that produces no traffic.
-func TestChannelPushesHelloAtAttach(t *testing.T) {
+// TestChannelPushesNothingBeforeFirstEvent pins the no-unsolicited-wake
+// contract: the channel emits no notification at attach — no channel.hello —
+// and the first frame to reach the agent is the subject's first real event.
+func TestChannelPushesNothingBeforeFirstEvent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "id: 1\ndata: {\"type\":\"comment.created\",\"id\":\"c1\"}\n\n")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		<-r.Context().Done() // hold the stream open with no events
+		<-r.Context().Done() // hold the stream open after the one real event
 	}))
 	t.Cleanup(sse.Close)
 
@@ -77,30 +79,35 @@ func TestChannelPushesHelloAtAttach(t *testing.T) {
 	}
 
 	deadline := time.After(5 * time.Second)
-	for !strings.Contains(out.String(), "channel.hello") {
+	for !strings.Contains(out.String(), "comment.created") {
 		select {
 		case <-deadline:
-			t.Fatalf("hello not pushed before deadline; stdout = %q", out.String())
+			t.Fatalf("first event not pushed before deadline; stdout = %q", out.String())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
 
-	var hello map[string]any
+	// An attach-time push runs on the stream goroutine before StreamEvents, so it
+	// would necessarily precede the first event's frame in the output.
+	if strings.Contains(out.String(), "channel.hello") {
+		t.Fatalf("unsolicited push at attach; stdout = %q", out.String())
+	}
+	var first map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		if strings.Contains(line, "channel.hello") {
-			if err := json.Unmarshal([]byte(line), &hello); err != nil {
-				t.Fatalf("hello line is not JSON: %v (%q)", err, line)
+		if strings.Contains(line, "notifications/test/channel") {
+			if err := json.Unmarshal([]byte(line), &first); err != nil {
+				t.Fatalf("notification line is not JSON: %v (%q)", err, line)
 			}
 			break
 		}
 	}
-	if hello["method"] != "notifications/test/channel" {
-		t.Fatalf("hello method = %v, want notifications/test/channel", hello["method"])
+	if first == nil {
+		t.Fatalf("no notification found; stdout = %q", out.String())
 	}
-	params, _ := hello["params"].(map[string]any)
+	params, _ := first["params"].(map[string]any)
 	meta, _ := params["meta"].(map[string]any)
-	if meta["type"] != "channel.hello" || meta["subject_id"] != "sub-1" {
-		t.Fatalf("hello meta = %v, want {type: channel.hello, subject_id: sub-1}", meta)
+	if meta["type"] != "comment.created" || meta["subject_id"] != "sub-1" {
+		t.Fatalf("first notification meta = %v, want {type: comment.created, subject_id: sub-1}", meta)
 	}
 
 	_ = inW.Close() // EOF ends Serve

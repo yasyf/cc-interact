@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -66,16 +65,9 @@ func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, 
 		Paths:         d.Paths, WindowAlive: d.WindowAlive,
 		Refresh: refreshHandshake(client, session, scope, claudePID, channelConsumer),
 	}
-	// Prove the channel without waiting for traffic: one hello tag at attach lets
-	// a consumer react (e.g. ack) before any real event, so presence can settle
-	// even on a subject that produces none. Best-effort — a failed hello means
-	// stdout is already broken, which StreamEvents surfaces on its own.
-	if err := srv.Notify(notifyMethod, map[string]any{
-		"content": `{"type":"channel.hello","note":"system handshake; no reply needed"}`,
-		"meta":    map[string]any{"type": "channel.hello", "subject_id": subjectID},
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] channel: hello push failed for %s: %v\n", channelConsumer, subjectID, err)
-	}
+	// No push at attach: an unsolicited tag wakes an idle agent for nothing. The
+	// channel stays silent until the subject produces an event — or the daemon
+	// injects a solicited frame (a delivery probe) into this stream.
 	// A failed push propagates so the cursor doesn't advance past an undelivered
 	// event; a channel otherwise runs for the whole session.
 	_ = channel.StreamEvents(ctx, src, func(eventType, data string) error {

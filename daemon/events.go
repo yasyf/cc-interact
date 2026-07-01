@@ -58,3 +58,11 @@ func (s *Server) Attach(subjectID, consumer string, pid int) func() {
 func (s *Server) ConsumerConnected(subjectID string) bool {
 	return s.activity.AttachedWithin(subjectID, attachGrace)
 }
+
+// InjectEvent writes a one-shot, non-persisted frame to the subject's attached
+// (consumer, pid) streams, bypassing the event log — no other consumer sees it
+// and a reconnect can never replay it. For solicited signals like a delivery
+// probe. Returns the number of live streams written.
+func (s *Server) InjectEvent(subjectID, consumer string, pid int, payload string) int {
+	return s.sse.Inject(subjectID, consumer, pid, payload)
+}

@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
@@ -89,6 +90,9 @@ type Server struct {
 	cfg      Config
 	mux      *http.ServeMux
 	debounce time.Duration
+
+	injectMu sync.Mutex
+	injects  map[injectKey]map[chan string]struct{}
 }
 
 // NewServer builds the server and mounts GET /events. Register additional routes
@@ -98,7 +102,10 @@ func NewServer(backend Backend, cfg Config) *Server {
 	if debounce == 0 {
 		debounce = DefaultPresenceDebounce
 	}
-	s := &Server{backend: backend, cfg: cfg, mux: http.NewServeMux(), debounce: debounce}
+	s := &Server{
+		backend: backend, cfg: cfg, mux: http.NewServeMux(), debounce: debounce,
+		injects: make(map[injectKey]map[chan string]struct{}),
+	}
 	s.mux.HandleFunc("GET /events", s.handleEvents)
 	return s
 }
@@ -164,6 +171,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// timer; the consumer reconciles the stale connected:true at its next boot.
 	// Attach always runs so the registry feeding ConsumerConnected stays accurate;
 	// only the emit is gated on OnPresenceChange.
+	var inject chan string
 	if consumer != "" {
 		wasConnected := s.backend.ConsumerConnected(subjectID)
 		detach := s.backend.Attach(subjectID, consumer, pid)
@@ -178,6 +186,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				}
 			})
 		}()
+		// Only a named consumer can receive solicited frames (Inject); a browser's
+		// inject channel stays nil, which never fires in the select.
+		inject = s.attachInject(injectKey{subjectID, consumer, pid})
+		defer s.detachInject(injectKey{subjectID, consumer, pid}, inject)
 	}
 
 	h := w.Header()
@@ -210,6 +222,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case <-signal:
 			cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer != "")
+		case p := <-inject:
+			// No id: the frame is outside the log, so the consumer's cursor must not
+			// advance past real events it has not seen.
+			fmt.Fprintf(w, "data: %s\n\n", p)
+			flusher.Flush()
 		}
 	}
 }
@@ -243,6 +260,54 @@ func (s *Server) flushSince(ctx context.Context, w io.Writer, fl http.Flusher, s
 		fl.Flush()
 	}
 	return cursor
+}
+
+// injectKey addresses one window's named stream: Inject targets exactly the
+// (subject, consumer, pid) triple so a solicited frame can never wake another
+// window's consumer.
+type injectKey struct {
+	subjectID string
+	consumer  string
+	pid       int
+}
+
+// Inject writes a one-shot frame to every live stream matching the key and
+// reports how many received it. The frame bypasses the event log and carries no
+// id, so the consumer's cursor never advances and a reconnect can never replay
+// it — the shape for solicited signals (a delivery probe) that must arrive once
+// or not at all.
+func (s *Server) Inject(subjectID, consumer string, pid int, payload string) int {
+	s.injectMu.Lock()
+	defer s.injectMu.Unlock()
+	n := 0
+	for ch := range s.injects[injectKey{subjectID, consumer, pid}] {
+		select {
+		case ch <- payload:
+			n++
+		default: // a stream that stopped draining is not worth parking the caller on
+		}
+	}
+	return n
+}
+
+func (s *Server) attachInject(k injectKey) chan string {
+	ch := make(chan string, 1)
+	s.injectMu.Lock()
+	defer s.injectMu.Unlock()
+	if s.injects[k] == nil {
+		s.injects[k] = make(map[chan string]struct{})
+	}
+	s.injects[k][ch] = struct{}{}
+	return ch
+}
+
+func (s *Server) detachInject(k injectKey, ch chan string) {
+	s.injectMu.Lock()
+	defer s.injectMu.Unlock()
+	delete(s.injects[k], ch)
+	if len(s.injects[k]) == 0 {
+		delete(s.injects, k)
+	}
 }
 
 func (s *Server) presenceChange(ctx context.Context, subjectID string, connected bool) {

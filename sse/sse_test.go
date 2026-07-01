@@ -456,6 +456,95 @@ func TestEventsExcludeOriginFilter(t *testing.T) {
 	}
 }
 
+// readNextFrame returns the next frame written after the liveness comment,
+// failing the test if none arrives within the deadline.
+func readNextFrame(t *testing.T, body io.Reader) sseFrame {
+	t.Helper()
+	frames := make(chan sseFrame, 1)
+	go func() {
+		sc := bufio.NewScanner(body)
+		var cur sseFrame
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.HasPrefix(line, "id: "):
+				n, _ := strconv.ParseInt(strings.TrimPrefix(line, "id: "), 10, 64)
+				cur.id = n
+			case strings.HasPrefix(line, "data: "):
+				cur.data = strings.TrimPrefix(line, "data: ")
+				frames <- cur
+				return
+			}
+		}
+	}()
+	select {
+	case f := <-frames:
+		return f
+	case <-time.After(2 * time.Second):
+		t.Fatal("no frame arrived before the deadline")
+		return sseFrame{}
+	}
+}
+
+func assertNoFrame(t *testing.T, body io.Reader) {
+	t.Helper()
+	frames := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(body)
+		for sc.Scan() {
+			if strings.HasPrefix(sc.Text(), "data: ") {
+				frames <- sc.Text()
+				return
+			}
+		}
+	}()
+	select {
+	case f := <-frames:
+		t.Fatalf("unexpected frame %q", f)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// TestInjectTargetsExactConsumerStream proves a solicited frame reaches only the
+// (subject, consumer, pid) stream it addresses — id-less, invisible to another
+// window's consumer and to the browser.
+func TestInjectTargetsExactConsumerStream(t *testing.T) {
+	b := newFakeBackend()
+	b.addSubject("s1id")
+	s := NewServer(b, Config{PresenceDebounce: 20 * time.Millisecond})
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	chanA := connectUntilLive(t, ctx, srv.URL+"/events?session=s1id&consumer=channel&claude_pid=1111")
+	defer chanA.Body.Close()
+	chanB := connectUntilLive(t, ctx, srv.URL+"/events?session=s1id&consumer=channel&claude_pid=2222")
+	defer chanB.Body.Close()
+	browser := connectUntilLive(t, ctx, srv.URL+"/events?session=s1id")
+	defer browser.Body.Close()
+
+	if n := s.Inject("s1id", "channel", 1111, `{"type":"channel.probe"}`); n != 1 {
+		t.Fatalf("Inject wrote %d streams, want 1", n)
+	}
+
+	frame := readNextFrame(t, chanA.Body)
+	if frame.id != 0 || !strings.Contains(frame.data, "channel.probe") {
+		t.Fatalf("frame = %+v, want id-less channel.probe", frame)
+	}
+	assertNoFrame(t, chanB.Body)
+	assertNoFrame(t, browser.Body)
+}
+
+func TestInjectWithoutAttachedStreamWritesNothing(t *testing.T) {
+	b := newFakeBackend()
+	b.addSubject("s1id")
+	s := NewServer(b, Config{})
+	if n := s.Inject("s1id", "channel", 1111, `{"type":"channel.probe"}`); n != 0 {
+		t.Fatalf("Inject wrote %d streams, want 0", n)
+	}
+}
+
 func TestStaticHandlerServesAssetsAndFallsBackToIndex(t *testing.T) {
 	const index = "<!doctype html><title>app</title>"
 	const asset = "console.log(1)"
