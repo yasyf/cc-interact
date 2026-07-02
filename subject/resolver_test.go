@@ -12,18 +12,16 @@ var lc = Lifecycle{Initial: "open", Closed: "closed"}
 
 // fakeStore is the in-memory double for the resolver's Store boundary. It mirrors
 // the SQL semantics the resolver depends on: NULL session never matches by
-// session, pid 0 never matches by window, "latest" is the most recently
-// inserted matching row, adoptable rows are those whose status is in active, and
-// Rebind is a compare-and-swap on claude_pid.
+// session, pid 0 never matches by window, "latest" is the most recently inserted
+// matching row, and Rebind is a compare-and-swap on claude_pid.
 type fakeStore struct {
-	rows   []*Subject
-	ord    map[string]int64
-	next   int64
-	active map[string]bool
+	rows []*Subject
+	ord  map[string]int64
+	next int64
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{ord: map[string]int64{}, active: map[string]bool{"open": true}}
+	return &fakeStore{ord: map[string]int64{}}
 }
 
 func (f *fakeStore) row(id string) *Subject {
@@ -66,10 +64,6 @@ func (f *fakeStore) FindLatestByWindowScope(_ context.Context, claudePID int, sc
 		return Subject{}, false, nil
 	}
 	return f.latest(func(r *Subject) bool { return r.ClaudePID == claudePID && r.Scope == scope })
-}
-
-func (f *fakeStore) FindAdoptableByScope(_ context.Context, scope string) (Subject, bool, error) {
-	return f.latest(func(r *Subject) bool { return r.Scope == scope && f.active[r.Status] })
 }
 
 func (f *fakeStore) Create(_ context.Context, id, slug, session, scope string, claudePID int, status string) (Subject, error) {
@@ -117,14 +111,11 @@ func (f *fakeStore) Get(_ context.Context, id string) (Subject, error) {
 	return *r, nil
 }
 
-func newResolver(alive map[int]bool) (Resolver, *fakeStore) {
+func newResolver() (Resolver, *fakeStore) {
 	f := newFakeStore()
 	rs := Resolver{
-		Store: f,
-		Policy: Policy{
-			Held:   func(_ context.Context, s Subject) bool { return alive[s.ClaudePID] },
-			Active: func(s Subject) bool { return s.Status == "open" },
-		},
+		Store:  f,
+		Policy: Policy{Active: func(s Subject) bool { return s.Status == "open" }},
 	}
 	return rs, f
 }
@@ -156,7 +147,6 @@ func bindingOf(t *testing.T, ctx context.Context, f *fakeStore, id string) (stri
 func TestStart(t *testing.T) {
 	cases := []struct {
 		name        string
-		alive       map[int]bool
 		seed        func(t *testing.T, ctx context.Context, rs Resolver, f *fakeStore) Subject
 		w           Window
 		fresh       bool
@@ -190,15 +180,17 @@ func TestStart(t *testing.T) {
 			wantSeeded:  true,
 		},
 		{
-			name:  "second live window creates its own, first binding untouched",
-			alive: map[int]bool{100: true},
+			name: "another window's open review is never adopted; a second window creates its own",
 			seed: func(t *testing.T, ctx context.Context, _ Resolver, f *fakeStore) Subject {
 				return seedSubject(t, ctx, f, "sA", 100, "open")
 			},
 			w: Window{Session: "sB", ClaudePID: 200},
-			after: func(t *testing.T, ctx context.Context, f *fakeStore, seeded, _ Subject) {
+			after: func(t *testing.T, ctx context.Context, f *fakeStore, seeded, got Subject) {
 				if sess, pid := bindingOf(t, ctx, f, seeded.ID); sess != "sA" || pid != 100 {
-					t.Fatalf("first binding disturbed: %s/%d", sess, pid)
+					t.Fatalf("foreign review disturbed: %s/%d, want sA/100", sess, pid)
+				}
+				if got.SessionID != "sB" || got.ClaudePID != 200 {
+					t.Fatalf("created %s/%d, want sB/200", got.SessionID, got.ClaudePID)
 				}
 			},
 		},
@@ -257,44 +249,6 @@ func TestStart(t *testing.T) {
 			},
 		},
 		{
-			name:  "orphaned active subject adopted when its window is dead",
-			alive: map[int]bool{100: false},
-			seed: func(t *testing.T, ctx context.Context, _ Resolver, f *fakeStore) Subject {
-				return seedSubject(t, ctx, f, "sA", 100, "open")
-			},
-			w:           Window{Session: "sB", ClaudePID: 200},
-			wantResumed: true,
-			wantSeeded:  true,
-			after: func(t *testing.T, ctx context.Context, f *fakeStore, seeded, got Subject) {
-				if got.SessionID != "sB" || got.ClaudePID != 200 {
-					t.Fatalf("returned %s/%d, want sB/200", got.SessionID, got.ClaudePID)
-				}
-				if sess, pid := bindingOf(t, ctx, f, seeded.ID); sess != "sB" || pid != 200 {
-					t.Fatalf("binding = %s/%d, want sB/200", sess, pid)
-				}
-			},
-		},
-		{
-			name: "dead window's submitted subject is not adopted",
-			seed: func(t *testing.T, ctx context.Context, _ Resolver, f *fakeStore) Subject {
-				return seedSubject(t, ctx, f, "sA", 100, "submitted")
-			},
-			w: Window{Session: "sB", ClaudePID: 200},
-		},
-		{
-			name:  "blank-pid subject never cross-adopted by another blank-pid window",
-			alive: map[int]bool{0: true},
-			seed: func(t *testing.T, ctx context.Context, _ Resolver, f *fakeStore) Subject {
-				return seedSubject(t, ctx, f, "sA", 0, "open")
-			},
-			w: Window{Session: "sB", ClaudePID: 0},
-			after: func(t *testing.T, ctx context.Context, f *fakeStore, seeded, _ Subject) {
-				if sess, pid := bindingOf(t, ctx, f, seeded.ID); sess != "sA" || pid != 0 {
-					t.Fatalf("binding = %s/%d, want sA/0", sess, pid)
-				}
-			},
-		},
-		{
 			name: "blank session id still creates",
 			w:    Window{},
 			after: func(t *testing.T, ctx context.Context, f *fakeStore, _, got Subject) {
@@ -327,8 +281,7 @@ func TestStart(t *testing.T) {
 			},
 		},
 		{
-			name:  "fresh never adopts an orphan",
-			alive: map[int]bool{100: false},
+			name: "fresh with another window's open review still creates its own",
 			seed: func(t *testing.T, ctx context.Context, _ Resolver, f *fakeStore) Subject {
 				return seedSubject(t, ctx, f, "sA", 100, "open")
 			},
@@ -336,10 +289,10 @@ func TestStart(t *testing.T) {
 			fresh: true,
 			after: func(t *testing.T, ctx context.Context, f *fakeStore, seeded, _ Subject) {
 				if sess, pid := bindingOf(t, ctx, f, seeded.ID); sess != "sA" || pid != 100 {
-					t.Fatalf("orphan binding disturbed: %s/%d", sess, pid)
+					t.Fatalf("foreign review disturbed: %s/%d", sess, pid)
 				}
 				if s, _ := f.Get(ctx, seeded.ID); s.Status != "open" {
-					t.Fatalf("orphan status = %q, want open", s.Status)
+					t.Fatalf("foreign status = %q, want open", s.Status)
 				}
 			},
 		},
@@ -348,7 +301,7 @@ func TestStart(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			rs, f := newResolver(tc.alive)
+			rs, f := newResolver()
 			var seeded Subject
 			if tc.seed != nil {
 				seeded = tc.seed(t, ctx, rs, f)
@@ -390,7 +343,7 @@ func TestFind(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			rs, f := newResolver(nil)
+			rs, f := newResolver()
 			seeded := seedSubject(t, ctx, f, tc.seedSess, tc.seedPID, tc.seedStatus)
 
 			got, ok, err := rs.Find(ctx, tc.w, repo)
@@ -410,50 +363,9 @@ func TestFind(t *testing.T) {
 	}
 }
 
-func TestPeek(t *testing.T) {
-	cases := []struct {
-		name       string
-		alive      map[int]bool
-		seedSess   string
-		seedPID    int
-		seedStatus string
-		w          Window
-		wantOK     bool
-	}{
-		{"exact session binding", nil, "s1", 100, "open", Window{Session: "s1", ClaudePID: 100}, true},
-		{"rotated session id falls through to pid", nil, "sA", 100, "open", Window{Session: "sB", ClaudePID: 100}, true},
-		{"dead window's active subject is the adoption candidate", map[int]bool{100: false}, "sA", 100, "open", Window{Session: "sB", ClaudePID: 200}, true},
-		{"live foreign window's subject is not peeked", map[int]bool{100: true}, "sA", 100, "open", Window{Session: "sB", ClaudePID: 200}, false},
-		{"dead window's submitted subject is not adopted", nil, "sA", 100, "submitted", Window{Session: "sB", ClaudePID: 200}, false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			rs, f := newResolver(tc.alive)
-			seeded := seedSubject(t, ctx, f, tc.seedSess, tc.seedPID, tc.seedStatus)
-
-			got, ok, err := rs.Peek(ctx, tc.w, repo)
-			if err != nil {
-				t.Fatalf("peek: %v", err)
-			}
-			if ok != tc.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
-			}
-			if ok && got.ID != seeded.ID {
-				t.Fatalf("peeked id %q, want %q", got.ID, seeded.ID)
-			}
-			if sess, pid := bindingOf(t, ctx, f, seeded.ID); sess != tc.seedSess || pid != tc.seedPID {
-				t.Fatalf("peek wrote: binding now %s/%d", sess, pid)
-			}
-		})
-	}
-}
-
 func TestRebind(t *testing.T) {
 	cases := []struct {
 		name       string
-		alive      map[int]bool
 		seedSess   string
 		seedPID    int
 		seedStatus string
@@ -480,22 +392,13 @@ func TestRebind(t *testing.T) {
 			wantSess: "sA", wantPID: 100,
 		},
 		{
-			name:     "dead window's active subject is not adopted by rebind",
-			alive:    map[int]bool{100: false},
-			seedSess: "sA", seedPID: 100, seedStatus: "open",
-			w:        Window{Session: "sB", ClaudePID: 200},
-			wantSess: "sA", wantPID: 100,
-		},
-		{
-			name:     "live foreign window never stolen",
-			alive:    map[int]bool{100: true},
+			name:     "another window's review is never rebound",
 			seedSess: "sA", seedPID: 100, seedStatus: "open",
 			w:        Window{Session: "sB", ClaudePID: 200},
 			wantSess: "sA", wantPID: 100,
 		},
 		{
 			name:     "empty session id is a no-op",
-			alive:    map[int]bool{100: false},
 			seedSess: "sA", seedPID: 100, seedStatus: "open",
 			w:        Window{Session: "", ClaudePID: 200},
 			wantSess: "sA", wantPID: 100,
@@ -505,7 +408,7 @@ func TestRebind(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			rs, f := newResolver(tc.alive)
+			rs, f := newResolver()
 			seeded := seedSubject(t, ctx, f, tc.seedSess, tc.seedPID, tc.seedStatus)
 
 			if err := rs.Rebind(ctx, tc.w, repo); err != nil {
@@ -516,52 +419,4 @@ func TestRebind(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestAdoptRace(t *testing.T) {
-	steal := func(t *testing.T, f *fakeStore) func(ctx context.Context, s Subject) bool {
-		return func(ctx context.Context, s Subject) bool {
-			if ok, err := f.Rebind(ctx, s.ID, s.ClaudePID, "winner", 200); err != nil || !ok {
-				t.Fatalf("competing rebind: ok=%v err=%v", ok, err)
-			}
-			return false
-		}
-	}
-
-	t.Run("start loser falls through and creates its own", func(t *testing.T) {
-		ctx := context.Background()
-		rs, f := newResolver(nil)
-		orphan := seedSubject(t, ctx, f, "sA", 100, "open")
-		rs.Policy.Held = steal(t, f)
-
-		got, resumed, err := rs.Start(ctx, Window{Session: "loser", ClaudePID: 300}, repo, "main", lc, false)
-		if err != nil {
-			t.Fatalf("start: %v", err)
-		}
-		if resumed || got.ID == orphan.ID {
-			t.Fatalf("loser must create its own: resumed=%v id=%q orphan=%q", resumed, got.ID, orphan.ID)
-		}
-		if got.SessionID != "loser" || got.ClaudePID != 300 {
-			t.Fatalf("created %s/%d, want loser/300", got.SessionID, got.ClaudePID)
-		}
-		if sess, pid := bindingOf(t, ctx, f, orphan.ID); sess != "winner" || pid != 200 {
-			t.Fatalf("orphan binding = %s/%d, want winner/200", sess, pid)
-		}
-	})
-
-	t.Run("rebind never adopts a foreign orphan", func(t *testing.T) {
-		ctx := context.Background()
-		rs, f := newResolver(map[int]bool{100: false})
-		orphan := seedSubject(t, ctx, f, "sA", 100, "open")
-
-		if err := rs.Rebind(ctx, Window{Session: "sB", ClaudePID: 300}, repo); err != nil {
-			t.Fatalf("rebind: %v", err)
-		}
-		if sess, pid := bindingOf(t, ctx, f, orphan.ID); sess != "sA" || pid != 100 {
-			t.Fatalf("orphan binding = %s/%d, want sA/100 (session-record must not adopt)", sess, pid)
-		}
-		if _, ok, _ := f.FindBySessionScope(ctx, "sB", repo); ok {
-			t.Fatal("a rotated/new session must not cross-bind to another window's review")
-		}
-	})
 }

@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-02
+
+### Removed
+- `subject`: scope-wide subject **adoption**. `Resolver.Start`/`Rebind` no longer
+  fall back to `FindAdoptableByScope`, `Resolver.Peek` is gone, and the `Store`
+  interface drops `FindAdoptableByScope`. A window now resolves only its **own**
+  subject — by session id, then by window pid — and never takes over a review
+  another window opened. This makes cross-session mis-routing impossible by
+  construction, superseding the v0.1.6 interim whose `Held` grace only narrowed
+  the race.
+- `subject.Policy.Held` and `daemon.Config.WindowAlive` (with the server's `held`
+  predicate and `heldGrace`): liveness no longer gates ownership, so they have no
+  callers. `NewSubjectStore` drops its `activeStatuses` argument. `Config.ActiveStatuses`
+  remains — it still feeds `Policy.Active`, which gates resuming a pid-latest
+  subject across session rotation.
+
+### Changed
+- A resume that rotates *both* the session id and the pid (rare) now creates a
+  fresh subject instead of adopting the scope's newest open review.
+
 ## [0.1.6] - 2026-07-01
 
 ### Fixed
@@ -55,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/yasyf/cc-interact/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/yasyf/cc-interact/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/yasyf/cc-interact/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/yasyf/cc-interact/compare/v0.1.3...v0.1.4

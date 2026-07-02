@@ -26,9 +26,6 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 	if cfg.ActiveStatuses == nil {
 		cfg.ActiveStatuses = []string{"open"}
 	}
-	if cfg.WindowAlive == nil {
-		cfg.WindowAlive = func(int) bool { return false }
-	}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -40,7 +37,7 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 // seedSubject inserts a subject directly so dispatch can resolve it.
 func seedSubject(t *testing.T, s *Server, id, slug, session, scope string, pid int, status string) subject.Subject {
 	t.Helper()
-	sub, err := store.NewSubjectStore(s.DB(), []string{"open"}).
+	sub, err := store.NewSubjectStore(s.DB()).
 		Create(context.Background(), id, slug, session, scope, pid, status)
 	if err != nil {
 		t.Fatalf("seed subject: %v", err)

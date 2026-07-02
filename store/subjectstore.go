@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/yasyf/cc-interact/subject"
@@ -17,15 +16,12 @@ var ErrNotFound = errors.New("not found")
 const subjectCols = `id, slug, session_id, scope, claude_pid, status, created_at, updated_at`
 
 type subjectStore struct {
-	db             *sql.DB
-	activeStatuses []string
+	db *sql.DB
 }
 
 // NewSubjectStore returns a subject.Store backed by db's subjects table.
-// activeStatuses is the adoptable set FindAdoptableByScope filters on
-// (cc-review: {"open"}).
-func NewSubjectStore(db *sql.DB, activeStatuses []string) subject.Store {
-	return &subjectStore{db: db, activeStatuses: activeStatuses}
+func NewSubjectStore(db *sql.DB) subject.Store {
+	return &subjectStore{db: db}
 }
 
 func scanSubject(row interface{ Scan(...any) error }) (subject.Subject, error) {
@@ -64,23 +60,6 @@ func (st *subjectStore) FindLatestByWindowScope(ctx context.Context, claudePID i
 	row := st.db.QueryRowContext(ctx,
 		`SELECT `+subjectCols+` FROM subjects WHERE claude_pid=? AND scope=? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
 		claudePID, scope)
-	s, err := scanSubject(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return subject.Subject{}, false, nil
-	}
-	return s, err == nil, err
-}
-
-func (st *subjectStore) FindAdoptableByScope(ctx context.Context, scope string) (subject.Subject, bool, error) {
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(st.activeStatuses)), ",")
-	args := make([]any, 0, len(st.activeStatuses)+1)
-	args = append(args, scope)
-	for _, s := range st.activeStatuses {
-		args = append(args, s)
-	}
-	row := st.db.QueryRowContext(ctx,
-		`SELECT `+subjectCols+` FROM subjects WHERE scope=? AND status IN (`+placeholders+`) ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-		args...)
 	s, err := scanSubject(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return subject.Subject{}, false, nil

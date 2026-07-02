@@ -28,7 +28,7 @@ type ToolCall struct {
 type GateFunc func(ctx context.Context, s subject.Subject, tool ToolCall) (allow bool, reason string)
 
 // Config builds a Server. The zero value is not runnable; AppName, Paths,
-// Version, ActiveStatuses, and WindowAlive are the load-bearing inputs.
+// Version, and ActiveStatuses are the load-bearing inputs.
 type Config struct {
 	// AppName labels logs and user-facing daemon messages (cc-review: "cc-review").
 	AppName string
@@ -38,12 +38,9 @@ type Config struct {
 	// socket eviction (compared via version.Newer).
 	Version string
 
-	// ActiveStatuses is the adoptable subject status set, both for the store's
-	// FindAdoptableByScope and the in-memory Policy.Active twin (cc-review: {"open"}).
+	// ActiveStatuses is the subject status set Policy.Active treats as live and
+	// resumable across session rotation (cc-review: {"open"}).
 	ActiveStatuses []string
-	// WindowAlive reports whether a pid-bound window still owns its subject; it
-	// is the pid arm of Policy.Held (cc-review: process liveness).
-	WindowAlive func(pid int) bool
 
 	// ScopeResolve maps the envelope's raw Scope to the canonical ownership scope
 	// once per RPC, so handlers see a resolved Scope (cc-review: vcs.Root). nil is

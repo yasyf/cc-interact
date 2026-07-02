@@ -24,33 +24,17 @@ func (rs Resolver) Find(ctx context.Context, w Window, scope string) (Subject, b
 	return rs.Store.FindLatestByWindowScope(ctx, w.ClaudePID, scope)
 }
 
-// Peek is the read-only twin of Start: it returns the subject a non-fresh start
-// would resume — the exact binding, the window's pid-latest subject, or the
-// adoptable latest subject in the scope — without writing, so the caller can act
-// against the would-be-resumed subject before any state changes.
-func (rs Resolver) Peek(ctx context.Context, w Window, scope string) (Subject, bool, error) {
-	if s, ok, err := rs.Find(ctx, w, scope); err != nil || ok {
-		return s, ok, err
-	}
-	if s, ok, err := rs.Store.FindAdoptableByScope(ctx, scope); err != nil {
-		return Subject{}, false, err
-	} else if ok && rs.Policy.Active(s) && !rs.Policy.Held(ctx, s) {
-		return s, true, nil
-	}
-	return Subject{}, false, nil
-}
-
 // Start returns the subject a start attaches to and whether that is a resume (an
 // existing subject) versus a fresh create:
 //
-//  1. exact (session, scope) binding             → resume
-//  2. the window's pid-latest subject            → rebind to the new session id, resume
-//  3. adoptable subject with no live window       → adopt, resume
-//  4. otherwise                                   → create (status lc.Initial)
+//  1. exact (session, scope) binding   → resume
+//  2. the window's pid-latest subject   → rebind to the new session id, resume
+//  3. otherwise                         → create (status lc.Initial)
 //
-// fresh=true skips adoption: it closes (status lc.Closed) and detaches the
-// window's own subject (rows 1–2 only), then creates. slug is the precomputed
-// name a freshly created subject takes.
+// A start never adopts another window's subject: ownership is per-window, so a
+// review a different session opened is left untouched. fresh=true closes (status
+// lc.Closed) and detaches the window's own subject (rows 1–2), then creates. slug
+// is the precomputed name a freshly created subject takes.
 func (rs Resolver) Start(ctx context.Context, w Window, scope, slug string, lc Lifecycle, fresh bool) (Subject, bool, error) {
 	if fresh {
 		if s, ok, err := rs.Find(ctx, w, scope); err != nil {
@@ -96,20 +80,6 @@ func (rs Resolver) Start(ctx context.Context, w Window, scope, slug string, lc L
 		}
 		if swapped {
 			s.SessionID = w.Session
-			return s, true, nil
-		}
-	}
-
-	if s, ok, err := rs.Store.FindAdoptableByScope(ctx, scope); err != nil {
-		return Subject{}, false, err
-	} else if ok && rs.Policy.Active(s) && !rs.Policy.Held(ctx, s) {
-		swapped, err := rs.Store.Rebind(ctx, s.ID, s.ClaudePID, w.Session, w.ClaudePID)
-		if err != nil {
-			return Subject{}, false, err
-		}
-		if swapped {
-			s.SessionID = w.Session
-			s.ClaudePID = w.ClaudePID
 			return s, true, nil
 		}
 	}

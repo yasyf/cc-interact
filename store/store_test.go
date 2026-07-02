@@ -18,7 +18,7 @@ func openTestStore(t *testing.T) (*Store, subject.Store) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return s, NewSubjectStore(s.DB(), []string{"open"})
+	return s, NewSubjectStore(s.DB())
 }
 
 func newID(t *testing.T) string {
@@ -95,11 +95,6 @@ func TestSubjectResolution(t *testing.T) {
 	if _, err := st.Create(ctx, newID(t), "", "", "/repo/c", 0, "open"); err != nil {
 		t.Fatalf("session-less subject 2: %v", err)
 	}
-
-	adoptable, ok, err := st.FindAdoptableByScope(ctx, "/repo/a")
-	if err != nil || !ok || adoptable.ID != r.ID {
-		t.Fatalf("adoptable by scope: ok=%v id=%q err=%v", ok, adoptable.ID, err)
-	}
 }
 
 func TestFindLatestByWindowScope(t *testing.T) {
@@ -125,39 +120,6 @@ func TestFindLatestByWindowScope(t *testing.T) {
 	}
 	if _, ok, err := st.FindLatestByWindowScope(ctx, 0, "/repo"); ok || err != nil {
 		t.Fatalf("pid 0 must never match: ok=%v err=%v", ok, err)
-	}
-}
-
-func TestFindAdoptableByScope(t *testing.T) {
-	ctx := context.Background()
-	_, st := openTestStore(t)
-
-	older := create(t, st, "s1", "/repo", 1)
-	newer := create(t, st, "s2", "/repo", 2)
-
-	got, ok, err := st.FindAdoptableByScope(ctx, "/repo")
-	if err != nil || !ok || got.ID != newer.ID {
-		t.Fatalf("adoptable = ok=%v id=%q err=%v, want newest %q (older %q)", ok, got.ID, err, newer.ID, older.ID)
-	}
-
-	// Closing the newest drops it from the active set; the next-newest wins.
-	if err := st.SetStatus(ctx, newer.ID, "closed"); err != nil {
-		t.Fatal(err)
-	}
-	got, ok, err = st.FindAdoptableByScope(ctx, "/repo")
-	if err != nil || !ok || got.ID != older.ID {
-		t.Fatalf("after close: ok=%v id=%q err=%v, want %q", ok, got.ID, err, older.ID)
-	}
-
-	// Close the last one too: nothing is adoptable.
-	if err := st.SetStatus(ctx, older.ID, "closed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := st.FindAdoptableByScope(ctx, "/repo"); ok {
-		t.Fatal("no active subject should be adoptable")
-	}
-	if _, ok, _ := st.FindAdoptableByScope(ctx, "/other"); ok {
-		t.Fatal("different scope should not match")
 	}
 }
 

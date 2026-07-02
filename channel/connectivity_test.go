@@ -19,7 +19,6 @@ func newDaemon(t *testing.T) *daemon.Server {
 		Paths:          paths.Paths{App: ".cc-interact-test"},
 		Version:        "v1.0.0",
 		ActiveStatuses: []string{"open"},
-		WindowAlive:    func(int) bool { return false },
 	})
 	if err != nil {
 		t.Fatalf("daemon.New: %v", err)
@@ -29,7 +28,7 @@ func newDaemon(t *testing.T) *daemon.Server {
 
 func seedSubject(t *testing.T, s *daemon.Server, id string) {
 	t.Helper()
-	if _, err := store.NewSubjectStore(s.DB(), []string{"open"}).
+	if _, err := store.NewSubjectStore(s.DB()).
 		Create(context.Background(), id, id+"-slug", id+"-sess", id+"-scope", 0, "open"); err != nil {
 		t.Fatalf("seed subject: %v", err)
 	}

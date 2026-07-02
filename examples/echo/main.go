@@ -121,7 +121,6 @@ func buildServer() (*daemon.Server, error) {
 		Paths:          appPaths(),
 		Version:        appVersion,
 		ActiveStatuses: []string{statusOpen},
-		WindowAlive:    func(int) bool { return true },
 		// c.Type() (not c.EventType) so the SSE plane filters the same presence
 		// type the hooks emit — correct even for the Connectivity zero value.
 		PresenceEventType: c.Type(),

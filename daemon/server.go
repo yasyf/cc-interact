@@ -37,12 +37,6 @@ const defaultEvictTimeout = 5 * time.Second
 // for it to still report as connected in status.
 const attachGrace = 10 * time.Second
 
-// heldGrace is how long after its channel drops a subject stays Held (and so
-// unadoptable). It must outlast a --resume gap — the old window's pid is already
-// dead but its channel only just disconnected — so a concurrent session cannot
-// adopt the review out from under a window that is merely restarting.
-const heldGrace = 45 * time.Second
-
 // Server is the running daemon: the control-plane unix-socket server plus the
 // realtime HTTP/SSE plane it boots. It implements sse.Backend.
 type Server struct {
@@ -55,7 +49,6 @@ type Server struct {
 	subjects subject.Resolver
 	sse      *sse.Server
 
-	windowAlive     func(pid int) bool
 	scopeResolve    func(ctx context.Context, raw string) (string, error)
 	gate            GateFunc
 	gateErrorReason string
@@ -101,7 +94,6 @@ func New(cfg Config) (*Server, error) {
 		db:              st.DB(),
 		bus:             event.NewBus(),
 		activity:        NewActivity(),
-		windowAlive:     cfg.WindowAlive,
 		scopeResolve:    scopeResolve,
 		gate:            cfg.Gate,
 		gateErrorReason: cfg.GateErrorReason,
@@ -116,9 +108,8 @@ func New(cfg Config) (*Server, error) {
 		repoLocks:       make(map[string]*sync.Mutex),
 	}
 	s.subjects = subject.Resolver{
-		Store: store.NewSubjectStore(s.db, cfg.ActiveStatuses),
+		Store: store.NewSubjectStore(s.db),
 		Policy: subject.Policy{
-			Held: s.held,
 			Active: func(sub subject.Subject) bool {
 				for _, st := range cfg.ActiveStatuses {
 					if sub.Status == st {
@@ -142,18 +133,6 @@ func New(cfg Config) (*Server, error) {
 		PresenceDebounce:  cfg.PresenceDebounce,
 	})
 	return s, nil
-}
-
-// held reports whether a live window or a recently-attached channel still holds
-// the subject, vetoing adoption. A live window pid holds it outright; otherwise
-// a channel attached now — or dropped within heldGrace — holds it, which covers
-// the --resume gap where the pid is already dead but the channel just dropped,
-// so a concurrent session cannot steal a merely-restarting window's review.
-func (s *Server) held(_ context.Context, sub subject.Subject) bool {
-	if sub.ClaudePID != 0 && s.windowAlive(sub.ClaudePID) {
-		return true
-	}
-	return s.activity.AttachedWithin(sub.ID, heldGrace)
 }
 
 // Mux exposes the SSE server's mux so the consumer can mount its REST surface

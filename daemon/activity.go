@@ -9,10 +9,10 @@ import (
 // Activity tracks which stream consumers are wired to a subject: live SSE
 // attachments (per subject, keyed by consumer name + window pid) and recent
 // resolve polls (per scope, same key). It is how a domain handler can report a
-// consumer's presence without blocking on one, and how Policy.Held sees a
-// pid-less subject's recent attachment. proven records windows whose model acked
-// a delivered channel tag; proof lasts the daemon's lifetime — pid-recycle
-// inheritance is accepted because active presence also requires a live attachment.
+// consumer's presence without blocking on one (e.g. a status connected readout).
+// proven records windows whose model acked a delivered channel tag; proof lasts
+// the daemon's lifetime — pid-recycle inheritance is accepted because active
+// presence also requires a live attachment.
 type Activity struct {
 	mu       sync.Mutex
 	attached map[string]map[attachKey]int

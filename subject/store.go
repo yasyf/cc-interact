@@ -10,17 +10,10 @@ type Store interface {
 	FindBySessionScope(ctx context.Context, session, scope string) (Subject, bool, error)
 
 	// FindLatestByWindowScope returns the most recent subject owned by a window
-	// (claudePID) in a scope, in ANY status — the caller filters via
-	// Policy.Active. ok is false when none exists; claudePID 0 (detached) never
-	// matches.
+	// (claudePID) in a scope, in ANY status — the resolver filters via
+	// Policy.Active so a rotated session resumes only a live (open) subject.
+	// ok is false when none exists; claudePID 0 (detached) never matches.
 	FindLatestByWindowScope(ctx context.Context, claudePID int, scope string) (Subject, bool, error)
-
-	// FindAdoptableByScope returns the most recent adoptable subject for a scope
-	// regardless of session id — those whose status is in the store's active set
-	// (cc-review: status='open'), most recent first. ok is false when none
-	// exists. The resolver additionally gates the result through Policy.Active
-	// and Policy.Held before adopting.
-	FindAdoptableByScope(ctx context.Context, scope string) (Subject, bool, error)
 
 	// Create inserts a new subject owned by the window and returns it with its
 	// timestamps populated. A blank session is stored as NULL so the unique
