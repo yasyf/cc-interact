@@ -117,10 +117,13 @@ func (rs Resolver) Start(ctx context.Context, w Window, scope, slug string, lc L
 	return rs.create(ctx, w, scope, slug, lc.Initial)
 }
 
-// Rebind follows session rotation at window start: it points the window's
-// active subject at its new session id, or adopts the scope's latest adoptable
-// subject when the window holding it is dead. A subject held by a live foreign
-// window is never stolen; an empty session id is a no-op.
+// Rebind follows session rotation at window start: it points the window's own
+// active subject — found by the rotated session id, else by the window pid — at
+// the new session id. It never adopts a subject owned by another window. Session
+// rotation is not a claim on the scope: a review a different session opened is
+// left untouched, so two windows sharing a scope can never cross-bind here.
+// Adopting a dead window's orphan is the job of an explicit Start alone. An
+// empty session id is a no-op.
 func (rs Resolver) Rebind(ctx context.Context, w Window, scope string) error {
 	if w.Session == "" {
 		return nil
@@ -133,14 +136,6 @@ func (rs Resolver) Rebind(ctx context.Context, w Window, scope string) error {
 	if s, ok, err := rs.Store.FindLatestByWindowScope(ctx, w.ClaudePID, scope); err != nil {
 		return err
 	} else if ok && rs.Policy.Active(s) {
-		_, err := rs.Store.Rebind(ctx, s.ID, s.ClaudePID, w.Session, w.ClaudePID)
-		return err
-	}
-
-	if s, ok, err := rs.Store.FindAdoptableByScope(ctx, scope); err != nil {
-		return err
-	} else if ok && rs.Policy.Active(s) && !rs.Policy.Held(ctx, s) {
-		// A CAS miss means a racing adopter won; this window creates its own on start.
 		_, err := rs.Store.Rebind(ctx, s.ID, s.ClaudePID, w.Session, w.ClaudePID)
 		return err
 	}

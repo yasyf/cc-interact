@@ -480,11 +480,11 @@ func TestRebind(t *testing.T) {
 			wantSess: "sA", wantPID: 100,
 		},
 		{
-			name:     "dead window's active subject adopted",
+			name:     "dead window's active subject is not adopted by rebind",
 			alive:    map[int]bool{100: false},
 			seedSess: "sA", seedPID: 100, seedStatus: "open",
 			w:        Window{Session: "sB", ClaudePID: 200},
-			wantSess: "sB", wantPID: 200,
+			wantSess: "sA", wantPID: 100,
 		},
 		{
 			name:     "live foreign window never stolen",
@@ -549,20 +549,19 @@ func TestAdoptRace(t *testing.T) {
 		}
 	})
 
-	t.Run("rebind loser returns nil and binds nothing", func(t *testing.T) {
+	t.Run("rebind never adopts a foreign orphan", func(t *testing.T) {
 		ctx := context.Background()
-		rs, f := newResolver(nil)
+		rs, f := newResolver(map[int]bool{100: false})
 		orphan := seedSubject(t, ctx, f, "sA", 100, "open")
-		rs.Policy.Held = steal(t, f)
 
-		if err := rs.Rebind(ctx, Window{Session: "loser", ClaudePID: 300}, repo); err != nil {
-			t.Fatalf("rebind after lost race: %v", err)
+		if err := rs.Rebind(ctx, Window{Session: "sB", ClaudePID: 300}, repo); err != nil {
+			t.Fatalf("rebind: %v", err)
 		}
-		if sess, pid := bindingOf(t, ctx, f, orphan.ID); sess != "winner" || pid != 200 {
-			t.Fatalf("orphan binding = %s/%d, want winner/200", sess, pid)
+		if sess, pid := bindingOf(t, ctx, f, orphan.ID); sess != "sA" || pid != 100 {
+			t.Fatalf("orphan binding = %s/%d, want sA/100 (session-record must not adopt)", sess, pid)
 		}
-		if _, ok, _ := f.FindBySessionScope(ctx, "loser", repo); ok {
-			t.Fatal("loser must not hold a binding")
+		if _, ok, _ := f.FindBySessionScope(ctx, "sB", repo); ok {
+			t.Fatal("a rotated/new session must not cross-bind to another window's review")
 		}
 	})
 }
