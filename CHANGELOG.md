@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-01
+
+### Fixed
+- `subject`: `Resolver.Rebind` (run on every session start) no longer adopts a
+  subject owned by another window. It fell through to `FindAdoptableByScope` and
+  could rebind a second live window's open review onto the rotating session when
+  the owner was momentarily unheld — e.g. mid `--resume`, its pid already dead but
+  its channel only just dropped — so two windows sharing a scope resolved the same
+  subject and the human's review input routed to the wrong session. Rebind now only
+  rebinds the window's own subject (rotated session id, else pid); adopting a dead
+  window's orphan stays the job of an explicit `Start`.
+- `daemon`: `Policy.Held` now treats a subject whose channel dropped within a new
+  `heldGrace` (45s) as still held, closing the `--resume` gap where an explicit
+  `Start` could otherwise steal a merely-restarting window's review. `attachGrace`
+  (10s) is retained for status/`ConsumerConnected` reporting.
+
 ## [0.1.5] - 2026-07-01
 
 ### Removed
@@ -39,7 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/yasyf/cc-interact/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/yasyf/cc-interact/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/yasyf/cc-interact/compare/v0.1.3...v0.1.4
 [0.1.0]: https://github.com/yasyf/cc-interact/releases/tag/v0.1.0
