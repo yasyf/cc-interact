@@ -18,8 +18,11 @@ const ProtocolVersion = 1
 // Op is a control-plane request operation.
 type Op string
 
-// Core ops answered by the daemon itself. Domain ops are defined by the consumer
-// and attached with Register; these names are reserved and Register panics on them.
+// Core ops the daemon wires itself. health and shutdown are reserved (answered
+// before the registry, across protocol versions); the rest are ordinary
+// registrations made in New, so a consumer re-registering one panics as a
+// duplicate. Domain ops are defined by the consumer and attached with Register
+// (scope-required) or RegisterScopeOptional (also serves outside any scope).
 const (
 	OpHealth        Op = "health"         // liveness + version probe
 	OpShutdown      Op = "shutdown"       // step down and release the socket

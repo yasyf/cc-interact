@@ -82,6 +82,49 @@ func TestRegisterPanicsOnDuplicate(t *testing.T) {
 	s.Register("custom", func(HandlerCtx) Reply { return Reply{} })
 }
 
+func TestRegisterPanicsOnCoreOp(t *testing.T) {
+	s := newTestServer(t, Config{})
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Register of a core op wired in New must panic as a duplicate")
+		}
+	}()
+	s.Register(OpStatus, func(HandlerCtx) Reply { return Reply{} })
+}
+
+func TestDispatchScopeOptionalOp(t *testing.T) {
+	s := newTestServer(t, Config{
+		ScopeResolve: func(_ context.Context, raw string) (string, error) {
+			if raw == "bad" {
+				return "", errors.New("not a scope")
+			}
+			return raw + "!", nil
+		},
+	})
+	var gotScope string
+	s.RegisterScopeOptional("global", func(hc HandlerCtx) Reply {
+		gotScope = hc.Scope
+		return Reply{OK: true}
+	})
+	ctx := context.Background()
+
+	// Outside any resolvable scope the handler still runs, with an empty scope.
+	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: "global", Scope: "bad"}); !r.OK {
+		t.Fatalf("scope-optional op on scope error = %+v, want ok", r)
+	}
+	if gotScope != "" {
+		t.Fatalf("handler saw scope %q, want empty", gotScope)
+	}
+
+	// Inside one it gets the resolved scope like any other op.
+	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: "global", Scope: "x"}); !r.OK {
+		t.Fatalf("scope-optional op on good scope = %+v, want ok", r)
+	}
+	if gotScope != "x!" {
+		t.Fatalf("handler saw scope %q, want resolved x!", gotScope)
+	}
+}
+
 func TestDispatchRoutesRegisteredOp(t *testing.T) {
 	s := newTestServer(t, Config{
 		ScopeResolve: func(_ context.Context, raw string) (string, error) { return raw + "!", nil },

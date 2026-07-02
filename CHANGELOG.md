@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-07-02
+
+### Added
+- `daemon.Server.RegisterScopeOptional`: register a domain op that also serves
+  requests from outside any resolvable scope — the handler sees `Scope == ""`.
+  For ops that span scopes (listings, cross-scope repair), which previously had
+  no way to run outside a repo: dispatch hard-errored on the failed
+  `ScopeResolve` with no consumer hook.
+
+### Changed
+- `daemon`: scope policy is a per-op registration property, not dispatch
+  hardcoding. The core subject ops are ordinary registrations made in `New` —
+  `session-record`, `guard-edit`, `status`, and `channel-ack` scope-optional,
+  `resolve` scope-required — and their unresolvable-scope degradation (guard-edit
+  allows, session-record no-ops, status reports bare liveness) now falls out of
+  each handler resolving no subject for an empty scope, replacing dispatch's
+  hardcoded per-op switch. Behavior is unchanged; `reserved` shrinks to
+  `health`/`shutdown` (the pre-protocol ops), and re-registering a core op
+  panics as a duplicate.
+
 ## [0.1.7] - 2026-07-02
 
 ### Removed
@@ -75,7 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/yasyf/cc-interact/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/yasyf/cc-interact/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/yasyf/cc-interact/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/yasyf/cc-interact/compare/v0.1.4...v0.1.5

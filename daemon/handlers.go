@@ -10,11 +10,11 @@ import (
 	"github.com/yasyf/cc-interact/subject"
 )
 
-// reserved is the set of core ops the daemon answers itself; Register refuses them.
-var reserved = map[Op]struct{}{
-	OpHealth: {}, OpShutdown: {}, OpResolve: {}, OpSessionRecord: {},
-	OpGuardEdit: {}, OpChannelAck: {}, OpStatus: {},
-}
+// reserved is the set of protocol ops dispatch answers before the registry —
+// health and shutdown must work across protocol versions, so they can never be
+// registrations. The other core ops are ordinary registrations made in New;
+// re-registering one panics as a duplicate.
+var reserved = map[Op]struct{}{OpHealth: {}, OpShutdown: {}}
 
 // HandlerCtx is everything a domain handler needs: the request, the window and
 // resolved scope, the subject resolver, the database for the consumer's own
@@ -36,16 +36,35 @@ type HandlerCtx struct {
 // HandlerFunc handles one domain op and returns its reply.
 type HandlerFunc func(HandlerCtx) Reply
 
-// Register attaches a domain handler for op. It panics on a reserved core op or
-// a duplicate registration — both are programmer errors caught at wiring time.
+// registration is one op's handler plus its scope policy.
+type registration struct {
+	handle        HandlerFunc
+	scopeOptional bool
+}
+
+// Register attaches a domain handler for op; the op requires a resolvable
+// scope and errors outside one. It panics on a reserved op or a duplicate
+// registration — both are programmer errors caught at wiring time.
 func (s *Server) Register(op Op, h HandlerFunc) {
+	s.register(op, h, false)
+}
+
+// RegisterScopeOptional attaches a domain handler that also serves requests
+// from outside any resolvable scope: the handler sees Scope == "" there and
+// must not assume a scope-bound window. Ops that span scopes — listings,
+// cross-scope repair — register here.
+func (s *Server) RegisterScopeOptional(op Op, h HandlerFunc) {
+	s.register(op, h, true)
+}
+
+func (s *Server) register(op Op, h HandlerFunc, scopeOptional bool) {
 	if _, ok := reserved[op]; ok {
 		panic(fmt.Sprintf("daemon: cannot register reserved core op %q", op))
 	}
 	if _, ok := s.handlers[op]; ok {
 		panic(fmt.Sprintf("daemon: op %q already registered", op))
 	}
-	s.handlers[op] = h
+	s.handlers[op] = registration{handle: h, scopeOptional: scopeOptional}
 }
 
 func (s *Server) handleResolve(hc HandlerCtx) Reply {
@@ -77,11 +96,11 @@ func (s *Server) handleSessionRecord(hc HandlerCtx) Reply {
 	return Reply{OK: true}
 }
 
-func (s *Server) handleChannelAck(env Envelope) Reply {
-	if env.ClaudePID == 0 {
+func (s *Server) handleChannelAck(hc HandlerCtx) Reply {
+	if hc.Env.ClaudePID == 0 {
 		return errReply("channel-ack requires a window (no claude pid)")
 	}
-	s.activity.MarkProven(env.ClaudePID)
+	s.activity.MarkProven(hc.Env.ClaudePID)
 	return Reply{OK: true}
 }
 

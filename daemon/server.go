@@ -59,7 +59,7 @@ type Server struct {
 	socket string
 	log    *log.Logger
 
-	handlers map[Op]HandlerFunc
+	handlers map[Op]registration
 
 	fixedPort    int
 	httpPort     int
@@ -102,7 +102,7 @@ func New(cfg Config) (*Server, error) {
 		paths:           cfg.Paths,
 		socket:          cfg.Paths.SocketPath(),
 		log:             log.New(os.Stderr, "["+cfg.AppName+"] ", log.LstdFlags),
-		handlers:        make(map[Op]HandlerFunc),
+		handlers:        make(map[Op]registration),
 		fixedPort:       cfg.FixedPort,
 		evictTimeout:    defaultEvictTimeout,
 		repoLocks:       make(map[string]*sync.Mutex),
@@ -132,6 +132,16 @@ func New(cfg Config) (*Server, error) {
 		PresenceEventType: cfg.PresenceEventType,
 		PresenceDebounce:  cfg.PresenceDebounce,
 	})
+	// Core ops ride the same registry as domain ops. The subject-resolution ops
+	// are scope-optional so a request from outside any scope degrades — an empty
+	// scope resolves no subject, so guard-edit allows, session-record no-ops, and
+	// status reports bare daemon liveness — instead of erroring; resolve stays
+	// scope-required because a stream consumer outside a scope is a real mistake.
+	s.register(OpResolve, s.handleResolve, false)
+	s.register(OpSessionRecord, s.handleSessionRecord, true)
+	s.register(OpGuardEdit, s.handleGuardEdit, true)
+	s.register(OpStatus, s.handleStatus, true)
+	s.register(OpChannelAck, s.handleChannelAck, true)
 	return s, nil
 }
 
@@ -341,11 +351,11 @@ func (s *Server) repoLock(scope string) *sync.Mutex {
 	return mu
 }
 
-// dispatch answers the core ops internally and routes everything else to the
-// registered handlers. health and shutdown answer regardless of protocol version
-// (cross-version eviction depends on both); channel-ack needs no scope; every
-// other op runs Config.ScopeResolve once and reaches its handler through a
-// HandlerCtx with the resolved scope.
+// dispatch answers health and shutdown before anything else (cross-version
+// eviction depends on both working regardless of protocol version), then routes
+// every other op through the registry: Config.ScopeResolve runs once, and an
+// unresolvable scope reaches a scope-optional op's handler as Scope == "" while
+// a scope-required op errors.
 func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 	switch env.Op {
 	case OpHealth:
@@ -359,26 +369,18 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 			"%s protocol skew: daemon speaks v%d, request is v%d — this session is pinned to an older plugin version; restart the session to pick up the current one",
 			s.appName, ProtocolVersion, env.Proto))
 	}
-	if env.Op == OpChannelAck {
-		return s.handleChannelAck(env)
+	reg, ok := s.handlers[env.Op]
+	if !ok {
+		return errReply("unknown op: " + string(env.Op))
 	}
 	scope, err := s.scopeResolve(ctx, env.Scope)
 	if err != nil {
-		// An unresolvable scope is "not in a guarded domain": guard-edit allows,
-		// session-record is a no-op, status still reports daemon liveness; every
-		// other op is a real error.
-		switch env.Op {
-		case OpGuardEdit:
-			return Reply{OK: true, Allow: true}
-		case OpSessionRecord:
-			return Reply{OK: true}
-		case OpStatus:
-			return Reply{OK: true, DaemonVersion: s.version, HTTPPort: s.httpPort}
-		default:
+		if !reg.scopeOptional {
 			return errReply(err.Error())
 		}
+		scope = ""
 	}
-	hc := HandlerCtx{
+	return reg.handle(HandlerCtx{
 		Ctx:      ctx,
 		Env:      env,
 		Window:   subject.Window{Session: env.Session, ClaudePID: env.ClaudePID},
@@ -389,22 +391,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 		HTTPPort: s.httpPort,
 		Activity: s.activity,
 		RepoLock: s.repoLock(scope),
-	}
-	switch env.Op {
-	case OpResolve:
-		return s.handleResolve(hc)
-	case OpSessionRecord:
-		return s.handleSessionRecord(hc)
-	case OpGuardEdit:
-		return s.handleGuardEdit(hc)
-	case OpStatus:
-		return s.handleStatus(hc)
-	default:
-		if h, ok := s.handlers[env.Op]; ok {
-			return h(hc)
-		}
-		return errReply("unknown op: " + string(env.Op))
-	}
+	})
 }
 
 func (s *Server) writeReply(conn net.Conn, r Reply) {
