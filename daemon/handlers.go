@@ -36,35 +36,16 @@ type HandlerCtx struct {
 // HandlerFunc handles one domain op and returns its reply.
 type HandlerFunc func(HandlerCtx) Reply
 
-// registration is one op's handler plus its scope policy.
-type registration struct {
-	handle        HandlerFunc
-	scopeOptional bool
-}
-
-// Register attaches a domain handler for op; the op requires a resolvable
-// scope and errors outside one. It panics on a reserved op or a duplicate
-// registration — both are programmer errors caught at wiring time.
+// Register attaches a domain handler for op. It panics on a reserved op or a
+// duplicate registration — both are programmer errors caught at wiring time.
 func (s *Server) Register(op Op, h HandlerFunc) {
-	s.register(op, h, false)
-}
-
-// RegisterScopeOptional attaches a domain handler that also serves requests
-// from outside any resolvable scope: the handler sees Scope == "" there and
-// must not assume a scope-bound window. Ops that span scopes — listings,
-// cross-scope repair — register here.
-func (s *Server) RegisterScopeOptional(op Op, h HandlerFunc) {
-	s.register(op, h, true)
-}
-
-func (s *Server) register(op Op, h HandlerFunc, scopeOptional bool) {
 	if _, ok := reserved[op]; ok {
 		panic(fmt.Sprintf("daemon: cannot register reserved core op %q", op))
 	}
 	if _, ok := s.handlers[op]; ok {
 		panic(fmt.Sprintf("daemon: op %q already registered", op))
 	}
-	s.handlers[op] = registration{handle: h, scopeOptional: scopeOptional}
+	s.handlers[op] = h
 }
 
 func (s *Server) handleResolve(hc HandlerCtx) Reply {

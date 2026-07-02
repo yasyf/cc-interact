@@ -49,7 +49,7 @@ type Server struct {
 	subjects subject.Resolver
 	sse      *sse.Server
 
-	scopeResolve    func(ctx context.Context, raw string) (string, error)
+	scopeResolve    func(ctx context.Context, raw string) string
 	gate            GateFunc
 	gateErrorReason string
 	gateObserve     func(ctx context.Context, s subject.Subject, tool ToolCall, allow bool, reason string)
@@ -59,7 +59,7 @@ type Server struct {
 	socket string
 	log    *log.Logger
 
-	handlers map[Op]registration
+	handlers map[Op]HandlerFunc
 
 	fixedPort    int
 	httpPort     int
@@ -85,7 +85,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	scopeResolve := cfg.ScopeResolve
 	if scopeResolve == nil {
-		scopeResolve = func(_ context.Context, raw string) (string, error) { return raw, nil }
+		scopeResolve = func(_ context.Context, raw string) string { return raw }
 	}
 	s := &Server{
 		appName:         cfg.AppName,
@@ -102,7 +102,7 @@ func New(cfg Config) (*Server, error) {
 		paths:           cfg.Paths,
 		socket:          cfg.Paths.SocketPath(),
 		log:             log.New(os.Stderr, "["+cfg.AppName+"] ", log.LstdFlags),
-		handlers:        make(map[Op]registration),
+		handlers:        make(map[Op]HandlerFunc),
 		fixedPort:       cfg.FixedPort,
 		evictTimeout:    defaultEvictTimeout,
 		repoLocks:       make(map[string]*sync.Mutex),
@@ -132,16 +132,16 @@ func New(cfg Config) (*Server, error) {
 		PresenceEventType: cfg.PresenceEventType,
 		PresenceDebounce:  cfg.PresenceDebounce,
 	})
-	// Core ops ride the same registry as domain ops. The subject-resolution ops
-	// are scope-optional so a request from outside any scope degrades — an empty
-	// scope resolves no subject, so guard-edit allows, session-record no-ops, and
-	// status reports bare daemon liveness — instead of erroring; resolve stays
-	// scope-required because a stream consumer outside a scope is a real mistake.
-	s.register(OpResolve, s.handleResolve, false)
-	s.register(OpSessionRecord, s.handleSessionRecord, true)
-	s.register(OpGuardEdit, s.handleGuardEdit, true)
-	s.register(OpStatus, s.handleStatus, true)
-	s.register(OpChannelAck, s.handleChannelAck, true)
+	// Core ops ride the same registry as domain ops. A scope with no canonical
+	// form reaches them as the resolver's fallback value, which matches no
+	// subject — so guard-edit allows, session-record no-ops, status reports bare
+	// daemon liveness, and resolve returns no subject. Degradation falls out of
+	// resolution, not per-op policy.
+	s.Register(OpResolve, s.handleResolve)
+	s.Register(OpSessionRecord, s.handleSessionRecord)
+	s.Register(OpGuardEdit, s.handleGuardEdit)
+	s.Register(OpStatus, s.handleStatus)
+	s.Register(OpChannelAck, s.handleChannelAck)
 	return s, nil
 }
 
@@ -353,9 +353,8 @@ func (s *Server) repoLock(scope string) *sync.Mutex {
 
 // dispatch answers health and shutdown before anything else (cross-version
 // eviction depends on both working regardless of protocol version), then routes
-// every other op through the registry: Config.ScopeResolve runs once, and an
-// unresolvable scope reaches a scope-optional op's handler as Scope == "" while
-// a scope-required op errors.
+// every other op through the registry: Config.ScopeResolve canonicalizes the
+// scope once and the handler runs with the result.
 func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 	switch env.Op {
 	case OpHealth:
@@ -369,18 +368,12 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 			"%s protocol skew: daemon speaks v%d, request is v%d — this session is pinned to an older plugin version; restart the session to pick up the current one",
 			s.appName, ProtocolVersion, env.Proto))
 	}
-	reg, ok := s.handlers[env.Op]
+	handler, ok := s.handlers[env.Op]
 	if !ok {
 		return errReply("unknown op: " + string(env.Op))
 	}
-	scope, err := s.scopeResolve(ctx, env.Scope)
-	if err != nil {
-		if !reg.scopeOptional {
-			return errReply(err.Error())
-		}
-		scope = ""
-	}
-	return reg.handle(HandlerCtx{
+	scope := s.scopeResolve(ctx, env.Scope)
+	return handler(HandlerCtx{
 		Ctx:      ctx,
 		Env:      env,
 		Window:   subject.Window{Session: env.Session, ClaudePID: env.ClaudePID},

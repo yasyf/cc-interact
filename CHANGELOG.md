@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-07-02
+
+### Changed
+- **Breaking:** `daemon.Config.ScopeResolve` is now
+  `func(ctx context.Context, raw string) string` — no error. Scope resolution
+  is canonicalization, not authorization: the resolver returns the raw value
+  when there is no canonical form (cc-review: `vcs.Root`, falling back to the
+  cwd as given outside a repo). A fallback scope matches no subject, so every
+  core degradation falls out of resolution itself — guard-edit allows,
+  session-record no-ops, status reports bare liveness. One behavior change:
+  `resolve` outside any canonical scope now returns OK with no subject instead
+  of erroring, so a stream consumer there waits rather than failing loudly.
+
+### Removed
+- `daemon.Server.RegisterScopeOptional` and per-op scope policy — introduced in
+  0.1.8, superseded before any consumer shipped on it. With a resolver that
+  cannot fail there is no policy dimension left; every op registers via
+  `Register`. The 0.1.8 registry unification (core ops as ordinary
+  registrations, `reserved` = health/shutdown) stays.
+
 ## [0.1.8] - 2026-07-02
 
 ### Added
@@ -95,7 +115,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/yasyf/cc-interact/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/yasyf/cc-interact/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/yasyf/cc-interact/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/yasyf/cc-interact/compare/v0.1.5...v0.1.6

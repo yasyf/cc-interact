@@ -42,10 +42,12 @@ type Config struct {
 	// resumable across session rotation (cc-review: {"open"}).
 	ActiveStatuses []string
 
-	// ScopeResolve maps the envelope's raw Scope to the canonical ownership scope
-	// once per RPC, so handlers see a resolved Scope (cc-review: vcs.Root). nil is
-	// the identity.
-	ScopeResolve func(ctx context.Context, raw string) (string, error)
+	// ScopeResolve canonicalizes the envelope's raw Scope once per RPC, so
+	// handlers see a resolved Scope. It is canonicalization, not authorization:
+	// return the raw value when there is no canonical form (cc-review: vcs.Root,
+	// else the cwd as given) — resolution never rejects a request, and handlers
+	// own their own scope preconditions. nil is the identity.
+	ScopeResolve func(ctx context.Context, raw string) string
 
 	// Gate is the edit-guard verdict (cc-review: block while a review is open).
 	// nil allows every edit for a resolved subject.

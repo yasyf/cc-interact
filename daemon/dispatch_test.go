@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -92,42 +91,9 @@ func TestRegisterPanicsOnCoreOp(t *testing.T) {
 	s.Register(OpStatus, func(HandlerCtx) Reply { return Reply{} })
 }
 
-func TestDispatchScopeOptionalOp(t *testing.T) {
-	s := newTestServer(t, Config{
-		ScopeResolve: func(_ context.Context, raw string) (string, error) {
-			if raw == "bad" {
-				return "", errors.New("not a scope")
-			}
-			return raw + "!", nil
-		},
-	})
-	var gotScope string
-	s.RegisterScopeOptional("global", func(hc HandlerCtx) Reply {
-		gotScope = hc.Scope
-		return Reply{OK: true}
-	})
-	ctx := context.Background()
-
-	// Outside any resolvable scope the handler still runs, with an empty scope.
-	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: "global", Scope: "bad"}); !r.OK {
-		t.Fatalf("scope-optional op on scope error = %+v, want ok", r)
-	}
-	if gotScope != "" {
-		t.Fatalf("handler saw scope %q, want empty", gotScope)
-	}
-
-	// Inside one it gets the resolved scope like any other op.
-	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: "global", Scope: "x"}); !r.OK {
-		t.Fatalf("scope-optional op on good scope = %+v, want ok", r)
-	}
-	if gotScope != "x!" {
-		t.Fatalf("handler saw scope %q, want resolved x!", gotScope)
-	}
-}
-
 func TestDispatchRoutesRegisteredOp(t *testing.T) {
 	s := newTestServer(t, Config{
-		ScopeResolve: func(_ context.Context, raw string) (string, error) { return raw + "!", nil },
+		ScopeResolve: func(_ context.Context, raw string) string { return raw + "!" },
 	})
 	var gotScope string
 	s.Register("custom", func(hc HandlerCtx) Reply {
@@ -151,23 +117,24 @@ func TestDispatchUnknownOp(t *testing.T) {
 	}
 }
 
-func TestDispatchScopeResolveErrorPerOp(t *testing.T) {
+func TestDispatchFallbackScopeDegradesCoreOps(t *testing.T) {
 	s := newTestServer(t, Config{
-		ScopeResolve: func(context.Context, string) (string, error) { return "", errors.New("not a scope") },
+		ScopeResolve: func(_ context.Context, raw string) string { return raw },
 	})
 	ctx := context.Background()
 
-	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: OpGuardEdit, Scope: "x"}); !r.OK || !r.Allow {
-		t.Fatalf("guard-edit on scope error = %+v, want allow (nothing to guard)", r)
+	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: OpGuardEdit, Scope: "/not/a/repo"}); !r.OK || !r.Allow {
+		t.Fatalf("guard-edit on fallback scope = %+v, want allow (nothing to guard)", r)
 	}
-	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: OpSessionRecord, Scope: "x", Session: "s"}); !r.OK {
-		t.Fatalf("session-record on scope error = %+v, want ok no-op", r)
+	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: OpSessionRecord, Scope: "/not/a/repo", Session: "s"}); !r.OK {
+		t.Fatalf("session-record on fallback scope = %+v, want ok no-op", r)
 	}
-	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: OpStatus, Scope: "x"}); !r.OK || r.DaemonVersion == "" {
-		t.Fatalf("status on scope error = %+v, want ok with daemon version", r)
+	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: OpStatus, Scope: "/not/a/repo"}); !r.OK || r.DaemonVersion == "" || r.SubjectID != "" {
+		t.Fatalf("status on fallback scope = %+v, want liveness only", r)
 	}
-	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: OpResolve, Scope: "x"}); r.OK || !contains(r.Error, "not a scope") {
-		t.Fatalf("resolve on scope error = %+v, want error", r)
+	// Pre-0.1.9 resolve errored here; a fallback scope now matches no subject.
+	if r := s.dispatch(ctx, Envelope{Proto: ProtocolVersion, Op: OpResolve, Scope: "/not/a/repo"}); !r.OK || r.SubjectID != "" {
+		t.Fatalf("resolve on fallback scope = %+v, want ok with no subject", r)
 	}
 }
 
