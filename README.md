@@ -1,52 +1,102 @@
-# cc-interact
+# ![cc-interact](docs/assets/readme-banner.webp)
 
-![cc-interact banner](docs/assets/readme-banner.webp)
+**Never write a daemon for a Claude Code tool again.** cc-interact extracts cc-review's daemon, event log, SSE, edit-gate, and MCP plumbing into a reusable Go framework; the echo example is 381 lines.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasyf/cc-interact/ci.yml?branch=main&label=CI)](https://github.com/yasyf/cc-interact/actions/workflows/ci.yml)
-[![License: PolyForm-Noncommercial-1.0.0](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](https://github.com/yasyf/cc-interact/blob/main/LICENSE)
+[![Version](https://img.shields.io/github/v/tag/yasyf/cc-interact?label=version)](https://github.com/yasyf/cc-interact/tags)
+[![License: PolyForm-Noncommercial-1.0.0](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](LICENSE)
 
-A domain-agnostic framework for human-in-the-loop Claude agents — daemon, event stream, MCP channel, and optional web UI.
-
-cc-interact is the substrate under [cc-review](https://github.com/yasyf/cc-review), lifted out: a long-living
-Claude session and a human exchange messages over an MCP channel (or a `watch` stream), brokered by a daemon
-that serves an HTTP API and a server-sent event plane, with state in SQLite. You bring a reducer and a handful
-of handlers; it brings the daemon lifecycle, the append-only event log, the SSE plane, the edit gate, and an
-optional React UI — so standing up a new human-in-the-loop agent surface is "register a few handlers," not
-"rebuild the plumbing."
-
-## Install
-
-The core is a Go module:
+## Get started
 
 ```bash
 go get github.com/yasyf/cc-interact
 ```
 
-The browser UI is an opt-in npm package — pull it in only if you want one:
+<img src="docs/assets/demo.png" alt="Terminal running the examples/echo round trip — a curl POST appends echo.item and the agent's MCP reply streams back as echo.reply on /events" width="700">
+
+That run is [`examples/echo`](examples/echo), the whole framework exercised in 381 lines: two domain handlers, one REST mount, one MCP tool. A human POSTs an item, the agent replies through its channel, and both events come back off the same `/events` plane a browser would read. Regenerate the capture with [`docs/scripts/demo.sh`](docs/scripts/demo.sh).
+
+Driving with an agent? Paste this:
+
+```text
+Run `go get github.com/yasyf/cc-interact` in my Go project.
+Study https://github.com/yasyf/cc-interact/tree/main/examples/echo — a complete headless consumer in 381 lines — then stand up a human-in-the-loop surface for my domain: one reducer, start/reply handlers, and one MCP channel tool.
+Verify the round trip: POST an item to the daemon's REST plane and confirm the agent's reply streams back over /events.
+```
+
+---
+
+## Use cases
+
+### Block agent edits until a human signs off
+
+A review tool that can't stop the agent from editing mid-review is a suggestion box. Inject the verdict as one function:
+
+```go
+daemon.Config{
+	// cc-review: block while a review is open.
+	Gate: func(ctx context.Context, s subject.Subject, tool daemon.ToolCall) (bool, string) {
+		return s.Status != "open", "a human is still reviewing — reply to their comments first"
+	},
+	GateErrorReason: "review state unreadable; blocking edits",
+}
+```
+
+The `guard-edit` hook routes every edit the Claude session attempts through this verdict: while the subject is open, Claude sees your reason instead of a completed write. Errors reading the subject fail closed (`GateErrorReason`), and a missing daemon fails open — a crashed daemon never bricks the session.
+
+### Feed one gap-free event log to the browser and the agent alike
+
+Two realtime paths — a socket for the UI, polling for the agent — drift, drop events, and disagree after a reconnect. Here both roles read one log:
+
+```bash
+go run ./examples/echo watch
+```
+
+`watch` streams the same append-only log as the browser's `/events`, one JSON event per line, with `exclude_origin=agent` so the agent never reacts to its own echo. Delivery is at-least-once with a persisted per-consumer cursor, so a dropped connection resumes where it left off, and the consumer survives a daemon swap.
+
+### Ship your agent surface as a Claude Code plugin
+
+The binary is half the ship surface; the plugin payload — MCP server wiring, binary installer, session hooks, a start skill — is its own pile of boilerplate. Render it instead:
+
+```bash
+./plugin-template/render.sh out/ PLUGIN_NAME=mytool DISPLAY_NAME=MyTool \
+  BINARY_NAME=mytool RELEASE_REPO=you/mytool MCP_SUBCOMMAND=channel \
+  SKILL_NAME=mytool:start
+```
+
+You get cc-review's plugin payload with the review strings swapped for yours: the channel MCP server wiring, a release-binary installer, `session-record` and `guard-edit` hooks, and a start skill. [`plugin-template/`](plugin-template) documents every variable.
+
+## What the framework owns
+
+One process model, shipped: a lazily spawned daemon owns a single-writer SQLite (WAL) holding an append-only per-subject event log; every consumer — browser, `watch`, MCP channel — reads the same SSE plane; newest-wins eviction upgrades the daemon in place when a newer binary lands. You register domain ops against a generic control envelope and the framework routes the rest.
+
+| Package | Owns |
+|---|---|
+| `daemon` | lazy spawn, newest-wins eviction, peer-credential identity, the op registry, the edit gate |
+| `store` | pure-Go SQLite: subjects plus the event log; your tables via a migrate hook |
+| `event` | the log-entry type and the per-subject pub/sub wakeup |
+| `sse` | the HTTP `/events` plane: at-least-once SSE with `Last-Event-ID` resume |
+| `consume` | the agent-side SSE client with a persisted resume cursor |
+| `channel` | the stdio MCP server: tools in, notifications out |
+| `cmd` | ready-made cobra constructors: `daemon`, `watch`, `status`, `stop`, plus the hidden hook and channel entry points |
+| `subject` | ownership: one subject per window and scope, stable across `/clear` and compaction |
+| `paths` | the `~/.<app>` state layout: socket, DB, HTTP handshake, locks |
+| `vcs` | optional: git/jj working-copy snapshots and the per-prompt turn ledger |
+
+## The browser UI is opt-in
+
+A headless consumer never imports it. When you want a diff-style web client:
 
 ```bash
 npm install @cc-interact/react
 ```
 
-## Quickstart
+Mount `sse.StaticHandler` on the daemon and the React package's stream and query primitives read the same `/events` plane as everything else.
 
-`examples/echo` is the shortest complete consumer: a reducer, a couple of handlers, and one channel tool —
-no browser, no SPA. It proves the core carries zero domain concepts and needs no frontend.
+## State
 
-```bash
-go run ./examples/echo
-```
+Everything lives under `~/.<app>/` — `state.db`, `daemon.sock`, `http.json`, `daemon.log`. The core schema is versioned by your migrate hook; the echo example carries none, so its reset is `rm -rf ~/.cc-echo`.
 
-It starts the daemon, opens an MCP channel, and echoes each item posted to its REST API back over the event
-stream — the same `/events` plane a browser would read.
+---
 
-## What problems does this solve?
-
-- **Daemon plumbing you'd otherwise hand-roll.** Lazy spawn, newest-wins eviction, peer-credential identity, a single-writer SQLite with WAL, and a long-poll that frees parked goroutines on cancel — all shipped. You register handlers against a generic control envelope.
-- **Realtime that's correct, not just live.** An append-only, gap-free event log and an SSE plane with at-least-once delivery and reconnect cursors, consumed identically by the browser and by the agent's own channel.
-- **Human-in-the-loop gating.** An edit gate that blocks the agent's writes until the human responds — fail-closed, with the verdict and wording supplied by your domain, not the framework.
-- **The web UI is optional.** A headless consumer talks to the same daemon over REST and an MCP channel; mount `@cc-interact/react` and the static handler only when you want a diff-style browser client.
-
-## License
-
-PolyForm-Noncommercial-1.0.0. See [LICENSE](https://github.com/yasyf/cc-interact/blob/main/LICENSE).
+Status: pre-1.0 — the API moves with [cc-review](https://github.com/yasyf/cc-review), and every break lands in the [changelog](CHANGELOG.md). Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).
