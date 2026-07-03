@@ -209,6 +209,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer != "")
 	io.WriteString(w, ": connected\n\n") // prove liveness + flush proxies
+	// Replay done (from-zero load or Last-Event-ID resume): mark the live-tail
+	// boundary once. seq is the high-water flushed, or the resume cursor when nothing
+	// replayed. A named event routes to a caught-up listener, not onmessage.
+	fmt.Fprintf(w, "event: caught-up\ndata: {\"seq\":%d}\n\n", cursor)
 	flusher.Flush()
 
 	ka := time.NewTicker(keepaliveInterval)

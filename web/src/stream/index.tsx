@@ -57,10 +57,15 @@ export interface EventStreamConfig<
   // Whether a frame applies to the cache on screen (e.g. a version filter).
   // Defaults to always-true.
   appliesTo?: (ev: Ev, cache: Cache) => boolean;
-  // The replay gate: a frame whose lastEventId is at or below this is a
-  // historical replay and patches state without toasting. Omit to toast every
-  // frame.
+  // The replay-gate fallback for servers that predate the caught-up marker: a
+  // frame whose lastEventId is at or below this is a historical replay and patches
+  // state without toasting. The caught-up marker, when present, supersedes it.
+  // Omit both to toast every frame.
   highWaterSeq?: (cache: Cache) => number;
+  // Fires once per connection when the server's caught-up marker arrives, carrying
+  // the high-water seq of the replay just completed; frames after it are the live
+  // tail. Servers that predate the marker never call it.
+  onCaughtUp?: (seq: number) => void;
   // Presence projection for a frame: true/false to set the peer dot, null when
   // the frame is not a presence event.
   peerPresence?: (ev: Ev) => boolean | null;
@@ -112,6 +117,9 @@ export function createEventStream<
     const [connected, setConnected] = useState(false);
     const [peerPresent, setPeerPresent] = useState<boolean | null>(null);
     const [notifications, setNotifications] = useState<StreamNotification[]>([]);
+    // The high-water seq of the last replay, set by the caught-up marker; null
+    // until the marker arrives (or on a server that predates it).
+    const caughtUpSeq = useRef<number | null>(null);
 
     useEffect(() => {
       // An absent scope is the Scope=void / default case; the consumer's
@@ -121,9 +129,18 @@ export function createEventStream<
         ? config.url(subject, resolvedScope)
         : defaultUrl(subject);
       const source = new EventSource(url);
+      caughtUpSeq.current = null;
 
       source.onopen = () => setConnected(true);
       source.onerror = () => setConnected(false);
+
+      // A named SSE event never reaches onmessage; it records the replay/live
+      // boundary the live gate below reads, and notifies the consumer.
+      source.addEventListener('caught-up', (raw: MessageEvent<string>) => {
+        const { seq } = JSON.parse(raw.data) as { seq: number };
+        caughtUpSeq.current = seq;
+        config.onCaughtUp?.(seq);
+      });
 
       // The Go plane emits no `event:` field, so every frame lands on onmessage
       // and the discriminant lives inside the JSON payload.
@@ -143,13 +160,15 @@ export function createEventStream<
 
         config.onEvent?.(ev, { queryClient, cache: current, subject, scope: resolvedScope });
 
-        // The stream replays the whole log from cursor 0 on every load; replayed
-        // frames (lastEventId at or below the snapshot's high-water seq) patch
-        // state above but never toast.
+        // Replayed frames patch state above but never toast. The caught-up marker
+        // gives the exact replay/live boundary; without it (older servers) fall
+        // back to the highWaterSeq snapshot heuristic, or toast everything.
         const live =
-          config.highWaterSeq === undefined
-            ? true
-            : current !== undefined && Number(raw.lastEventId) > config.highWaterSeq(current);
+          caughtUpSeq.current !== null
+            ? Number(raw.lastEventId) > caughtUpSeq.current
+            : config.highWaterSeq === undefined
+              ? true
+              : current !== undefined && Number(raw.lastEventId) > config.highWaterSeq(current);
         const toast = live && config.toast ? config.toast(ev) : null;
         if (toast) {
           const entry: StreamNotification = { ...toast, id: `n${++notificationSeq}`, at: Date.now() };

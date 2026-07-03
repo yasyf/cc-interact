@@ -174,13 +174,16 @@ func readStream(ctx context.Context, base string, cursor int64, cursorPath strin
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	var data string
+	var data, eventName string
 	id := cursor
 	for sc.Scan() {
 		line := sc.Text()
 		switch {
 		case line == "":
-			if data == "" {
+			// A named event (event: caught-up) is a stream-control marker, not a log
+			// row: deliver only default-type frames, never on empty data.
+			if data == "" || (eventName != "" && eventName != "message") {
+				data, eventName = "", ""
 				continue
 			}
 			s, herr := handle(id, data)
@@ -197,13 +200,15 @@ func readStream(ctx context.Context, base string, cursor int64, cursorPath strin
 			if s {
 				return true, cursor, nil
 			}
-			data = ""
+			data, eventName = "", ""
 		case strings.HasPrefix(line, ":"):
 			// comment / keepalive
 		case strings.HasPrefix(line, "id:"):
 			if n, e := strconv.ParseInt(strings.TrimSpace(line[len("id:"):]), 10, 64); e == nil {
 				id = n
 			}
+		case strings.HasPrefix(line, "event:"):
+			eventName = strings.TrimSpace(line[len("event:"):])
 		case strings.HasPrefix(line, "data:"):
 			data = strings.TrimSpace(line[len("data:"):])
 		}

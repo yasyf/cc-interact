@@ -3,6 +3,7 @@ package sse
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -350,6 +351,125 @@ func TestPresenceFilteredFromNamedConsumers(t *testing.T) {
 			t.Fatalf("filtered tail was redelivered: %+v", frames)
 		}
 	})
+}
+
+// readUntilCaughtUp collects replay frames up to the caught-up marker and returns
+// them plus the seq the marker carries. The caught-up frame is a named SSE event
+// with a seq payload and no id.
+func readUntilCaughtUp(t *testing.T, body io.Reader) (frames []sseFrame, caughtUpSeq int64) {
+	t.Helper()
+	sc := bufio.NewScanner(body)
+	var cur sseFrame
+	named := ""
+	for sc.Scan() {
+		line := sc.Text()
+		switch {
+		case line == "":
+			named = ""
+		case strings.HasPrefix(line, "event: "):
+			named = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "id: "):
+			n, err := strconv.ParseInt(strings.TrimPrefix(line, "id: "), 10, 64)
+			if err != nil {
+				t.Fatalf("bad id line %q: %v", line, err)
+			}
+			cur.id = n
+		case strings.HasPrefix(line, "data: "):
+			data := strings.TrimPrefix(line, "data: ")
+			if named == "caught-up" {
+				var m struct {
+					Seq int64 `json:"seq"`
+				}
+				if err := json.Unmarshal([]byte(data), &m); err != nil {
+					t.Fatalf("caught-up payload %q: %v", data, err)
+				}
+				return frames, m.Seq
+			}
+			cur.data = data
+			frames = append(frames, cur)
+			cur = sseFrame{}
+		}
+	}
+	t.Fatalf("stream ended before caught-up, frames so far: %+v", frames)
+	return nil, 0
+}
+
+func assertNoSecondCaughtUp(t *testing.T, body io.Reader) {
+	t.Helper()
+	found := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(body)
+		for sc.Scan() {
+			if strings.HasPrefix(sc.Text(), "event: caught-up") {
+				found <- sc.Text()
+				return
+			}
+		}
+	}()
+	select {
+	case f := <-found:
+		t.Fatalf("second caught-up marker on the same connection: %q", f)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// TestCaughtUpMarker proves the caught-up boundary arrives exactly once per
+// connection carrying the replay's high-water seq — after a full from-zero replay,
+// after a Last-Event-ID resume, and after a resume at the head with no replay.
+func TestCaughtUpMarker(t *testing.T) {
+	seed := func(b *fakeBackend) {
+		b.seed("s1id",
+			event.Event{Origin: event.OriginHuman, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"1"}`)},
+			event.Event{Origin: event.OriginHuman, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"2"}`)},
+			event.Event{Origin: event.OriginHuman, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"3"}`)},
+		)
+	}
+	connect := func(t *testing.T, url string) *http.Response {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		t.Cleanup(cancel)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	for _, tc := range []struct {
+		name       string
+		params     string
+		wantIDs    []int64
+		wantMarker int64
+	}{
+		{"full from-zero replay marks the high-water seq", "", []int64{1, 2, 3}, 3},
+		{"Last-Event-ID resume marks the replayed tail", "&last_event_id=2", []int64{3}, 3},
+		{"resume at the head marks the cursor with no replay", "&last_event_id=3", nil, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newFakeBackend()
+			b.addSubject("s1id")
+			seed(b)
+			srv := startServer(t, b, Config{PresenceDebounce: 20 * time.Millisecond})
+
+			resp := connect(t, srv.URL+"/events?session=s1id"+tc.params)
+			defer resp.Body.Close()
+
+			frames, seq := readUntilCaughtUp(t, resp.Body)
+			if len(frames) != len(tc.wantIDs) {
+				t.Fatalf("replayed %d frames %+v, want ids %v", len(frames), frames, tc.wantIDs)
+			}
+			for i, id := range tc.wantIDs {
+				if frames[i].id != id {
+					t.Fatalf("frame %d id = %d, want %d", i, frames[i].id, id)
+				}
+			}
+			if seq != tc.wantMarker {
+				t.Fatalf("caught-up seq = %d, want %d", seq, tc.wantMarker)
+			}
+			assertNoSecondCaughtUp(t, resp.Body)
+		})
+	}
 }
 
 func TestEventsUnknownSubjectIs404(t *testing.T) {

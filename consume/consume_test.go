@@ -67,6 +67,47 @@ func TestStreamURLExcludeOrigin(t *testing.T) {
 	}
 }
 
+// TestConsumeEventsSkipsCaughtUpMarker proves the SSE caught-up marker — a named
+// event carrying a seq payload and no id — is transparent to consumers: it is
+// never delivered as an event, never errors the stream, and never advances the
+// cursor past the real events around it.
+func TestConsumeEventsSkipsCaughtUpMarker(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := paths.Paths{App: ".cc-interact-test"}
+	if err := p.EnsureSubjectDir("caught-up"); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "id: 1\ndata: {\"type\":\"comment.created\"}\n\n")
+		fmt.Fprint(w, "event: caught-up\ndata: {\"seq\":1}\n\n")
+		fmt.Fprint(w, "id: 2\ndata: {\"type\":\"submit\"}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	src := StreamSource{Port: ssePort(t, srv), SubjectID: "caught-up", Consumer: "watch", Paths: p}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var got []string
+	if err := ConsumeEvents(ctx, src, func(_ int64, data string) (bool, error) {
+		got = append(got, eventType(data))
+		return eventType(data) == "submit", nil
+	}); err != nil {
+		t.Fatalf("ConsumeEvents: %v", err)
+	}
+	if len(got) != 2 || got[0] != "comment.created" || got[1] != "submit" {
+		t.Fatalf("delivered %v, want [comment.created submit] (caught-up must be transparent)", got)
+	}
+	cursor, err := readCursor(p.ConsumerCursorPath("caught-up", "watch"))
+	if err != nil {
+		t.Fatalf("readCursor: %v", err)
+	}
+	if cursor != 2 {
+		t.Fatalf("persisted cursor = %d, want 2", cursor)
+	}
+}
+
 func ssePort(t *testing.T, srv *httptest.Server) int {
 	t.Helper()
 	u, err := url.Parse(srv.URL)
