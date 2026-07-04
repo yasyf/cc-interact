@@ -57,10 +57,14 @@ export interface EventStreamConfig<
   // Whether a frame applies to the cache on screen (e.g. a version filter).
   // Defaults to always-true.
   appliesTo?: (ev: Ev, cache: Cache) => boolean;
-  // The replay-gate fallback for servers that predate the caught-up marker: a
-  // frame whose lastEventId is at or below this is a historical replay and patches
-  // state without toasting. The caught-up marker, when present, supersedes it.
-  // Omit both to toast every frame.
+  // The replay gate BEFORE the caught-up marker arrives: a frame whose
+  // lastEventId is at or below this is a historical replay and patches state
+  // without toasting. The marker is emitted after the replay flush, so it cannot
+  // gate the replay itself — against a marker-emitting server, return
+  // Number.POSITIVE_INFINITY to silence the whole pre-marker window; the marker
+  // then sets the exact boundary for the live tail. Keep a snapshot-based
+  // heuristic only for servers that predate the marker. Omit both to toast every
+  // frame, replay included.
   highWaterSeq?: (cache: Cache) => number;
   // Fires once per connection when the server's caught-up marker arrives, carrying
   // the high-water seq of the replay just completed; frames after it are the live

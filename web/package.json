@@ -1,6 +1,6 @@
 {
   "name": "@cc-interact/react",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Opt-in React client for cc-interact: realtime event-stream and query primitives for a human-in-the-loop Claude agent UI.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "repository": {
