@@ -3,6 +3,11 @@
   "version": "0.2.0",
   "description": "Opt-in React client for cc-interact: realtime event-stream and query primitives for a human-in-the-loop Claude agent UI.",
   "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yasyf/cc-interact.git",
+    "directory": "web"
+  },
   "type": "module",
   "files": ["dist"],
   "main": "./dist/index.cjs",
