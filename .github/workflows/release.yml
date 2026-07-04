@@ -23,7 +23,7 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: bun install --frozen-lockfile
-      - run: bunx vite build
+      - run: bun run build
       - name: Publish @cc-interact/react (skips versions already on npm)
         run: |
           version=$(jq -r .version package.json)
