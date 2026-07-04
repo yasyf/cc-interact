@@ -1,6 +1,6 @@
 module github.com/yasyf/cc-interact
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/bluekeyes/go-gitdiff v0.8.1
