@@ -1,35 +1,68 @@
-/* @cc-interact/react base chrome: theme variables, the app layout grid, the
- * sidebar shell, base buttons, the notifications / connection strip, and the
- * progress indicator. Domain styling (diffs, threads, panels, …) lives in the
- * consumer's own stylesheet. */
+/* @cc-interact/react base chrome: design tokens (color roles plus type, spacing,
+ * radius, and elevation scales) resolved per-theme with CSS light-dark(), the app
+ * layout grid, the sidebar shell, base buttons, the notifications / connection
+ * strip, and the progress indicator. Domain styling (diffs, threads, panels, …)
+ * lives in the consumer's own stylesheet. */
 
 :root {
-  --bg: #ffffff;
-  --bg-soft: #f6f8fa;
-  --border: #d0d7de;
-  --text: #1f2328;
-  --dim: #656d76;
-  --accent: #0969da;
+  --bg: light-dark(#ffffff, #0d1117);
+  --bg-soft: light-dark(#f6f8fa, #161b22);
+  --border: light-dark(#d0d7de, #30363d);
+  --text: light-dark(#1f2328, #e6edf3);
+  --dim: light-dark(#656d76, #8b949e);
+  --accent: light-dark(#0969da, #2f81f7);
   --accent-fg: #ffffff;
-  --danger: #cf222e;
-  --warn: #9a6700;
-  --ok: #1a7f37;
+  --danger: light-dark(#cf222e, #f85149);
+  --warn: light-dark(#9a6700, #d29922);
+  --ok: light-dark(#1a7f37, #3fb950);
+
+  /* Color roles layered above the page: card surfaces, a stronger border, and an
+   * accent-derived focus ring (which inherits light-dark via --accent). */
+  --surface: light-dark(#f8f9fb, #171c24);
+  --surface-raised: light-dark(#ffffff, #21262d);
+  --border-strong: light-dark(#afb8c1, #444c56);
+  --focus-ring: color-mix(in srgb, var(--accent) 45%, transparent);
+
+  /* Type scale. */
+  --text-2xs: 0.68rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.82rem;
+  --text-base: 0.925rem;
+  --text-md: 1.05rem;
+  --text-lg: 1.25rem;
+  --text-xl: clamp(1.5rem, 4vw, 2.1rem);
+  --leading-tight: 1.2;
+  --leading-normal: 1.55;
+
+  /* Spacing scale. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 2.5rem;
+  --space-8: 3rem;
+
+  /* Radii. */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* Elevation: low-alpha layered pairs that read on both light and dark. */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 6%), 0 1px 3px rgb(0 0 0 / 4%);
+  --shadow-2: 0 6px 16px rgb(0 0 0 / 8%), 0 2px 5px rgb(0 0 0 / 6%);
+
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   color-scheme: light dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1117;
-    --bg-soft: #161b22;
-    --border: #30363d;
-    --text: #e6edf3;
-    --dim: #8b949e;
-    --accent: #2f81f7;
-    --danger: #f85149;
-    --warn: #d29922;
-    --ok: #3fb950;
-  }
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 * {
@@ -92,8 +125,8 @@ body {
   border: none;
   background: none;
   color: var(--dim);
-  padding: 0.35rem 0.5rem;
-  border-radius: 6px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
 }
 .tab-btn[aria-selected='true'] {
   background: var(--bg-soft);
@@ -120,8 +153,21 @@ button {
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.35rem 0.7rem;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+button:hover:not(:disabled) {
+  background: var(--bg-soft);
+  border-color: var(--border-strong);
+}
+button:active:not(:disabled) {
+  background: var(--bg-soft);
+  transform: translateY(1px);
+}
+button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 button:disabled {
   opacity: 0.55;
@@ -131,6 +177,12 @@ button.primary {
   background: var(--accent);
   color: var(--accent-fg);
   border-color: transparent;
+  box-shadow: var(--shadow-1);
+}
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+  border-color: transparent;
+  box-shadow: var(--shadow-2);
 }
 
 .notifications {
@@ -142,11 +194,11 @@ button.primary {
   min-height: 2rem;
 }
 .conn {
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  padding: 0.1rem 0.4rem;
-  border-radius: 999px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
 }
 .conn-on {
   color: var(--ok);
@@ -166,15 +218,17 @@ button.primary {
   gap: 0.4rem;
   font-size: 0.82rem;
   padding: 0.2rem 0.5rem;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   background: var(--bg-soft);
+  box-shadow: var(--shadow-1);
 }
 .notif-warn {
-  border-color: var(--warn);
+  border-left-color: var(--warn);
 }
 .notif-error {
-  border-color: var(--danger);
+  border-left-color: var(--danger);
 }
 .notif-x {
   border: none;
@@ -185,8 +239,8 @@ button.primary {
 
 .progress-track {
   width: 5rem;
-  height: 0.25rem;
-  border-radius: 999px;
+  height: var(--space-1);
+  border-radius: var(--radius-pill);
   background: var(--border);
   overflow: hidden;
 }
