@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `plugin-template/render.sh` renders `scripts/install-binary.sh` from the
+  canonical template owned by cc-skills' repo-bootstrap skill, resolved through
+  a tiered fetch (local sibling checkout, then the live marketplace clone,
+  then a raw fetch pinned to `CC_SKILLS_REF`) and stamped with the source commit
+  (`# canonical: cc-skills/plugins/repo-bootstrap@<sha>`). New required
+  `BREW_PACKAGE` var and optional `BINARY_VERSION_MODE` (`pinned`/`latest`).
+  A new `--sync-scripts <plugin-dir>` mode re-fetches the canonical template
+  and re-renders only the installer into an existing plugin, reading token
+  values from its rendered copy and `plugin.json`; the run is idempotent.
+
+### Removed
+- `plugin-template/scripts/install-binary.sh` — the template consumes the
+  canonical installer instead of owning a copy. Rendered plugins now get the
+  brew-first, sha256-verified, dev-build-safe installer whose `bin/<name>` is
+  only ever a symlink.
+
 ## [0.1.9] - 2026-07-02
 
 ### Changed
