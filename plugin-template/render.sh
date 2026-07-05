@@ -123,17 +123,29 @@ render_installer() {
     grep -n '{{' "$TPL.render" >&2
     exit 1
   fi
+  # The @pending stamp carries no {{, so a missed substitution (an upstream
+  # stamp-line change) evades the gate above — assert the stamp landed.
+  if ! grep -q "^# canonical: cc-skills/plugins/repo-bootstrap@$CANONICAL_REF\$" "$TPL.render"; then
+    echo "render.sh: provenance stamp missing — the canonical template's stamp line changed; update the stamp sed in render_installer" >&2
+    exit 1
+  fi
   mkdir -p "$(dirname "$dest")"
   cat "$TPL.render" >"$dest"
   chmod +x "$dest"
 }
 
+# check_vars — require each named var non-empty and make its value sed-safe:
+# '|' (the delimiter) is rejected; '&' and '\' are escaped in place so they
+# substitute literally, matching render.py's plain-string replacement.
 check_vars() {
   missing=
   for v in "$@"; do
     eval "val=\${$v:-}"
     [ -n "$val" ] || missing="$missing $v"
     case "$val" in *'|'*) echo "render.sh: value of $v contains '|' (the sed delimiter)" >&2; exit 1 ;; esac
+    # shellcheck disable=SC2034  # esc is consumed via the eval below
+    esc="$(printf '%s\n' "$val" | sed 's/[&\\]/\\&/g')"
+    eval "$v=\$esc"
   done
   [ -z "$missing" ] || { echo "render.sh: missing vars:$missing" >&2; return 1; }
 }
