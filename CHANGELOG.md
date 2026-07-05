@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and re-renders only the installer into an existing plugin, reading token
   values from its rendered copy and `plugin.json`; the run is idempotent.
 
+### Fixed
+- `plugin-template/render.sh` substitutes values containing `&` or `\`
+  literally; previously sed replacement specials silently corrupted rendered
+  files.
+
 ### Removed
 - `plugin-template/scripts/install-binary.sh` — the template consumes the
   canonical installer instead of owning a copy. Rendered plugins now get the
