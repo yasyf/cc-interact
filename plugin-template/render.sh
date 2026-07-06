@@ -10,8 +10,8 @@
 # `render.sh --sync-scripts <plugin-dir>`.
 set -eu
 
-# bump to the cc-skills merge sha when PR #2 merges; NEVER a floating branch.
-CC_SKILLS_REF=7f143612aa5bb563f534aae36f6848d0ff6d2975
+# cc-skills merge sha (PR #2, merged 2026-07-05); NEVER a floating branch.
+CC_SKILLS_REF=ed090c97704f984ff2caed8f9f224816237fe468
 CANONICAL=plugins/repo-bootstrap/skills/repo-bootstrap/templates/plugin/install-binary.sh
 
 usage() {
