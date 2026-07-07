@@ -11,6 +11,11 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 FREEZE="${FREEZE:-freeze}"
+BAT="${BAT:-bat}"
+
+# Colorize captured text with ANSI codes so freeze renders real syntax colors.
+paint() { "$BAT" --plain --color=always --language "$1"; }
+prompt() { printf '$ %s\n' "$(printf '%s\n' "$1" | paint bash)"; }
 TMP="$(mktemp -d /tmp/cc-echo-demo.XXXXXX)"
 trap 'HOME="$TMP/home" "$TMP/echo" stop >/dev/null 2>&1 || true; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/home"
@@ -33,22 +38,22 @@ cat >"$TMP/reply.jsonl" <<EOF
 EOF
 CHANNEL_OUT="$(run channel --cwd "$ROOT" <"$TMP/reply.jsonl" | tail -1)"
 
-EVENTS_OUT="$(curl -sN --max-time 2 "localhost:$PORT/events?session=$SLUG" | grep -v '^: ' || true)"
+EVENTS_OUT="$(curl -sN --max-time 2 "localhost:$PORT/events?session=$SLUG" | grep -v '^: ' | cat -s || true)"
 
-cat >"$TMP/transcript" <<EOF
-\$ go build -o echo ./examples/echo && ./echo start
-$START_OUT
+{
+  prompt 'go build -o echo ./examples/echo && ./echo start'
+  printf '%s\n' "$START_OUT" | paint yaml
+  echo
+  prompt "$POST_CMD"
+  printf '%s\n' "$POST_OUT" | paint json
+  echo
+  prompt "./echo channel < reply.jsonl | tail -1   # the agent's MCP reply tool"
+  printf '%s\n' "$CHANNEL_OUT" | paint json
+  echo
+  prompt "curl -sN --max-time 2 \"localhost:$PORT/events?session=$SLUG\""
+  printf '%s\n' "$EVENTS_OUT" | paint yaml
+} >"$TMP/transcript.ansi"
 
-\$ $POST_CMD
-$POST_OUT
-
-\$ ./echo channel < reply.jsonl | tail -1   # the agent's MCP reply tool
-$CHANNEL_OUT
-
-\$ curl -sN --max-time 2 "localhost:$PORT/events?session=$SLUG"
-$EVENTS_OUT
-EOF
-
-"$FREEZE" "$TMP/transcript" --language console \
+"$FREEZE" "$TMP/transcript.ansi" --language ansi \
   --theme github-dark --background "#0d1117" --window --padding 24 --font.size 28 \
   --output "$ROOT/docs/assets/demo.png"

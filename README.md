@@ -4,7 +4,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasyf/cc-interact/ci.yml?branch=main&label=CI)](https://github.com/yasyf/cc-interact/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/github/v/tag/yasyf/cc-interact?label=version)](https://github.com/yasyf/cc-interact/tags)
-[![License: PolyForm-Noncommercial-1.0.0](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](LICENSE)
 
 ## Get started
 
@@ -14,7 +14,7 @@ go get github.com/yasyf/cc-interact
 
 <img src="docs/assets/demo.png" alt="Terminal running the examples/echo round trip — a curl POST appends echo.item and the agent's MCP reply streams back as echo.reply on /events" width="700">
 
-That run is [`examples/echo`](examples/echo), the whole framework exercised in 381 lines: two domain handlers, one REST mount, one MCP tool. A human POSTs an item, the agent replies through its channel, and both events come back off the same `/events` plane a browser would read. Regenerate the capture with [`docs/scripts/demo.sh`](docs/scripts/demo.sh).
+That run is [`examples/echo`](examples/echo), end to end. Two domain handlers, one REST mount, and one MCP tool exercise the whole framework. A human POSTs an item, the agent replies through its channel, and both events come back off the same `/events` plane a browser would read.
 
 Driving with an agent? Paste this:
 
@@ -42,11 +42,11 @@ daemon.Config{
 }
 ```
 
-The `guard-edit` hook routes every edit the Claude session attempts through this verdict: while the subject is open, Claude sees your reason instead of a completed write. Errors reading the subject fail closed (`GateErrorReason`), and a missing daemon fails open — a crashed daemon never bricks the session.
+The `guard-edit` hook routes every edit the Claude session attempts through this verdict. While the subject is open, Claude sees your reason instead of a completed write. Errors reading the subject fail closed (`GateErrorReason`), and a missing daemon fails open, so a crashed daemon never bricks the session.
 
 ### Feed one gap-free event log to the browser and the agent alike
 
-Two realtime paths — a socket for the UI, polling for the agent — drift, drop events, and disagree after a reconnect. Here both roles read one log:
+A socket for the UI plus polling for the agent gives you two realtime paths that drift, drop events, and disagree after a reconnect. Here both roles read one log:
 
 ```bash
 go run ./examples/echo watch
@@ -56,32 +56,32 @@ go run ./examples/echo watch
 
 ### Ship your agent surface as a Claude Code plugin
 
-The binary is half the ship surface; the plugin payload — MCP server wiring, binary installer, session hooks, a start skill — is its own pile of boilerplate. Render it instead:
+The binary is half the ship surface; the MCP server wiring, binary installer, session hooks, and start skill that make up the plugin payload are their own pile of boilerplate. Render it instead:
 
 ```bash
 ./plugin-template/render.sh out/ PLUGIN_NAME=mytool DISPLAY_NAME=MyTool \
-  BINARY_NAME=mytool RELEASE_REPO=you/mytool MCP_SUBCOMMAND=channel \
-  SKILL_NAME=mytool:start
+  BINARY_NAME=mytool RELEASE_REPO=you/mytool BREW_PACKAGE=mytool \
+  MCP_SUBCOMMAND=channel SKILL_NAME=mytool:start
 ```
 
-You get cc-review's plugin payload with the review strings swapped for yours: the channel MCP server wiring, a release-binary installer, `session-record` and `guard-edit` hooks, and a start skill. [`plugin-template/`](plugin-template) documents every variable.
+You get cc-review's plugin payload with the review strings swapped for yours. The rendered tree carries the channel MCP server wiring, a release-binary installer, `session-record` and `guard-edit` hooks, and a start skill. [`plugin-template/`](plugin-template) documents every variable.
 
 ## What the framework owns
 
-One process model, shipped: a lazily spawned daemon owns a single-writer SQLite (WAL) holding an append-only per-subject event log; every consumer — browser, `watch`, MCP channel — reads the same SSE plane; newest-wins eviction upgrades the daemon in place when a newer binary lands. You register domain ops against a generic control envelope and the framework routes the rest.
+One process model, shipped. A lazily spawned daemon owns a single-writer SQLite (WAL) holding an append-only per-subject event log; the browser, `watch`, and the MCP channel all read the same SSE plane; newest-wins eviction upgrades the daemon in place when a newer binary lands. You register domain ops against a generic control envelope and the framework routes the rest.
 
 | Package | Owns |
 |---|---|
 | `daemon` | lazy spawn, newest-wins eviction, peer-credential identity, the op registry, the edit gate |
-| `store` | pure-Go SQLite: subjects plus the event log; your tables via a migrate hook |
+| `store` | pure-Go SQLite holding subjects plus the event log; your tables via a migrate hook |
 | `event` | the log-entry type and the per-subject pub/sub wakeup |
-| `sse` | the HTTP `/events` plane: at-least-once SSE with `Last-Event-ID` resume |
+| `sse` | the HTTP `/events` plane, at-least-once SSE with `Last-Event-ID` resume |
 | `consume` | the agent-side SSE client with a persisted resume cursor |
-| `channel` | the stdio MCP server: tools in, notifications out |
-| `cmd` | ready-made cobra constructors: `daemon`, `watch`, `status`, `stop`, plus the hidden hook and channel entry points |
-| `subject` | ownership: one subject per window and scope, stable across `/clear` and compaction |
-| `paths` | the `~/.<app>` state layout: socket, DB, HTTP handshake, locks |
-| `vcs` | optional: git/jj working-copy snapshots and the per-prompt turn ledger |
+| `channel` | the stdio MCP server, tools in and notifications out |
+| `cmd` | ready-made `daemon`, `watch`, `status`, and `stop` cobra constructors plus the hidden hook and channel entry points |
+| `subject` | ownership, one subject per window and scope, stable across `/clear` and compaction |
+| `paths` | the `~/.<app>` state layout of socket, DB, HTTP handshake, and locks |
+| `vcs` | optional git/jj working-copy snapshots and the per-prompt turn ledger |
 
 ## The browser UI is opt-in
 
@@ -95,8 +95,8 @@ Mount `sse.StaticHandler` on the daemon and the React package's stream and query
 
 ## State
 
-Everything lives under `~/.<app>/` — `state.db`, `daemon.sock`, `http.json`, `daemon.log`. The core schema is versioned by your migrate hook; the echo example carries none, so its reset is `rm -rf ~/.cc-echo`.
+`state.db`, `daemon.sock`, `http.json`, and `daemon.log` all live under one `~/.<app>/` directory. The core schema is versioned by your migrate hook; the echo example carries none, so its reset is `rm -rf ~/.cc-echo`.
 
 ---
 
-Status: pre-1.0 — the API moves with [cc-review](https://github.com/yasyf/cc-review), and every break lands in the [changelog](CHANGELOG.md). Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).
+The API is pre-1.0 and moves with [cc-review](https://github.com/yasyf/cc-review); every break lands in the [changelog](CHANGELOG.md). Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).
