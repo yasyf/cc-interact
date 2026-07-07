@@ -1,6 +1,6 @@
 # ![cc-interact](docs/assets/readme-banner.webp)
 
-**Never write a daemon for a Claude Code tool again.** cc-interact extracts cc-review's daemon, event log, SSE, edit-gate, and MCP plumbing into a reusable Go framework; the echo example is 381 lines.
+**Never write a daemon for a Claude Code tool again.** cc-interact extracts cc-review's daemon, event log, SSE, edit gate, and MCP plumbing into a reusable Go framework; the echo example is 381 lines.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/yasyf/cc-interact/ci.yml?branch=main&label=CI)](https://github.com/yasyf/cc-interact/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/github/v/tag/yasyf/cc-interact?label=version)](https://github.com/yasyf/cc-interact/tags)
@@ -20,7 +20,7 @@ Driving with an agent? Paste this:
 
 ```text
 Run `go get github.com/yasyf/cc-interact` in my Go project.
-Study https://github.com/yasyf/cc-interact/tree/main/examples/echo — a complete headless consumer in 381 lines — then stand up a human-in-the-loop surface for my domain: one reducer, start/reply handlers, and one MCP channel tool.
+Study https://github.com/yasyf/cc-interact/tree/main/examples/echo — a complete headless consumer in 381 lines — then stand up a human-in-the-loop surface for my domain: start/reply handlers, a REST mount, and one MCP channel tool.
 Verify the round trip: POST an item to the daemon's REST plane and confirm the agent's reply streams back over /events.
 ```
 
@@ -95,7 +95,7 @@ Mount `sse.StaticHandler` on the daemon and the React package's stream and query
 
 ## State
 
-`state.db`, `daemon.sock`, `http.json`, and `daemon.log` all live under one `~/.<app>/` directory. The core schema is versioned by your migrate hook; the echo example carries none, so its reset is `rm -rf ~/.cc-echo`.
+`state.db`, `daemon.sock`, `http.json`, and `daemon.log` all live under one `~/.<app>/` directory. There are no schema migrations. Your migrate hook adds domain tables idempotently, and a core schema change means wiping the directory. The echo example carries no domain tables, so its reset is `rm -rf ~/.cc-echo`.
 
 ---
 
