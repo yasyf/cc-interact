@@ -1,1 +1,1 @@
-{"v":1,"lamport":1,"ops":[{"kind":"create_task","nonce":"16df8538343569e9b648a3e4638e07a7","title":"Publish cc-interact base.css design token system update to npm (0.3.0, via CI)","description":"","type":"task","priority":2,"branch":"","parent":"","labels":null},{"kind":"add_criterion","id":"64467ba3bb411a8c7ef385999dac0436","text":"npm view @cc-interact/react@0.3.0 resolves and release CI is green","script":""}]}
+{"v":1,"lamport":2,"ops":[{"kind":"set_criterion_status","id":"64467ba3bb411a8c7ef385999dac0436","status":"met"}]}
