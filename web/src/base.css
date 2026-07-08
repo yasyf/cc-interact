@@ -251,3 +251,35 @@ button.primary:hover:not(:disabled) {
   background: var(--ok);
   transition: width 0.2s ease;
 }
+
+.cc-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.cc-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  color: var(--text);
+}
+.cc-group-caret {
+  color: var(--dim);
+  transition: transform 0.12s ease;
+}
+.cc-group-expanded .cc-group-caret {
+  transform: rotate(90deg);
+}
+.cc-group-body {
+  padding: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.cc-group-readonly .cc-group-body {
+  opacity: 0.7;
+}

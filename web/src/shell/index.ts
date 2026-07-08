@@ -6,3 +6,5 @@ export { NotificationsBar } from './NotificationsBar';
 export type { NotificationsBarProps } from './NotificationsBar';
 export { createSubjectContext } from './SubjectProvider';
 export type { SubjectContext, SubjectContextValue } from './SubjectProvider';
+export { CollapsedGroup, useGroupReadOnly } from './CollapsedGroup';
+export type { CollapsedGroupProps } from './CollapsedGroup';

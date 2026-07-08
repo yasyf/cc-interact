@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `@cc-interact/react` (0.4.0): `CollapsedGroup` — a presentational collapsible
+  group whose header button toggles a body that mounts only while expanded
+  (collapsed content is unmounted, not hidden). It publishes a cooperative
+  read-only signal through React context that interactive descendants read via
+  the exported `useGroupReadOnly` hook (`false` outside any group), so a
+  read-only group dims its body via `.cc-group-readonly` without the `inert`
+  attribute — nested toggles inside an expanded read-only group keep working.
+  Ships minimal `.cc-group` chrome in `base.css`.
+
 ### Changed
 - `plugin-template/render.sh` renders `scripts/install-binary.sh` from the
   canonical template owned by cc-skills' repo-bootstrap skill, resolved through

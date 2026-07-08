@@ -20,11 +20,19 @@ export type { OptimisticMutationConfig } from './query';
 export { useFlip } from './query/flip';
 export type { FlipOptions } from './query/flip';
 
-export { AppShell, ConnectionFrame, NotificationsBar, createSubjectContext } from './shell';
+export {
+  AppShell,
+  ConnectionFrame,
+  NotificationsBar,
+  createSubjectContext,
+  CollapsedGroup,
+  useGroupReadOnly,
+} from './shell';
 export type {
   AppShellProps,
   ConnectionFrameProps,
   NotificationsBarProps,
   SubjectContext,
   SubjectContextValue,
+  CollapsedGroupProps,
 } from './shell';
