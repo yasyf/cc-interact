@@ -5,13 +5,15 @@
 // EventSource lifecycle and the cache-patch / replay-gate / presence
 // choreography.
 
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { FC, ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 
+export type ToastKind = 'info' | 'warn' | 'error';
+
 export interface StreamToast {
-  kind: string;
+  kind: ToastKind;
   text: string;
 }
 
@@ -26,7 +28,15 @@ export interface EventStreamValue {
   // The peer on the other end of the channel (e.g. the agent). null until the
   // first presence frame arrives; toggled by config.peerPresence.
   peerPresent: boolean | null;
+  // Whether the server's caught-up marker has arrived for this subject. Latched:
+  // once true it stays true across the EventSource's internal reconnects (a
+  // dropped connection must not re-skeleton over live data); it resets only when
+  // the subject/scope changes and a fresh replay begins.
+  caughtUp: boolean;
   notifications: StreamNotification[];
+  // Push a toast onto the stack from outside the frame path (e.g. a failed
+  // mutation surfacing an error). Shares the onmessage toast pipeline.
+  notify(toast: StreamToast): void;
   dismiss(id: string): void;
 }
 
@@ -120,10 +130,16 @@ export function createEventStream<
     const queryClient = useQueryClient();
     const [connected, setConnected] = useState(false);
     const [peerPresent, setPeerPresent] = useState<boolean | null>(null);
+    const [caughtUp, setCaughtUp] = useState(false);
     const [notifications, setNotifications] = useState<StreamNotification[]>([]);
     // The high-water seq of the last replay, set by the caught-up marker; null
     // until the marker arrives (or on a server that predates it).
     const caughtUpSeq = useRef<number | null>(null);
+
+    const pushToast = useCallback((toast: StreamToast) => {
+      const entry: StreamNotification = { ...toast, id: `n${++notificationSeq}`, at: Date.now() };
+      setNotifications((prev) => [...prev, entry].slice(-50));
+    }, []);
 
     useEffect(() => {
       // An absent scope is the Scope=void / default case; the consumer's
@@ -133,16 +149,22 @@ export function createEventStream<
         ? config.url(subject, resolvedScope)
         : defaultUrl(subject);
       const source = new EventSource(url);
+      // A new subject/scope is a fresh board: reset the replay boundary and
+      // re-skeleton until its caught-up marker arrives. The EventSource's own
+      // reconnects never re-run this effect, so caughtUp stays latched through them.
       caughtUpSeq.current = null;
+      setCaughtUp(false);
 
       source.onopen = () => setConnected(true);
       source.onerror = () => setConnected(false);
 
       // A named SSE event never reaches onmessage; it records the replay/live
-      // boundary the live gate below reads, and notifies the consumer.
+      // boundary the live gate below reads, latches caughtUp, and notifies the
+      // consumer.
       source.addEventListener('caught-up', (raw: MessageEvent<string>) => {
         const { seq } = JSON.parse(raw.data) as { seq: number };
         caughtUpSeq.current = seq;
+        setCaughtUp(true);
         config.onCaughtUp?.(seq);
       });
 
@@ -174,14 +196,11 @@ export function createEventStream<
               ? true
               : current !== undefined && Number(raw.lastEventId) > config.highWaterSeq(current);
         const toast = live && config.toast ? config.toast(ev) : null;
-        if (toast) {
-          const entry: StreamNotification = { ...toast, id: `n${++notificationSeq}`, at: Date.now() };
-          setNotifications((prev) => [...prev, entry].slice(-50));
-        }
+        if (toast) pushToast(toast);
       };
 
       return () => source.close();
-    }, [queryClient, subject, scope]);
+    }, [queryClient, subject, scope, pushToast]);
 
     // Seed peerPresent from the snapshot once the cache loads, so the peer dot
     // does not flicker through null before the first presence frame. The cache
@@ -212,7 +231,9 @@ export function createEventStream<
     }
 
     return (
-      <Context.Provider value={{ connected, peerPresent, notifications, dismiss }}>
+      <Context.Provider
+        value={{ connected, peerPresent, caughtUp, notifications, notify: pushToast, dismiss }}
+      >
         {children}
       </Context.Provider>
     );

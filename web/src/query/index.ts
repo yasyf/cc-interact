@@ -43,6 +43,16 @@ export interface OptimisticMutationConfig<Vars, Data, Cache> {
   // re-establishes truth. Typically the broader `[prefix, subject]` with
   // exact:false.
   invalidate?: (vars: Vars) => { queryKey: QueryKey; exact?: boolean };
+  // Fired on mutation error, once the invalidation is dispatched (its refetch is
+  // not awaited), so a consumer can surface the failure promptly (e.g. an error
+  // toast). The optimistic patch is deliberately left in place — the daemon
+  // redelivers absolute state, so there is nothing to roll back.
+  onError?: (err: Error, vars: Vars) => void;
+  // Mutations sharing a scope run serially in dispatch order instead of
+  // concurrently. Set it (e.g. to the subject id) when the daemon's append
+  // order must match the user's action order — a blur-commit racing the
+  // submit that triggered it, say.
+  scope?: string;
 }
 
 // cancel → snapshot → optimistic patch → invalidate-on-error. The patch is not
@@ -55,6 +65,7 @@ export function useOptimisticMutation<Vars, Data, Cache>(
   const qc = useQueryClient();
   return useMutation<Data, Error, Vars>({
     mutationFn: config.mutationFn,
+    ...(config.scope !== undefined && { scope: { id: config.scope } }),
     onMutate: async (vars) => {
       const key = config.queryKey(vars);
       // An in-flight refetch (kicked off by another mutation's invalidate) would
@@ -65,9 +76,10 @@ export function useOptimisticMutation<Vars, Data, Cache>(
       if (current === undefined) return;
       qc.setQueryData<Cache>(key, config.applyOptimistic(current, vars));
     },
-    onError: (_err, vars) => {
+    onError: (err, vars) => {
       const inv = config.invalidate?.(vars);
       if (inv) void qc.invalidateQueries(inv);
+      config.onError?.(err, vars);
     },
   });
 }

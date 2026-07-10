@@ -13,6 +13,7 @@ export type {
   EventContext,
   StreamNotification,
   StreamToast,
+  ToastKind,
 } from './stream';
 
 export { createQueryClient, request, scopedKey, useOptimisticMutation } from './query';
@@ -23,7 +24,7 @@ export type { FlipOptions } from './query/flip';
 export {
   AppShell,
   ConnectionFrame,
-  NotificationsBar,
+  ToastStack,
   createSubjectContext,
   CollapsedGroup,
   useGroupReadOnly,
@@ -31,7 +32,7 @@ export {
 export type {
   AppShellProps,
   ConnectionFrameProps,
-  NotificationsBarProps,
+  ToastStackProps,
   SubjectContext,
   SubjectContextValue,
   CollapsedGroupProps,

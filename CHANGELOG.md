@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `@cc-interact/react` (0.5.0): `ToastStack` — floating top-right toast column
+  replacing the full-bleed `NotificationsBar` band. Auto-dismisses per kind
+  (info 5s / warn 8s / error 10s), pauses on hover, shows the last four, uses
+  `role=alert` for errors. `StreamToast.kind` is now the exported `ToastKind`
+  union. `EventStreamValue` gains `caughtUp` (latched once the SSE replay
+  flushes, so consumers can gate a loading skeleton) and `notify(toast)` (raise
+  a toast from non-stream code, e.g. mutation failures).
+  `OptimisticMutationConfig` gains `onError` so consumers can surface failed
+  posts, and `scope` — mutations sharing a scope run serially in dispatch
+  order, so the daemon's append order matches the user's action order.
+  `base.css` gains the design-system tokens: modular type scale,
+  `--leading-snug`, elevation ladder `--shadow-1/2/3` + `--shadow-up`, motion
+  tokens `--dur-1/2/3` + `--ease-out`/`--ease-in-out`, `--surface-raised`,
+  `--content-width`, a unified `:focus-visible` ring, and a global
+  `prefers-reduced-motion` guard.
+
 - `@cc-interact/react` (0.4.0): `CollapsedGroup` — a presentational collapsible
   group whose header button toggles a body that mounts only while expanded
   (collapsed content is unmounted, not hidden). It publishes a cooperative
@@ -33,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files.
 
 ### Removed
+- `@cc-interact/react` (0.5.0): `NotificationsBar`, `NotificationsBarProps`,
+  and `AppShellProps.notifications` — the band had no consumers; toasts render
+  as an `AppShell` sibling via `ToastStack`.
 - `plugin-template/scripts/install-binary.sh` — the template consumes the
   canonical installer instead of owning a copy. Rendered plugins now get the
   brew-first, sha256-verified, dev-build-safe installer whose `bin/<name>` is
