@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-10
+
+### Added
+- `daemon.Config` gains three HTTP-plane knobs. `BindAddr` sets the address the
+  listener binds — empty keeps the loopback-only `127.0.0.1` default, `0.0.0.0`
+  exposes the plane to the LAN. `HTTPToken`, when set, requires every
+  non-loopback request to carry `Authorization: Bearer <token>` (or the
+  `?token=` query fallback that browser `EventSource` needs, since it cannot set
+  headers); loopback always bypasses, and the token is compared in constant
+  time. `OnHTTPStart(ctx, port)` fires once the plane is bound and its handshake
+  published, so a consumer can hook mDNS advertising. `daemon.HTTPInfo` gains a
+  `bind` field carrying the effective bind address.
+
+## [0.5.0] - 2026-07-10
+
 ### Added
 - `@cc-interact/react` (0.5.0): `ToastStack` — floating top-right toast column
   replacing the full-bleed `NotificationsBar` band. Auto-dismisses per kind
@@ -166,7 +181,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/yasyf/cc-interact/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/yasyf/cc-interact/compare/v0.1.9...v0.5.0
 [0.1.9]: https://github.com/yasyf/cc-interact/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/yasyf/cc-interact/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/yasyf/cc-interact/compare/v0.1.6...v0.1.7

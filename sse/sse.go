@@ -1,11 +1,13 @@
-// Package sse is cc-interact's realtime event plane: a 127.0.0.1 HTTP server
-// that fans a subject's append-only event log out to every consumer over
-// Server-Sent Events. The agent's own stream consumers (its Monitor, the MCP
-// channel) read this same GET /events endpoint, so the plane is core, not
-// optional. The package owns the mux and always mounts GET /events; the consumer
-// mounts its own routes — a REST surface, the opt-in StaticHandler — onto the
-// exposed Mux. It depends only on the event package, so there is no import cycle
-// with the daemon that implements Backend.
+// Package sse is cc-interact's realtime event plane: an HTTP server that fans a
+// subject's append-only event log out to every consumer over Server-Sent
+// Events. The agent's own stream consumers (its Monitor, the MCP channel) read
+// this same GET /events endpoint, so the plane is core, not optional. The
+// package owns the mux and always mounts GET /events; the consumer mounts its
+// own routes — a REST surface, the opt-in StaticHandler — onto the exposed Mux.
+// It depends only on the event package, so there is no import cycle with the
+// daemon that implements Backend. Access control is not this package's job — the
+// daemon owns it, through the address its listener binds and the auth middleware
+// wrapping the mux.
 package sse
 
 import (

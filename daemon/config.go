@@ -79,4 +79,17 @@ type Config struct {
 	// FixedPort pins the HTTP plane to a known port (the Vite dev proxy); 0 binds
 	// the last-published port if free, else an ephemeral one.
 	FixedPort int
+
+	// BindAddr is the address the HTTP plane binds. Empty means 127.0.0.1, the
+	// loopback-only default; "0.0.0.0" exposes the plane to the LAN. A non-loopback
+	// bind with no HTTPToken is refused (New returns ErrUnauthenticatedBind), since
+	// the plane would otherwise serve every off-host request unauthenticated.
+	BindAddr string
+	// HTTPToken, when non-empty, requires every non-loopback HTTP request to
+	// carry "Authorization: Bearer <token>" (or the ?token= query fallback that
+	// browser EventSource needs). Loopback requests always bypass it.
+	HTTPToken string
+	// OnHTTPStart fires once the HTTP plane is bound and its handshake published;
+	// consumers hook mDNS advertising here.
+	OnHTTPStart func(ctx context.Context, port int)
 }

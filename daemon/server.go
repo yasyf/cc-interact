@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -63,6 +64,9 @@ type Server struct {
 
 	fixedPort    int
 	httpPort     int
+	bindAddr     string
+	httpToken    string
+	onHTTPStart  func(ctx context.Context, port int)
 	evictTimeout time.Duration
 
 	repoMu    sync.Mutex
@@ -76,6 +80,9 @@ type Server struct {
 // plane, and returns a Server ready for the consumer to Register domain ops and
 // mount routes on Mux before calling Serve.
 func New(cfg Config) (*Server, error) {
+	if err := validateBindAuth(bindHostOrDefault(cfg.BindAddr), cfg.HTTPToken); err != nil {
+		return nil, err
+	}
 	if err := cfg.Paths.EnsureStateDir(); err != nil {
 		return nil, err
 	}
@@ -104,6 +111,9 @@ func New(cfg Config) (*Server, error) {
 		log:             log.New(os.Stderr, "["+cfg.AppName+"] ", log.LstdFlags),
 		handlers:        make(map[Op]HandlerFunc),
 		fixedPort:       cfg.FixedPort,
+		bindAddr:        cfg.BindAddr,
+		httpToken:       cfg.HTTPToken,
+		onHTTPStart:     cfg.OnHTTPStart,
 		evictTimeout:    defaultEvictTimeout,
 		repoLocks:       make(map[string]*sync.Mutex),
 	}
@@ -183,7 +193,7 @@ func (s *Server) Serve(parent context.Context) error {
 		return err
 	}
 
-	s.log.Printf("daemon %s started; socket=%s http=127.0.0.1:%d", s.version, s.socket, s.httpPort)
+	s.log.Printf("daemon %s started; socket=%s http=%s", s.version, s.socket, net.JoinHostPort(s.bindHost(), strconv.Itoa(s.httpPort)))
 
 	go func() {
 		<-ctx.Done()
@@ -276,37 +286,55 @@ func (s *Server) evictHolder() error {
 	return nil
 }
 
-// listenHTTP binds the HTTP plane. A fixed dev port binds exactly or fails loud;
-// otherwise the port last published to the handshake is tried first so printed
-// URLs survive a daemon swap, falling back to an ephemeral port.
+// bindHost is the address the HTTP plane binds, defaulting to loopback-only
+// 127.0.0.1 when Config leaves BindAddr empty.
+func (s *Server) bindHost() string { return bindHostOrDefault(s.bindAddr) }
+
+// bindHostOrDefault applies the loopback-only 127.0.0.1 default to a configured
+// bind address so New can resolve the effective host before a Server exists.
+func bindHostOrDefault(addr string) string {
+	if addr == "" {
+		return "127.0.0.1"
+	}
+	return addr
+}
+
+// listenHTTP binds the HTTP plane on bindHost. A fixed dev port binds exactly or
+// fails loud; otherwise the port last published to the handshake is tried first
+// so printed URLs survive a daemon swap, falling back to an ephemeral port.
 func (s *Server) listenHTTP() (net.Listener, error) {
+	host := s.bindHost()
 	if s.fixedPort != 0 {
-		return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.fixedPort))
+		return net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(s.fixedPort)))
 	}
 	if prev := s.readHTTPInfo().Port; prev != 0 {
-		if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", prev)); err == nil {
+		if ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(prev))); err == nil {
 			return ln, nil
 		}
 	}
-	return net.Listen("tcp", "127.0.0.1:0")
+	return net.Listen("tcp", net.JoinHostPort(host, "0"))
 }
 
-// startHTTP binds the HTTP plane on 127.0.0.1, publishes the port handshake, and
-// serves until ctx is cancelled. Request contexts derive from ctx (BaseContext),
-// so cancelling it ends every parked SSE handler before the graceful Shutdown
-// drains them — and before Serve closes the store.
+// startHTTP binds the HTTP plane on bindHost, publishes the port handshake, and
+// serves until ctx is cancelled. The auth middleware wraps the whole mux.
+// Request contexts derive from ctx (BaseContext), so cancelling it ends every
+// parked SSE handler before the graceful Shutdown drains them — and before Serve
+// closes the store.
 func (s *Server) startHTTP(ctx context.Context) error {
 	ln, err := s.listenHTTP()
 	if err != nil {
 		return err
 	}
 	s.httpPort = ln.Addr().(*net.TCPAddr).Port
-	if err := s.writeHTTPInfo(HTTPInfo{Port: s.httpPort}); err != nil {
+	if err := s.writeHTTPInfo(HTTPInfo{Port: s.httpPort, Bind: s.bindHost()}); err != nil {
 		ln.Close()
 		return err
 	}
+	if s.onHTTPStart != nil {
+		go s.onHTTPStart(ctx, s.httpPort)
+	}
 	srv := &http.Server{
-		Handler:     s.sse.Handler(),
+		Handler:     authHandler(s.httpToken, s.sse.Handler()),
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 	s.wg.Add(1)

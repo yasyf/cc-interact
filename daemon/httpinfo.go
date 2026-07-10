@@ -9,7 +9,8 @@ import (
 // HTTPInfo is the handshake the daemon publishes so stream consumers and the
 // Vite dev proxy can find the HTTP/SSE plane's ephemeral port.
 type HTTPInfo struct {
-	Port int `json:"port"`
+	Port int    `json:"port"`
+	Bind string `json:"bind,omitempty"`
 }
 
 // readHTTPInfo returns the last published handshake, or the zero value when the
