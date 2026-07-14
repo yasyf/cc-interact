@@ -6,7 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-14
+
 ### Added
+- `daemon.Config.ExtraHTTPListeners` — listener factories called once at HTTP
+  start, each serving the same composed, auth-guarded handler as the primary
+  bind (e.g. a TLS listener with certs from `tailscale cert`). A factory error
+  fails startup, and one graceful shutdown drains every listener. The loopback
+  token bypass stays per-connection (judged by peer address), so `New` refuses
+  extra listeners with no `HTTPToken` (`ErrUnauthenticatedBind`).
 - `daemon.Config.PublicHandler` — serves every request no mux route matches
   outside the auth guard, so a consumer's static SPA shell (index.html, assets,
   service worker) is fetchable before a remote browser holds the token. Routes
@@ -19,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Serve` drains it before closing the store.
 
 ### Fixed
+- `vcs`: snapshot diffs now pass `--no-ext-diff`, so a `diff.external` tool in
+  the user's git config (difftastic, delta) no longer replaces the parseable
+  patch with its own output, which emptied the snapshot's file list.
 - `daemon`: the `OnHTTPStart` hook now runs on the wait group, so `Serve`
   awaits its return after the serve context is cancelled. A hook that releases
   a resource on `ctx.Done()` — mDNS goodbye packets — no longer races the
@@ -31,21 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   send no-cors mutations to `127.0.0.1` through a local browser. An empty
   token no longer disables the check entirely — it fails closed to the
   loopback bypass alone.
-
-## [0.7.0] - 2026-07-14
-
-### Added
-- `daemon.Config.ExtraHTTPListeners` — listener factories called once at HTTP
-  start, each serving the same composed, auth-guarded handler as the primary
-  bind (e.g. a TLS listener with certs from `tailscale cert`). A factory error
-  fails startup, and one graceful shutdown drains every listener. The loopback
-  token bypass stays per-connection (judged by peer address), so `New` refuses
-  extra listeners with no `HTTPToken` (`ErrUnauthenticatedBind`).
-
-### Fixed
-- `vcs`: snapshot diffs now pass `--no-ext-diff`, so a `diff.external` tool in
-  the user's git config (difftastic, delta) no longer replaces the parseable
-  patch with its own output, which emptied the snapshot's file list.
 
 ## [0.6.0] - 2026-07-10
 
