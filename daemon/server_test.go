@@ -225,6 +225,10 @@ func TestStartHTTPExtraListeners(t *testing.T) {
 				s.wg.Wait()
 			})
 
+			if got := s.readHTTPInfo().ExtraAddrs; len(got) != 1 || got[0] != extraAddr {
+				t.Fatalf("handshake ExtraAddrs = %v, want [%s]", got, extraAddr)
+			}
+
 			addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(s.httpPort))
 			if tt.viaExtra {
 				addr = extraAddr

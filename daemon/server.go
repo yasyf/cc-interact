@@ -345,7 +345,11 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		listeners = append(listeners, extra)
 	}
 	s.httpPort = ln.Addr().(*net.TCPAddr).Port
-	if err := s.writeHTTPInfo(HTTPInfo{Port: s.httpPort, Bind: s.bindHost()}); err != nil {
+	var extraAddrs []string
+	for _, l := range listeners[1:] {
+		extraAddrs = append(extraAddrs, l.Addr().String())
+	}
+	if err := s.writeHTTPInfo(HTTPInfo{Port: s.httpPort, Bind: s.bindHost(), ExtraAddrs: extraAddrs}); err != nil {
 		closeAll()
 		return err
 	}

@@ -7,10 +7,13 @@ import (
 )
 
 // HTTPInfo is the handshake the daemon publishes so stream consumers and the
-// Vite dev proxy can find the HTTP/SSE plane's ephemeral port.
+// Vite dev proxy can find the HTTP/SSE plane's ephemeral port. ExtraAddrs are
+// the extra listeners' bound addresses, so a pairing CLI can tell whether the
+// running daemon actually serves a leg before advertising it.
 type HTTPInfo struct {
-	Port int    `json:"port"`
-	Bind string `json:"bind,omitempty"`
+	Port       int      `json:"port"`
+	Bind       string   `json:"bind,omitempty"`
+	ExtraAddrs []string `json:"extra_addrs,omitempty"`
 }
 
 // readHTTPInfo returns the last published handshake, or the zero value when the
