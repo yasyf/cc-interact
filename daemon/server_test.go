@@ -422,3 +422,49 @@ func TestStartHTTPFiresOnHTTPStart(t *testing.T) {
 		t.Fatal("OnHTTPStart did not fire")
 	}
 }
+
+// TestStartHTTPWaitsForOnHTTPStartCleanup proves wg.Wait blocks until a hook's
+// ctx.Done cleanup finishes — the contract mDNS goodbye packets rely on to flush
+// before the process exits.
+func TestStartHTTPWaitsForOnHTTPStartCleanup(t *testing.T) {
+	isolateStateDir(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	release := make(chan struct{})
+	var cleaned atomic.Bool
+	s := &Server{
+		paths: testPaths(),
+		log:   log.New(io.Discard, "", 0),
+		onHTTPStart: func(hookCtx context.Context, _ int) {
+			<-hookCtx.Done()
+			<-release
+			cleaned.Store(true)
+		},
+	}
+	s.sse = sse.NewServer(s, sse.Config{})
+
+	if err := s.startHTTP(ctx); err != nil {
+		t.Fatalf("startHTTP: %v", err)
+	}
+
+	cancel()
+	waited := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(waited)
+	}()
+
+	// The hook has unblocked from ctx.Done but is parked on release; wg.Wait must
+	// not return until it completes.
+	select {
+	case <-waited:
+		t.Fatal("wg.Wait returned before the onHTTPStart hook finished cleanup")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+	<-waited
+	if !cleaned.Load() {
+		t.Fatal("onHTTPStart cleanup did not run")
+	}
+}

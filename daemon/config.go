@@ -92,7 +92,9 @@ type Config struct {
 	// browser EventSource needs). Loopback requests always bypass it.
 	HTTPToken string
 	// OnHTTPStart fires once the HTTP plane is bound and its handshake published;
-	// consumers hook mDNS advertising here.
+	// consumers hook mDNS advertising here. Like Background, the ctx is cancelled
+	// at shutdown and Serve waits for the hook to return, so cleanup on ctx.Done()
+	// (mDNS goodbye packets) completes before the process exits.
 	OnHTTPStart func(ctx context.Context, port int)
 	// ExtraHTTPListeners are called once at HTTP start; each listener serves the
 	// same auth-guarded handler as the primary bind (e.g. a TLS listener with

@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lifecycle: `fn` receives the serve context (cancelled at shutdown) and
   `Serve` drains it before closing the store.
 
+### Fixed
+- `daemon`: the `OnHTTPStart` hook now runs on the wait group, so `Serve`
+  awaits its return after the serve context is cancelled. A hook that releases
+  a resource on `ctx.Done()` — mDNS goodbye packets — no longer races the
+  process exit, so a restart or shutdown withdraws the advertisement instead of
+  leaving a stale record.
+
 ### Security
 - The loopback auth bypass now also requires a loopback `Origin` (absent, an
   IP loopback, or `localhost`), closing a CSRF hole where a foreign page could

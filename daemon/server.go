@@ -374,7 +374,11 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		return err
 	}
 	if s.onHTTPStart != nil {
-		go s.onHTTPStart(ctx, s.httpPort)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.onHTTPStart(ctx, s.httpPort)
+		}()
 	}
 	handler := authHandler(s.httpToken, s.sse.Handler())
 	if s.publicHandler != nil {
