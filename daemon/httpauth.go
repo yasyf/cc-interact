@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -15,37 +16,57 @@ import (
 // unauthenticated.
 var ErrUnauthenticatedBind = errors.New("non-loopback HTTP bind requires a token")
 
-// authHandler guards next with a bearer token. An empty token disables the
-// check. A loopback request always passes — ParseIP unmaps ::ffff:127.0.0.1, so
-// v4-in-v6 counts as loopback; a RemoteAddr that does not parse to an IP does
-// not. Otherwise the request must present the token in an "Authorization: Bearer
-// <token>" header or the ?token= query fallback (which browser EventSource needs,
-// since it cannot set headers), compared in constant time; a ?token= is stripped
-// from the URL before next runs, so it never survives into a downstream redirect
-// or access log. Anything else is 401. The loopback bypass trusts the immediate
-// TCP peer, so fronting the daemon with a local reverse proxy makes every proxied
-// request appear loopback and defeats token auth — an unsupported deployment.
+// authHandler guards next with a bearer token. A loopback request passes
+// without one (ParseIP unmaps ::ffff:127.0.0.1, so v4-in-v6 counts; an
+// unparseable RemoteAddr does not) — but only under a loopback Origin, per
+// loopbackOrigin, so a foreign page cannot CSRF the daemon through a local
+// browser. Otherwise the request must present the token in an "Authorization:
+// Bearer <token>" header or the ?token= query fallback (browser EventSource
+// cannot set headers), compared in constant time; a ?token= is stripped before
+// next runs so it never reaches a downstream redirect or access log. Anything
+// else is 401 — with no token configured (a loopback-only bind, per
+// validateBindAuth) only the loopback bypass admits requests. The bypass trusts
+// the immediate TCP peer, so fronting the daemon with a local reverse proxy
+// defeats token auth — an unsupported deployment.
 func authHandler(token string, next http.Handler) http.Handler {
-	if token == "" {
-		return next
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		candidate := r.URL.Query().Get("token")
 		stripTokenParam(r)
 		host, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() && loopbackOrigin(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 			candidate = strings.TrimPrefix(h, "Bearer ")
 		}
-		if tokensMatch(candidate, token) {
+		if token != "" && tokensMatch(candidate, token) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
+}
+
+// loopbackOrigin reports whether r's Origin header permits the loopback-peer
+// bypass: absent (a native client — browsers always send Origin on cross-origin
+// requests and on every POST) or naming a loopback host (the daemon's own SPA).
+// Anything else — a foreign site, an opaque "null" — must present the token.
+func loopbackOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // tokensMatch reports whether candidate equals token, comparing SHA-256 digests

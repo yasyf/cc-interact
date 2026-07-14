@@ -17,16 +17,24 @@ func TestAuthHandler(t *testing.T) {
 		remoteAddr string
 		authHeader string
 		queryToken string
+		origin     string
 		wantStatus int
 		wantBody   string
 	}{
-		{"loopback v4 bypasses", token, "127.0.0.1:41000", "", "", http.StatusOK, "reached"},
-		{"loopback v6 bypasses", token, "[::1]:41000", "", "", http.StatusOK, "reached"},
-		{"header token accepted", token, "192.168.1.9:41000", "Bearer " + token, "", http.StatusOK, "reached"},
-		{"query token accepted", token, "192.168.1.9:41000", "", token, http.StatusOK, "reached"},
-		{"wrong token rejected", token, "192.168.1.9:41000", "Bearer nope", "", http.StatusUnauthorized, "unauthorized\n"},
-		{"missing token rejected", token, "192.168.1.9:41000", "", "", http.StatusUnauthorized, "unauthorized\n"},
-		{"empty token passes through", "", "192.168.1.9:41000", "", "", http.StatusOK, "reached"},
+		{"loopback v4 bypasses", token, "127.0.0.1:41000", "", "", "", http.StatusOK, "reached"},
+		{"loopback v6 bypasses", token, "[::1]:41000", "", "", "", http.StatusOK, "reached"},
+		{"header token accepted", token, "192.168.1.9:41000", "Bearer " + token, "", "", http.StatusOK, "reached"},
+		{"query token accepted", token, "192.168.1.9:41000", "", token, "", http.StatusOK, "reached"},
+		{"wrong token rejected", token, "192.168.1.9:41000", "Bearer nope", "", "", http.StatusUnauthorized, "unauthorized\n"},
+		{"missing token rejected", token, "192.168.1.9:41000", "", "", "", http.StatusUnauthorized, "unauthorized\n"},
+		{"empty token loopback bypasses", "", "127.0.0.1:41000", "", "", "", http.StatusOK, "reached"},
+		{"empty token non-loopback rejected", "", "192.168.1.9:41000", "", "", "", http.StatusUnauthorized, "unauthorized\n"},
+		{"loopback with loopback origin bypasses", token, "127.0.0.1:41000", "", "", "http://127.0.0.1:8123", http.StatusOK, "reached"},
+		{"loopback with localhost origin bypasses", token, "127.0.0.1:41000", "", "", "http://localhost:8123", http.StatusOK, "reached"},
+		{"loopback with foreign origin rejected", token, "127.0.0.1:41000", "", "", "https://evil.example", http.StatusUnauthorized, "unauthorized\n"},
+		{"loopback with null origin rejected", token, "127.0.0.1:41000", "", "", "null", http.StatusUnauthorized, "unauthorized\n"},
+		{"loopback with foreign origin and token accepted", token, "127.0.0.1:41000", "Bearer " + token, "", "https://evil.example", http.StatusOK, "reached"},
+		{"empty token loopback with foreign origin rejected", "", "127.0.0.1:41000", "", "", "https://evil.example", http.StatusUnauthorized, "unauthorized\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -37,6 +45,9 @@ func TestAuthHandler(t *testing.T) {
 			req.RemoteAddr = tt.remoteAddr
 			if tt.authHeader != "" {
 				req.Header.Set("Authorization", tt.authHeader)
+			}
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
 			}
 			if tt.queryToken != "" {
 				q := req.URL.Query()
