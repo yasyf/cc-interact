@@ -94,6 +94,51 @@ func TestAuthHandlerStripsQueryToken(t *testing.T) {
 	}
 }
 
+func TestPublicFallback(t *testing.T) {
+	const token = "s3cret-token"
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("events"))
+	})
+	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("sessions"))
+	})
+	public := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("spa"))
+	})
+	handler := publicFallback(mux, authHandler(token, mux), public)
+
+	tests := []struct {
+		name       string
+		path       string
+		authHeader string
+		wantStatus int
+		wantBody   string
+	}{
+		{"unmatched path is public without token", "/", "", http.StatusOK, "spa"},
+		{"asset path is public without token", "/assets/app.js", "", http.StatusOK, "spa"},
+		{"mounted route requires token", "/events", "", http.StatusUnauthorized, "unauthorized\n"},
+		{"mounted route serves with token", "/api/sessions", "Bearer " + token, http.StatusOK, "sessions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req.RemoteAddr = "192.168.1.9:41000"
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if got := rec.Body.String(); got != tt.wantBody {
+				t.Fatalf("body = %q, want %q", got, tt.wantBody)
+			}
+		})
+	}
+}
+
 func TestValidateBindAuth(t *testing.T) {
 	tests := []struct {
 		name           string

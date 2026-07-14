@@ -69,6 +69,19 @@ func loopbackOrigin(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// publicFallback routes requests the mux has a registered pattern for through
+// authed, and everything else to public — the consumer's static catch-all,
+// which must stay fetchable before a browser holds the token.
+func publicFallback(mux *http.ServeMux, authed, public http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			authed.ServeHTTP(w, r)
+			return
+		}
+		public.ServeHTTP(w, r)
+	})
+}
+
 // tokensMatch reports whether candidate equals token, comparing SHA-256 digests
 // in constant time. Hashing to a fixed 32-byte width first means a length
 // mismatch cannot be timed, which a raw ConstantTimeCompare of the strings would

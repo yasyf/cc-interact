@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
@@ -100,4 +101,10 @@ type Config struct {
 	// be non-loopback, New refuses extra listeners with no HTTPToken
 	// (ErrUnauthenticatedBind).
 	ExtraHTTPListeners []func(ctx context.Context) (net.Listener, error)
+	// PublicHandler, when set, serves every request no Mux route matches,
+	// OUTSIDE the auth guard — the consumer's static SPA shell (index.html,
+	// assets, service worker), which a remote browser must be able to fetch
+	// before it has any script that could attach the token. Routes mounted on
+	// Mux stay auth-guarded; never mount "/" on Mux alongside this.
+	PublicHandler http.Handler
 }

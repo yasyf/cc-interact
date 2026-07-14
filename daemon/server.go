@@ -68,6 +68,7 @@ type Server struct {
 	httpToken      string
 	onHTTPStart    func(ctx context.Context, port int)
 	extraListeners []func(ctx context.Context) (net.Listener, error)
+	publicHandler  http.Handler
 	evictTimeout   time.Duration
 
 	repoMu    sync.Mutex
@@ -116,6 +117,7 @@ func New(cfg Config) (*Server, error) {
 		httpToken:       cfg.HTTPToken,
 		onHTTPStart:     cfg.OnHTTPStart,
 		extraListeners:  cfg.ExtraHTTPListeners,
+		publicHandler:   cfg.PublicHandler,
 		evictTimeout:    defaultEvictTimeout,
 		repoLocks:       make(map[string]*sync.Mutex),
 	}
@@ -350,8 +352,12 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	if s.onHTTPStart != nil {
 		go s.onHTTPStart(ctx, s.httpPort)
 	}
+	handler := authHandler(s.httpToken, s.sse.Handler())
+	if s.publicHandler != nil {
+		handler = publicFallback(s.sse.Mux(), handler, s.publicHandler)
+	}
 	srv := &http.Server{
-		Handler:     authHandler(s.httpToken, s.sse.Handler()),
+		Handler:     handler,
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 	for _, l := range listeners {
