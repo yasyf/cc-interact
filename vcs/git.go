@@ -56,7 +56,7 @@ func gitCapture(ctx context.Context, cwd, baseRef string) (Snapshot, error) {
 	}
 	defer cleanup()
 
-	patch, err := git(ctx, cwd, env, "diff", "--cached", "--no-color", base)
+	patch, err := git(ctx, cwd, env, "diff", "--cached", "--no-color", "--no-ext-diff", base)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("diff working tree: %w", err)
 	}
@@ -75,7 +75,7 @@ func gitCapture(ctx context.Context, cwd, baseRef string) (Snapshot, error) {
 			return Snapshot{}, err
 		}
 		// The throwaway index is already staged; only the base changes.
-		if patch, err = git(ctx, cwd, env, "diff", "--cached", "--no-color", base); err != nil {
+		if patch, err = git(ctx, cwd, env, "diff", "--cached", "--no-color", "--no-ext-diff", base); err != nil {
 			return Snapshot{}, fmt.Errorf("diff against trunk %s: %w", trunk, err)
 		}
 		if strings.TrimSpace(patch) == "" {
@@ -97,7 +97,7 @@ func gitCaptureAt(ctx context.Context, cwd, base string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	defer cleanup()
-	patch, err := git(ctx, cwd, env, "diff", "--cached", "--no-color", base)
+	patch, err := git(ctx, cwd, env, "diff", "--cached", "--no-color", "--no-ext-diff", base)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("diff against base %s: %w", base, err)
 	}
