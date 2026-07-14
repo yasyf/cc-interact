@@ -81,11 +81,18 @@ func loopbackBind(host string) bool {
 }
 
 // validateBindAuth rejects a configuration that would expose the HTTP plane
-// unauthenticated: a non-loopback bind with no token, where authHandler's
-// loopback bypass never applies and there is nothing to check a request against.
-func validateBindAuth(bindHost, token string) error {
-	if token == "" && !loopbackBind(bindHost) {
+// unauthenticated: with no token, a non-loopback bind — where authHandler's
+// loopback bypass never applies and there is nothing to check a request against
+// — and any extra listener, whose peers may be non-loopback for the same reason.
+func validateBindAuth(bindHost, token string, extraListeners bool) error {
+	if token != "" {
+		return nil
+	}
+	if !loopbackBind(bindHost) {
 		return fmt.Errorf("bind %q: %w", bindHost, ErrUnauthenticatedBind)
+	}
+	if extraListeners {
+		return fmt.Errorf("extra HTTP listeners: %w", ErrUnauthenticatedBind)
 	}
 	return nil
 }

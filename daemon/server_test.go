@@ -6,7 +6,9 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -137,6 +139,186 @@ func TestListenHTTPPortReuse(t *testing.T) {
 func TestNewRefusesUnauthenticatedBind(t *testing.T) {
 	if _, err := New(Config{BindAddr: "0.0.0.0"}); !errors.Is(err, ErrUnauthenticatedBind) {
 		t.Fatalf("New err = %v, want ErrUnauthenticatedBind", err)
+	}
+}
+
+func TestNewRefusesUnauthenticatedExtraListeners(t *testing.T) {
+	cfg := Config{ExtraHTTPListeners: []func(context.Context) (net.Listener, error){
+		func(context.Context) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
+	}}
+	if _, err := New(cfg); !errors.Is(err, ErrUnauthenticatedBind) {
+		t.Fatalf("New err = %v, want ErrUnauthenticatedBind", err)
+	}
+}
+
+// spoofAddrListener wraps accepted connections so they report a fixed peer
+// address, exercising the per-connection loopback bypass with a non-loopback
+// peer over a real socket.
+type spoofAddrListener struct {
+	net.Listener
+	addr net.Addr
+}
+
+func (l spoofAddrListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return spoofAddrConn{Conn: conn, addr: l.addr}, nil
+}
+
+type spoofAddrConn struct {
+	net.Conn
+	addr net.Addr
+}
+
+func (c spoofAddrConn) RemoteAddr() net.Addr { return c.addr }
+
+func TestStartHTTPExtraListeners(t *testing.T) {
+	const token = "s3cret-token"
+	tests := []struct {
+		name       string
+		viaExtra   bool
+		authHeader string
+		wantStatus int
+		wantBody   string
+	}{
+		{"extra listener serves the same routes with token", true, "Bearer " + token, http.StatusOK, "pong"},
+		{"non-loopback peer on extra listener without token rejected", true, "", http.StatusUnauthorized, "unauthorized\n"},
+		{"non-loopback peer on extra listener with wrong token rejected", true, "Bearer nope", http.StatusUnauthorized, "unauthorized\n"},
+		{"loopback peer on primary still bypasses token", false, "", http.StatusOK, "pong"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateStateDir(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var extraAddr string
+			factory := func(context.Context) (net.Listener, error) {
+				inner, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					return nil, err
+				}
+				extraAddr = inner.Addr().String()
+				return spoofAddrListener{
+					Listener: inner,
+					addr:     &net.TCPAddr{IP: net.ParseIP("203.0.113.9"), Port: 41000},
+				}, nil
+			}
+			s := &Server{
+				paths:          testPaths(),
+				log:            log.New(io.Discard, "", 0),
+				httpToken:      token,
+				extraListeners: []func(context.Context) (net.Listener, error){factory},
+			}
+			s.sse = sse.NewServer(s, sse.Config{})
+			s.Mux().HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("pong"))
+			})
+
+			if err := s.startHTTP(ctx); err != nil {
+				t.Fatalf("startHTTP: %v", err)
+			}
+			t.Cleanup(func() {
+				cancel()
+				s.wg.Wait()
+			})
+
+			addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(s.httpPort))
+			if tt.viaExtra {
+				addr = extraAddr
+			}
+			req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/ping", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET %s: %v", addr, err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if got := string(body); got != tt.wantBody {
+				t.Fatalf("body = %q, want %q", got, tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestStartHTTPExtraListenerFactoryErrorFailsStartup(t *testing.T) {
+	isolateStateDir(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errBoom := errors.New("boom")
+	var opened net.Listener
+	factories := []func(context.Context) (net.Listener, error){
+		func(context.Context) (net.Listener, error) {
+			var err error
+			opened, err = net.Listen("tcp", "127.0.0.1:0")
+			return opened, err
+		},
+		func(context.Context) (net.Listener, error) { return nil, errBoom },
+	}
+	s := &Server{
+		paths:          testPaths(),
+		log:            log.New(io.Discard, "", 0),
+		httpToken:      "s3cret-token",
+		extraListeners: factories,
+	}
+	s.sse = sse.NewServer(s, sse.Config{})
+
+	if err := s.startHTTP(ctx); !errors.Is(err, errBoom) {
+		t.Fatalf("startHTTP err = %v, want errBoom", err)
+	}
+	// The deadline only bounds the failure path: on a closed listener (SetDeadline
+	// errors too, ignored) Accept returns net.ErrClosed immediately.
+	_ = opened.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := opened.Accept(); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("first extra listener Accept err = %v, want net.ErrClosed", err)
+	}
+	if port := s.readHTTPInfo().Port; port != 0 {
+		t.Fatalf("handshake published port %d after failed startup, want none", port)
+	}
+}
+
+func TestStartHTTPShutdownClosesExtraListeners(t *testing.T) {
+	isolateStateDir(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var extra net.Listener
+	factory := func(context.Context) (net.Listener, error) {
+		var err error
+		extra, err = net.Listen("tcp", "127.0.0.1:0")
+		return extra, err
+	}
+	s := &Server{
+		paths:          testPaths(),
+		log:            log.New(io.Discard, "", 0),
+		httpToken:      "s3cret-token",
+		extraListeners: []func(context.Context) (net.Listener, error){factory},
+	}
+	s.sse = sse.NewServer(s, sse.Config{})
+
+	if err := s.startHTTP(ctx); err != nil {
+		t.Fatalf("startHTTP: %v", err)
+	}
+	cancel()
+	s.wg.Wait()
+
+	_ = extra.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := extra.Accept(); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("extra listener Accept err = %v, want net.ErrClosed", err)
 	}
 }
 

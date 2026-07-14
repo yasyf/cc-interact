@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-14
+
+### Added
+- `daemon.Config.ExtraHTTPListeners` — listener factories called once at HTTP
+  start, each serving the same composed, auth-guarded handler as the primary
+  bind (e.g. a TLS listener with certs from `tailscale cert`). A factory error
+  fails startup, and one graceful shutdown drains every listener. The loopback
+  token bypass stays per-connection (judged by peer address), so `New` refuses
+  extra listeners with no `HTTPToken` (`ErrUnauthenticatedBind`).
+
+### Fixed
+- `vcs`: snapshot diffs now pass `--no-ext-diff`, so a `diff.external` tool in
+  the user's git config (difftastic, delta) no longer replaces the parseable
+  patch with its own output, which emptied the snapshot's file list.
+
 ## [0.6.0] - 2026-07-10
 
 ### Added
@@ -181,7 +196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/yasyf/cc-interact/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yasyf/cc-interact/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yasyf/cc-interact/compare/v0.1.9...v0.5.0
 [0.1.9]: https://github.com/yasyf/cc-interact/compare/v0.1.8...v0.1.9

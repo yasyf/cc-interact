@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net"
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
@@ -92,4 +93,11 @@ type Config struct {
 	// OnHTTPStart fires once the HTTP plane is bound and its handshake published;
 	// consumers hook mDNS advertising here.
 	OnHTTPStart func(ctx context.Context, port int)
+	// ExtraHTTPListeners are called once at HTTP start; each listener serves the
+	// same auth-guarded handler as the primary bind (e.g. a TLS listener with
+	// certs from `tailscale cert`). A factory error fails startup. The loopback
+	// token bypass stays per-connection (peer address), and since extra peers may
+	// be non-loopback, New refuses extra listeners with no HTTPToken
+	// (ErrUnauthenticatedBind).
+	ExtraHTTPListeners []func(ctx context.Context) (net.Listener, error)
 }

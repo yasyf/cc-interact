@@ -62,12 +62,13 @@ type Server struct {
 
 	handlers map[Op]HandlerFunc
 
-	fixedPort    int
-	httpPort     int
-	bindAddr     string
-	httpToken    string
-	onHTTPStart  func(ctx context.Context, port int)
-	evictTimeout time.Duration
+	fixedPort      int
+	httpPort       int
+	bindAddr       string
+	httpToken      string
+	onHTTPStart    func(ctx context.Context, port int)
+	extraListeners []func(ctx context.Context) (net.Listener, error)
+	evictTimeout   time.Duration
 
 	repoMu    sync.Mutex
 	repoLocks map[string]*sync.Mutex
@@ -80,7 +81,7 @@ type Server struct {
 // plane, and returns a Server ready for the consumer to Register domain ops and
 // mount routes on Mux before calling Serve.
 func New(cfg Config) (*Server, error) {
-	if err := validateBindAuth(bindHostOrDefault(cfg.BindAddr), cfg.HTTPToken); err != nil {
+	if err := validateBindAuth(bindHostOrDefault(cfg.BindAddr), cfg.HTTPToken, len(cfg.ExtraHTTPListeners) > 0); err != nil {
 		return nil, err
 	}
 	if err := cfg.Paths.EnsureStateDir(); err != nil {
@@ -114,6 +115,7 @@ func New(cfg Config) (*Server, error) {
 		bindAddr:        cfg.BindAddr,
 		httpToken:       cfg.HTTPToken,
 		onHTTPStart:     cfg.OnHTTPStart,
+		extraListeners:  cfg.ExtraHTTPListeners,
 		evictTimeout:    defaultEvictTimeout,
 		repoLocks:       make(map[string]*sync.Mutex),
 	}
@@ -315,19 +317,34 @@ func (s *Server) listenHTTP() (net.Listener, error) {
 	return net.Listen("tcp", net.JoinHostPort(host, "0"))
 }
 
-// startHTTP binds the HTTP plane on bindHost, publishes the port handshake, and
-// serves until ctx is cancelled. The auth middleware wraps the whole mux.
-// Request contexts derive from ctx (BaseContext), so cancelling it ends every
-// parked SSE handler before the graceful Shutdown drains them — and before Serve
-// closes the store.
+// startHTTP binds the HTTP plane on bindHost plus every extra listener, publishes
+// the port handshake, and serves until ctx is cancelled. Every listener carries
+// the same server, so the auth middleware wraps the whole mux everywhere and one
+// graceful Shutdown drains them all. Request contexts derive from ctx
+// (BaseContext), so cancelling it ends every parked SSE handler before the
+// graceful Shutdown drains them — and before Serve closes the store.
 func (s *Server) startHTTP(ctx context.Context) error {
 	ln, err := s.listenHTTP()
 	if err != nil {
 		return err
 	}
+	listeners := []net.Listener{ln}
+	closeAll := func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}
+	for _, factory := range s.extraListeners {
+		extra, err := factory(ctx)
+		if err != nil {
+			closeAll()
+			return fmt.Errorf("extra HTTP listener: %w", err)
+		}
+		listeners = append(listeners, extra)
+	}
 	s.httpPort = ln.Addr().(*net.TCPAddr).Port
 	if err := s.writeHTTPInfo(HTTPInfo{Port: s.httpPort, Bind: s.bindHost()}); err != nil {
-		ln.Close()
+		closeAll()
 		return err
 	}
 	if s.onHTTPStart != nil {
@@ -337,13 +354,15 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		Handler:     authHandler(s.httpToken, s.sse.Handler()),
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.log.Printf("http serve: %v", err)
-		}
-	}()
+	for _, l := range listeners {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.log.Printf("http serve %s: %v", l.Addr(), err)
+			}
+		}()
+	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()

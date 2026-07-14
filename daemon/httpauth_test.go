@@ -85,23 +85,27 @@ func TestAuthHandlerStripsQueryToken(t *testing.T) {
 
 func TestValidateBindAuth(t *testing.T) {
 	tests := []struct {
-		name     string
-		bindAddr string
-		token    string
-		wantErr  bool
+		name           string
+		bindAddr       string
+		token          string
+		extraListeners bool
+		wantErr        bool
 	}{
-		{"empty addr empty token ok", "", "", false},
-		{"loopback v4 empty token ok", "127.0.0.1", "", false},
-		{"loopback v6 empty token ok", "::1", "", false},
-		{"wildcard v4 empty token refused", "0.0.0.0", "", true},
-		{"wildcard v6 empty token refused", "::", "", true},
-		{"lan ip empty token refused", "192.168.1.9", "", true},
-		{"wildcard v4 with token ok", "0.0.0.0", "s3cret", false},
-		{"lan ip with token ok", "192.168.1.9", "s3cret", false},
+		{"empty addr empty token ok", "", "", false, false},
+		{"loopback v4 empty token ok", "127.0.0.1", "", false, false},
+		{"loopback v6 empty token ok", "::1", "", false, false},
+		{"wildcard v4 empty token refused", "0.0.0.0", "", false, true},
+		{"wildcard v6 empty token refused", "::", "", false, true},
+		{"lan ip empty token refused", "192.168.1.9", "", false, true},
+		{"wildcard v4 with token ok", "0.0.0.0", "s3cret", false, false},
+		{"lan ip with token ok", "192.168.1.9", "s3cret", false, false},
+		{"extra listeners empty token refused", "", "", true, true},
+		{"extra listeners with token ok", "", "s3cret", true, false},
+		{"extra listeners lan ip with token ok", "192.168.1.9", "s3cret", true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateBindAuth(bindHostOrDefault(tt.bindAddr), tt.token)
+			err := validateBindAuth(bindHostOrDefault(tt.bindAddr), tt.token, tt.extraListeners)
 			if tt.wantErr {
 				if !errors.Is(err, ErrUnauthenticatedBind) {
 					t.Fatalf("err = %v, want ErrUnauthenticatedBind", err)
