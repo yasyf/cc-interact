@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,64 @@ func isolateStateDir(t *testing.T) {
 func boundPort(t *testing.T, ln net.Listener) int {
 	t.Helper()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// shortHome points HOME at a short-prefix temp dir so the daemon's unix socket
+// path stays under the sun_path length limit.
+func shortHome(t *testing.T) {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "cci-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("HOME", dir)
+}
+
+func TestBackgroundWaitedBeforeServeReturns(t *testing.T) {
+	shortHome(t)
+	s, err := New(Config{
+		AppName:        "cc-interact-test",
+		Paths:          testPaths(),
+		Version:        "0.0.1",
+		ActiveStatuses: []string{"open"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	served := make(chan error, 1)
+	go func() { served <- s.Serve(ctx) }()
+
+	client := NewClient(testPaths().SocketPath())
+	deadline := time.Now().Add(5 * time.Second)
+	for !client.Available() {
+		if time.Now().After(deadline) {
+			t.Fatal("daemon did not come up")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var finished atomic.Bool
+	s.Background(func(ctx context.Context) {
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond)
+		finished.Store(true)
+	})
+
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+	if !finished.Load() {
+		t.Fatal("Serve returned before Background work finished")
+	}
 }
 
 func TestListenHTTPPortReuse(t *testing.T) {

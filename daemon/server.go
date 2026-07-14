@@ -74,6 +74,8 @@ type Server struct {
 	repoMu    sync.Mutex
 	repoLocks map[string]*sync.Mutex
 
+	serveCtxMu      sync.Mutex
+	serveCtx        context.Context
 	triggerShutdown context.CancelFunc
 	wg              sync.WaitGroup
 }
@@ -167,6 +169,21 @@ func (s *Server) Mux() *http.ServeMux { return s.sse.Mux() }
 // query the consumer's own tables.
 func (s *Server) DB() *sql.DB { return s.db }
 
+// Background runs fn as daemon-lifecycle work: fn receives the serve context
+// (cancelled at shutdown) and Serve waits for it to return before closing the
+// store, so consumer fan-out never outlives the daemon or writes to a closed
+// DB. Call it from a handler — before Serve there is no serve context.
+func (s *Server) Background(fn func(context.Context)) {
+	s.serveCtxMu.Lock()
+	ctx := s.serveCtx
+	s.serveCtxMu.Unlock()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fn(ctx)
+	}()
+}
+
 // Serve binds (and evicts any older holder of) the control socket, runs the boot
 // reconcile, boots the HTTP plane, then serves control RPCs until ctx is
 // cancelled or a shutdown op arrives. It closes the store on return.
@@ -176,6 +193,9 @@ func (s *Server) Serve(parent context.Context) error {
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	s.triggerShutdown = stop
+	s.serveCtxMu.Lock()
+	s.serveCtx = ctx
+	s.serveCtxMu.Unlock()
 
 	// Bind the control socket before publishing the HTTP handshake; connections
 	// queue in the listener backlog until the accept loop starts, so nothing
