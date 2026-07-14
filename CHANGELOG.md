@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `daemon.Config.PublicHandler` — serves every request no mux route matches
+  outside the auth guard, so a consumer's static SPA shell (index.html, assets,
+  service worker) is fetchable before a remote browser holds the token. Routes
+  mounted on the mux keep the full bearer/loopback semantics.
+- `daemon.HTTPInfo.ExtraAddrs` — the handshake now records each extra
+  listener's bound address, so a pairing CLI can verify a leg is actually
+  served before advertising it.
+- `daemon.Server.Background(fn)` — runs consumer fan-out on the daemon
+  lifecycle: `fn` receives the serve context (cancelled at shutdown) and
+  `Serve` drains it before closing the store.
+
+### Security
+- The loopback auth bypass now also requires a loopback `Origin` (absent, an
+  IP loopback, or `localhost`), closing a CSRF hole where a foreign page could
+  send no-cors mutations to `127.0.0.1` through a local browser. An empty
+  token no longer disables the check entirely — it fails closed to the
+  loopback bypass alone.
+
 ## [0.7.0] - 2026-07-14
 
 ### Added
