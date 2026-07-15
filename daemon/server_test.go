@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"log"
@@ -89,6 +90,104 @@ func TestBackgroundWaitedBeforeServeReturns(t *testing.T) {
 	}
 	if !finished.Load() {
 		t.Fatal("Serve returned before Background work finished")
+	}
+}
+
+func TestServeDrainsBackgroundBeforeStoreCloseOnHTTPStartupFailure(t *testing.T) {
+	shortHome(t)
+	holder, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+
+	writesStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	workerDone := make(chan error, 1)
+	const shutdownWrite = `
+		INSERT INTO shutdown_probe(id, hits) VALUES('shutdown-probe', 0)
+		ON CONFLICT(id) DO UPDATE SET hits=hits+1
+	`
+	s, err := New(Config{
+		AppName:        "cc-interact-test",
+		Paths:          testPaths(),
+		Version:        "0.0.1",
+		ActiveStatuses: []string{"open"},
+		FixedPort:      boundPort(t, holder),
+		Migrate: func(ctx context.Context, db *sql.DB) error {
+			_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS shutdown_probe(id TEXT PRIMARY KEY, hits INTEGER NOT NULL)`)
+			return err
+		},
+		BootReconcile: func(_ context.Context, s *Server) error {
+			s.Background(func(ctx context.Context) {
+				if _, err := s.DB().ExecContext(context.Background(), shutdownWrite); err != nil {
+					workerDone <- err
+					return
+				}
+				close(writesStarted)
+				for {
+					select {
+					case <-ctx.Done():
+						<-releaseCleanup
+						_, err := s.DB().ExecContext(context.Background(), shutdownWrite)
+						workerDone <- err
+						return
+					default:
+						if _, err := s.DB().ExecContext(context.Background(), shutdownWrite); err != nil {
+							workerDone <- err
+							return
+						}
+					}
+				}
+			})
+			<-writesStarted
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	served := make(chan error, 1)
+	go func() { served <- s.Serve(context.Background()) }()
+	<-writesStarted
+
+	var serveErr error
+	returnedBeforeRelease := false
+	select {
+	case serveErr = <-served:
+		returnedBeforeRelease = true
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(releaseCleanup)
+	if !returnedBeforeRelease {
+		select {
+		case serveErr = <-served:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Serve did not return")
+		}
+	}
+
+	select {
+	case err := <-workerDone:
+		if err != nil {
+			t.Errorf("background cleanup write: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Background worker did not return")
+	}
+	if returnedBeforeRelease {
+		t.Error("Serve returned before Background worker finished")
+	}
+	var opErr *net.OpError
+	if !errors.As(serveErr, &opErr) {
+		t.Fatalf("Serve err = %v, want HTTP listen error", serveErr)
+	}
+	if opErr.Op != "listen" {
+		t.Errorf("Serve listen op = %q, want listen", opErr.Op)
+	}
+	if got, want := opErr.Addr.String(), holder.Addr().String(); got != want {
+		t.Errorf("Serve listen addr = %q, want %q", got, want)
 	}
 }
 

@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-15
+
+### Fixed
+- `daemon`: every `Server.Serve` return path now cancels the serve context,
+  drains its wait group, then closes the store, so startup failures cannot race
+  background or connection-handler writes against store teardown.
+
 ## [0.7.0] - 2026-07-14
 
 ### Added

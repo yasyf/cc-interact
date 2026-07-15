@@ -189,6 +189,7 @@ func (s *Server) Background(fn func(context.Context)) {
 // cancelled or a shutdown op arrives. It closes the store on return.
 func (s *Server) Serve(parent context.Context) error {
 	defer s.store.Close()
+	defer s.wg.Wait()
 
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
