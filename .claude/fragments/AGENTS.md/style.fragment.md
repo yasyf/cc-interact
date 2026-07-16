@@ -39,5 +39,3 @@ CI runs the web build first, then `go vet ./...` and `go test -race ./...`. The 
 build and test green with the `web/` package absent — never let a core package import `web/`.
 
 **Writing docs.** When writing or revising docs, a README, a tutorial, a how-to, or reference, use the `writing-docs` skill (Diataxis modes, voice rules, and runnable code-sample rules) and run `slop-cop check <file> --lang=markdown` before you finish.
-
-**Git.** Commits should be atomic and scoped. One logical change per commit.
