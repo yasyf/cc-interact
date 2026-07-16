@@ -469,6 +469,13 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 	})
 }
 
+// Dispatch answers a single envelope through the daemon's op table, exactly as a
+// socket connection would. It exists for consumer-mounted HTTP bridges; callers
+// stamp Session, ClaudePID, and Scope themselves.
+func (s *Server) Dispatch(ctx context.Context, env Envelope) Reply {
+	return s.dispatch(ctx, env)
+}
+
 func (s *Server) writeReply(conn net.Conn, r Reply) {
 	r.Proto = ProtocolVersion
 	_ = json.NewEncoder(conn).Encode(r)

@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-16
+
+### Added
+- `daemon.Server.Dispatch` — exports the socket conn loop's op-table chokepoint
+  for consumer-mounted HTTP bridges, which stamp `Session`, `ClaudePID`, and
+  `Scope` themselves before answering an `Envelope` directly.
+
 ## [0.7.1] - 2026-07-15
 
 ### Fixed
