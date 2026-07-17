@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-17
+
+### Added
+- `channelsetup`: the channel-approval flow every plugin consumer previously
+  hand-rolled — `Plugin` identity (`ChannelID`, `Source`), the managed-settings
+  allowlist merge (`MergeManaged`, strict `ManagedHasEntry`), the
+  injection-proof macOS admin apply (`ApplyManagedViaAdmin`), and the exported
+  `Offer` state machine behind the first-run approval offer.
+- `cmd.SetupChannelsCmd`: the hidden `setup-channels` subcommand
+  (`--check`/`--apply`/`--decline`) consumers previously re-implemented;
+  `--check` prints `{"offer":bool,"reason":string}`.
+- `paths.Paths.ChannelSetupMarkerPath`: the `channels-setup.json` offer marker
+  under the consumer state dir.
+- `channel.Instructions` and `channel.ReceiveProtocol`: the shared
+  channel-instructions and tri-state receive-protocol prose templates.
+
+## [0.9.0] - 2026-07-16
+
 ### Added
 - `daemon.Config.TrustedPeer` — a third acceptance path beside the loopback
   bypass and the bearer token: a non-loopback TCP peer whose (Unmap()ed) IP the
@@ -245,7 +263,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/yasyf/cc-interact/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/yasyf/cc-interact/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/yasyf/cc-interact/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/yasyf/cc-interact/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/yasyf/cc-interact/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yasyf/cc-interact/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yasyf/cc-interact/compare/v0.1.9...v0.5.0

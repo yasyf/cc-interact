@@ -44,6 +44,11 @@ func (p Paths) LogPath() string { return filepath.Join(p.StateDir(), "daemon.log
 // and the SSE consumers can reach the HTTP plane.
 func (p Paths) HTTPInfoPath() string { return filepath.Join(p.StateDir(), "http.json") }
 
+// ChannelSetupMarkerPath is the channel-setup offer marker path.
+func (p Paths) ChannelSetupMarkerPath() string {
+	return filepath.Join(p.StateDir(), "channels-setup.json")
+}
+
 // LockDir holds the lazy-start flock file.
 func (p Paths) LockDir() string { return filepath.Join(p.StateDir(), "locks") }
 
