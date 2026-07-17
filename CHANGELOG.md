@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `daemon`: the no-token Origin gate accepts a `localhost`/loopback-IP Origin
+  only when the TCP peer is itself loopback. Previously a `TrustedPeer`
+  connection presenting `Origin: http://localhost:<port>` bypassed the
+  `TrustedOrigin` check, letting a page served on a trusted peer's own
+  localhost CSRF the daemon's tokenless endpoints. A loopback Origin from a
+  non-loopback peer now falls through to `TrustedOrigin` and the bearer token,
+  and is refused absent both.
+
 ## [0.10.0] - 2026-07-17
 
 ### Added
