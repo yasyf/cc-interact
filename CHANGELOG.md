@@ -4,7 +4,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.1] - 2026-07-17
+
+### Security
+- `daemon` — the localhost/loopback-IP Origin shortcut now requires the
+  connection's own remote address to be loopback. Previously a trusted-peer
+  (`TrustedPeer`) connection presenting `Origin: http://localhost:<port>`
+  skipped `TrustedOrigin` entirely, enabling CSRF from a page on a trusted
+  peer's localhost. Non-loopback transports now fall through to
+  `TrustedOrigin` and the bearer check.
+
+## [0.9.0] - 2026-07-16
 
 ### Added
 - `daemon.Config.TrustedPeer` — a third acceptance path beside the loopback

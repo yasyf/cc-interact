@@ -40,8 +40,9 @@ func authHandler(token string, trustPeer func(netip.Addr) bool, trustOrigin func
 		host, _, _ := net.SplitHostPort(r.RemoteAddr)
 		if addr, err := netip.ParseAddr(host); err == nil {
 			addr = addr.Unmap()
-			trusted := (addr.IsLoopback() && addr.Zone() == "") || (trustPeer != nil && trustPeer(addr))
-			if trusted && allowedOrigin(r, trustOrigin) {
+			loopbackPeer := addr.IsLoopback() && addr.Zone() == ""
+			trusted := loopbackPeer || (trustPeer != nil && trustPeer(addr))
+			if trusted && allowedOrigin(r, trustOrigin, loopbackPeer) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -61,10 +62,12 @@ func authHandler(token string, trustPeer func(netip.Addr) bool, trustOrigin func
 // (loopback or trusted peer): absent Origin with Sec-Fetch-Site not saying
 // "cross-site" (cross-site GET navigations omit Origin per the Fetch spec;
 // native clients send neither header and pass), localhost or a loopback host
-// (the daemon's own SPA), or a host the trusted hook approves — the daemon's
+// (the daemon's own SPA) only when the connection itself is loopback — a
+// trusted peer's browser saying "localhost" means a page on the peer's
+// machine, not this one — or a host the trusted hook approves — the daemon's
 // own advertised names, never peers'. Anything else — a foreign site, an
 // opaque "null" — must present the token.
-func allowedOrigin(r *http.Request, trusted func(string) bool) bool {
+func allowedOrigin(r *http.Request, trusted func(string) bool, loopbackPeer bool) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return !strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site")
@@ -77,11 +80,13 @@ func allowedOrigin(r *http.Request, trusted func(string) bool) bool {
 	if host == "" {
 		return false
 	}
-	if host == "localhost" {
-		return true
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return true
+	if loopbackPeer {
+		if host == "localhost" {
+			return true
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return true
+		}
 	}
 	return trusted != nil && trusted(host)
 }
