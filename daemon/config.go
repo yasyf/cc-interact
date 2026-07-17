@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
@@ -109,4 +110,20 @@ type Config struct {
 	// before it has any script that could attach the token. Routes mounted on
 	// Mux stay auth-guarded; never mount "/" on Mux alongside this.
 	PublicHandler http.Handler
+	// TrustedPeer, when set, is a third acceptance path beside the loopback
+	// bypass and the bearer token: a non-loopback TCP peer whose IP the hook
+	// reports as trusted passes without a token, under the same Origin gate as
+	// the loopback bypass (see TrustedOrigin). The IP arrives Unmap()ed, so a
+	// v4-in-v6 ::ffff:a.b.c.d compares as its v4 form. With TrustedPeer set,
+	// New permits a non-loopback bind and extra listeners without an HTTPToken:
+	// every off-host request still passes the hook or the token, so an
+	// untrusted peer with no token configured is refused.
+	TrustedPeer func(ip netip.Addr) bool
+	// TrustedOrigin widens the Origin gate on the no-token bypasses: a browser
+	// request whose Origin names a non-loopback host the hook approves passes
+	// where only absent, localhost, or loopback Origins did. It must approve
+	// only hosts this daemon is itself served under (its MagicDNS name, its
+	// own tailnet IPs) — never peer names, or a foreign page on a trusted
+	// machine could drive the daemon.
+	TrustedOrigin func(host string) bool
 }

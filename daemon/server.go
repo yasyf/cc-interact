@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -66,6 +67,8 @@ type Server struct {
 	httpPort       int
 	bindAddr       string
 	httpToken      string
+	trustedPeer    func(ip netip.Addr) bool
+	trustedOrigin  func(host string) bool
 	onHTTPStart    func(ctx context.Context, port int)
 	extraListeners []func(ctx context.Context) (net.Listener, error)
 	publicHandler  http.Handler
@@ -84,7 +87,7 @@ type Server struct {
 // plane, and returns a Server ready for the consumer to Register domain ops and
 // mount routes on Mux before calling Serve.
 func New(cfg Config) (*Server, error) {
-	if err := validateBindAuth(bindHostOrDefault(cfg.BindAddr), cfg.HTTPToken, len(cfg.ExtraHTTPListeners) > 0); err != nil {
+	if err := validateBindAuth(bindHostOrDefault(cfg.BindAddr), cfg.HTTPToken, len(cfg.ExtraHTTPListeners) > 0, cfg.TrustedPeer != nil); err != nil {
 		return nil, err
 	}
 	if err := cfg.Paths.EnsureStateDir(); err != nil {
@@ -117,6 +120,8 @@ func New(cfg Config) (*Server, error) {
 		fixedPort:       cfg.FixedPort,
 		bindAddr:        cfg.BindAddr,
 		httpToken:       cfg.HTTPToken,
+		trustedPeer:     cfg.TrustedPeer,
+		trustedOrigin:   cfg.TrustedOrigin,
 		onHTTPStart:     cfg.OnHTTPStart,
 		extraListeners:  cfg.ExtraHTTPListeners,
 		publicHandler:   cfg.PublicHandler,
@@ -381,7 +386,7 @@ func (s *Server) startHTTP(ctx context.Context) error {
 			s.onHTTPStart(ctx, s.httpPort)
 		}()
 	}
-	handler := authHandler(s.httpToken, s.sse.Handler())
+	handler := authHandler(s.httpToken, s.trustedPeer, s.trustedOrigin, s.sse.Handler())
 	if s.publicHandler != nil {
 		handler = publicFallback(s.sse.Mux(), handler, s.publicHandler)
 	}
@@ -448,7 +453,8 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 	if env.Proto != ProtocolVersion {
 		return errReply(fmt.Sprintf(
 			"%s protocol skew: daemon speaks v%d, request is v%d — this session is pinned to an older plugin version; restart the session to pick up the current one",
-			s.appName, ProtocolVersion, env.Proto))
+			s.appName, ProtocolVersion, env.Proto,
+		))
 	}
 	handler, ok := s.handlers[env.Op]
 	if !ok {

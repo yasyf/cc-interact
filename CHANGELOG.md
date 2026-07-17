@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `daemon.Config.TrustedPeer` — a third acceptance path beside the loopback
+  bypass and the bearer token: a non-loopback TCP peer whose (Unmap()ed) IP the
+  hook approves passes without a token, under the same Origin gate as the
+  loopback bypass. With the hook set, `New` permits a non-loopback bind and
+  extra listeners without an `HTTPToken`; untrusted peers still get 401, so the
+  plane never serves an off-host request unauthenticated. nil hooks preserve
+  prior behavior exactly.
+- `daemon.Config.TrustedOrigin` — widens the anti-CSRF Origin gate on the
+  no-token bypasses to hosts the daemon is itself served under (its MagicDNS
+  name, its own tailnet IPs). Approve only the daemon's own advertised names,
+  never peer names.
+
 ## [0.8.0] - 2026-07-16
 
 ### Added
