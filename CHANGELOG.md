@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `daemon`: control-socket request frames are capped at 64 MiB
+  (`Config.MaxFrameBytes` overrides). An oversized `guard-edit` request stays
+  fail-open — the hook logs `frame-too-large` with the frame size and allows
+  the edit.
+- `daemon`: socket takeover orders stamped development builds, so a newer dev
+  binary replaces an older stamped dev daemon instead of deferring to it.
+
+### Fixed
+- `daemon`: takeover of a strictly older holder revalidates the incumbent's
+  PID and start time before escalating to SIGKILL, and waits (bounded) for the
+  evicted process to exit before rebinding, so a recycled PID is never killed
+  and a dying predecessor cannot clobber the successor's HTTP handshake.
+- `daemon`: SSE streams drain on shutdown — new streams are refused with 503
+  once draining starts, and admitted streams settle before the store closes.
+  Previously a late-releasing stream could observe a closed store.
+- `daemon`: control-socket cleanup and binding are serialized across
+  concurrent starters via a held-for-life lock on the socket bind, so a losing
+  daemon can no longer remove the live daemon's socket.
+
 ### Security
 - `daemon`: tokenless trusted-peer HTTP streams are re-authorized for their
   whole life, not just at accept. `authHandler` re-runs the `TrustedPeer` +
@@ -14,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being trusted — so registry-only revocation now closes an open `/events` SSE
   stream within roughly one TTL instead of never. Loopback and bearer-token
   streams are untouched; those verdicts do not expire.
+- `daemon`: control-socket peers whose UID differs from the daemon's effective
+  UID are refused with `untrusted peer`.
 
 ## [0.11.0] - 2026-07-18
 
