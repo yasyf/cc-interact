@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `daemon`: tokenless trusted-peer HTTP streams are re-authorized for their
+  whole life, not just at accept. `authHandler` re-runs the `TrustedPeer` +
+  Origin verdict every 15s (half the mesh trust cache's 30s TTL) for each live
+  stream it admitted tokenless, and cancels the request when the peer stops
+  being trusted — so registry-only revocation now closes an open `/events` SSE
+  stream within roughly one TTL instead of never. Loopback and bearer-token
+  streams are untouched; those verdicts do not expire.
+
 ## [0.11.0] - 2026-07-18
 
 ### Added

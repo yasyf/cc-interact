@@ -120,7 +120,10 @@ type Config struct {
 	// v4-in-v6 ::ffff:a.b.c.d compares as its v4 form. With TrustedPeer set,
 	// New permits a non-loopback bind and extra listeners without an HTTPToken:
 	// every off-host request still passes the hook or the token, so an
-	// untrusted peer with no token configured is refused.
+	// untrusted peer with no token configured is refused. The hook must be
+	// safe for concurrent use: beyond per-request checks, it is re-polled
+	// periodically for every live tokenless stream it admitted, and a stream
+	// whose peer it stops trusting is closed.
 	TrustedPeer func(ip netip.Addr) bool
 	// TrustedOrigin widens the Origin gate on the no-token bypasses: a browser
 	// request whose Origin names a non-loopback host the hook approves passes

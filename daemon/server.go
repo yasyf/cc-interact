@@ -358,7 +358,7 @@ func (s *Server) startHTTP(ctx context.Context) error {
 			s.onHTTPStart(ctx, s.httpPort)
 		}()
 	}
-	handler := authHandler(s.httpToken, s.trustedPeer, s.trustedOrigin, s.sse.Handler())
+	handler := authHandler(s.httpToken, s.trustedPeer, s.trustedOrigin, peerReauthInterval, s.sse.Handler())
 	if s.publicHandler != nil {
 		handler = publicFallback(s.sse.Mux(), handler, s.publicHandler)
 	}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -10,7 +11,17 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"time"
 )
+
+// peerReauthInterval is how often a live request admitted solely by the
+// trustPeer hook is re-checked against current trust state. Auth otherwise
+// runs once at accept, so a long-lived SSE stream would outlive registry
+// revocation indefinitely; re-checking at half the mesh trust cache's 30s TTL
+// bounds that stale window to roughly one TTL (cache staleness plus one tick).
+// Loopback and bearer admissions are never re-checked — those verdicts do not
+// expire.
+const peerReauthInterval = 15 * time.Second
 
 // ErrUnauthenticatedBind is returned when the HTTP plane would bind a
 // non-loopback address with no token and no TrustedPeer hook, which would
@@ -33,7 +44,12 @@ var ErrUnauthenticatedBind = errors.New("non-loopback HTTP bind requires a token
 // trust the immediate TCP peer, so fronting the daemon with a local reverse
 // proxy — tailscale serve included — defeats token auth and peer trust alike:
 // an unsupported deployment.
-func authHandler(token string, trustPeer func(netip.Addr) bool, trustOrigin func(string) bool, next http.Handler) http.Handler {
+//
+// A tokenless trusted-peer admission is re-evaluated every reauthEvery for the
+// life of the request, and the request context cancelled on a now-untrusted
+// verdict — so a live SSE stream closes within about one interval of its peer
+// losing trust, instead of holding the accept-time verdict forever.
+func authHandler(token string, trustPeer func(netip.Addr) bool, trustOrigin func(string) bool, reauthEvery time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		candidate := r.URL.Query().Get("token")
 		stripTokenParam(r)
@@ -43,6 +59,14 @@ func authHandler(token string, trustPeer func(netip.Addr) bool, trustOrigin func
 			loopbackPeer := addr.IsLoopback() && addr.Zone() == ""
 			trusted := loopbackPeer || (trustPeer != nil && trustPeer(addr))
 			if trusted && allowedOrigin(r, trustOrigin, loopbackPeer) {
+				if !loopbackPeer {
+					ctx, cancel := context.WithCancel(r.Context())
+					defer cancel()
+					r = r.WithContext(ctx)
+					go watchPeerTrust(ctx, cancel, reauthEvery, func() bool {
+						return trustPeer(addr) && allowedOrigin(r, trustOrigin, false)
+					})
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -56,6 +80,26 @@ func authHandler(token string, trustPeer func(netip.Addr) bool, trustOrigin func
 		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
+}
+
+// watchPeerTrust re-runs stillTrusted every interval and cancels the request
+// on a false verdict, which returns any live stream handler selecting on the
+// request context (the SSE loop's ctx.Done() case — a clean close). It exits
+// when the request itself ends.
+func watchPeerTrust(ctx context.Context, cancel context.CancelFunc, interval time.Duration, stillTrusted func() bool) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if !stillTrusted() {
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 // allowedOrigin reports whether r's Origin header permits a no-token bypass

@@ -7,7 +7,9 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestAuthHandler(t *testing.T) {
@@ -89,12 +91,102 @@ func TestAuthHandler(t *testing.T) {
 				req.URL.RawQuery = q.Encode()
 			}
 			rec := httptest.NewRecorder()
-			authHandler(tt.token, tt.trustPeer, tt.trustOrigin, next).ServeHTTP(rec, req)
+			authHandler(tt.token, tt.trustPeer, tt.trustOrigin, peerReauthInterval, next).ServeHTTP(rec, req)
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
 			}
 			if got := rec.Body.String(); got != tt.wantBody {
 				t.Fatalf("body = %q, want %q", got, tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestAuthHandlerReauthClosesRevokedTrustedPeerStream(t *testing.T) {
+	var trusted atomic.Bool
+	trusted.Store(true)
+	trustPeer := func(a netip.Addr) bool {
+		return trusted.Load() && a == netip.MustParseAddr("100.64.0.7")
+	}
+	// next mirrors the SSE loop: emit frames on a ticker, return on ctx.Done().
+	var frames atomic.Int64
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		tick := time.NewTicker(2 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-tick.C:
+				frames.Add(1)
+			}
+		}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.RemoteAddr = "100.64.0.7:41000"
+	done := make(chan struct{})
+	go func() {
+		authHandler("", trustPeer, nil, 20*time.Millisecond, next).ServeHTTP(httptest.NewRecorder(), req)
+		close(done)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for frames.Load() < 20 { // ~40ms of frames: events flow across re-auth ticks
+		select {
+		case <-done:
+			t.Fatal("stream closed while peer still trusted")
+		case <-deadline:
+			t.Fatalf("frames = %d, want at least 20 while trusted", frames.Load())
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	trusted.Store(false)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream not closed after peer trust revoked")
+	}
+}
+
+func TestAuthHandlerReauthSparesLoopbackAndBearerStreams(t *testing.T) {
+	const token = "s3cret-token"
+	tests := []struct {
+		name       string
+		remoteAddr string
+		authHeader string
+	}{
+		{"loopback stream", "127.0.0.1:41000", ""},
+		{"bearer stream", "192.168.1.9:41000", "Bearer " + token},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			distrust := func(netip.Addr) bool { return false }
+			release := make(chan struct{})
+			result := make(chan string, 1)
+			next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				select {
+				case <-r.Context().Done():
+					result <- "cancelled"
+				case <-release:
+					result <- "released"
+				}
+			})
+			req := httptest.NewRequest(http.MethodGet, "/events", nil)
+			req.RemoteAddr = tt.remoteAddr
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			done := make(chan struct{})
+			go func() {
+				authHandler(token, distrust, nil, 5*time.Millisecond, next).ServeHTTP(httptest.NewRecorder(), req)
+				close(done)
+			}()
+			time.Sleep(50 * time.Millisecond) // ten would-be re-auth intervals
+			close(release)
+			<-done
+			if got := <-result; got != "released" {
+				t.Fatalf("stream ended by %s, want released (re-auth must never close it)", got)
 			}
 		})
 	}
@@ -112,7 +204,7 @@ func TestAuthHandlerStripsQueryToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/events?token="+token+"&x=1", nil)
 	req.RemoteAddr = "192.168.1.9:41000"
 	rec := httptest.NewRecorder()
-	authHandler(token, nil, nil, next).ServeHTTP(rec, req)
+	authHandler(token, nil, nil, peerReauthInterval, next).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -140,7 +232,7 @@ func TestPublicFallback(t *testing.T) {
 	public := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("spa"))
 	})
-	handler := publicFallback(mux, authHandler(token, nil, nil, mux), public)
+	handler := publicFallback(mux, authHandler(token, nil, nil, peerReauthInterval, mux), public)
 
 	tests := []struct {
 		name       string
