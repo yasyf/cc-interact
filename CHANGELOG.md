@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-18
+
+### Added
+- `procs`: the window-identity resolution consumers previously hand-rolled —
+  `ClaudePID` (the memoized nearest-claude-ancestor walk from `os.Getppid()`),
+  `LiveClaude` (pid liveness with argv re-verification, so a pid recycled to a
+  non-claude process reads dead), and `FindAncestor` (the general parent-chain
+  walk). Hoisted from
+  cc-review's `internal/procs`; the `cmd.Deps.ClaudePID`/`WindowAlive` doc
+  comments now cite it in-repo. Adds `github.com/shirou/gopsutil/v4` (cgo-free)
+  as a direct dependency.
+
+### Changed
+- `plugin-template/render.sh` rejects token values containing `"` upfront; a
+  quote previously rendered an invalid `plugin.json` silently.
+
+### Removed
+- `plugin-template/render.sh`: the canonical-installer machinery — the
+  render-time fetch of cc-skills' retired repo-bootstrap template (tier chain,
+  `CC_SKILLS_REF` pin, provenance stamp), the `--sync-scripts` mode, and the
+  `BREW_PACKAGE`/`BINARY_VERSION_MODE` vars. Plugins now declare
+  `scripts/install-binary.sh` as a cc-guides fragment layout
+  (`cc-skills:install-binary-pinned`/`-latest`), rendered by `cc-guides render`
+  and kept current by the daily CI re-render; `render.sh` is tree copy plus
+  `{{VAR}}` substitution only.
+
 ### Security
 - `daemon`: the no-token Origin gate accepts a `localhost`/loopback-IP Origin
   only when the TCP peer is itself loopback. Previously a `TrustedPeer`
@@ -272,7 +298,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/yasyf/cc-interact/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/yasyf/cc-interact/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yasyf/cc-interact/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/yasyf/cc-interact/compare/v0.7.1...v0.8.0

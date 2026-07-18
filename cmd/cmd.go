@@ -35,10 +35,10 @@ type Deps struct {
 	// EnsureCurrentIfRunning upgrades a running daemon but never cold-starts one —
 	// for hooks, which must not boot daemons (daemon.Launcher.EnsureCurrentIfRunning).
 	EnsureCurrentIfRunning func() error
-	// ClaudePID resolves the window identity stamped on every envelope (cc-review:
+	// ClaudePID resolves the window identity stamped on every envelope (typically
 	// procs.ClaudePID). 0 is a pid-less consumer outside any Claude window.
 	ClaudePID func() int
-	// WindowAlive reports whether a window pid still lives (cc-review:
+	// WindowAlive reports whether a window pid still lives (typically
 	// procs.LiveClaude). A pid-bound stream consumer exits once its window dies;
 	// nil means consumers never self-terminate on window death.
 	WindowAlive func(pid int) bool

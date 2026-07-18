@@ -56,15 +56,15 @@ go run ./examples/echo watch
 
 ### Ship your agent surface as a Claude Code plugin
 
-The binary is half the ship surface; the MCP server wiring, binary installer, session hooks, and start skill that make up the plugin payload are their own pile of boilerplate. Render it instead:
+The binary is half the ship surface; the MCP server wiring, session hooks, and start skill that make up the plugin payload are their own pile of boilerplate. Render it instead:
 
 ```bash
 ./plugin-template/render.sh out/ PLUGIN_NAME=mytool DISPLAY_NAME=MyTool \
-  BINARY_NAME=mytool RELEASE_REPO=you/mytool BREW_PACKAGE=mytool \
+  BINARY_NAME=mytool RELEASE_REPO=you/mytool \
   MCP_SUBCOMMAND=channel SKILL_NAME=mytool:start
 ```
 
-You get cc-review's plugin payload with the review strings swapped for yours. The rendered tree carries the channel MCP server wiring, a release-binary installer, `session-record` and `guard-edit` hooks, and a start skill. [`plugin-template/`](plugin-template) documents every variable.
+You get cc-review's plugin payload with the review strings swapped for yours. The rendered tree carries the channel MCP server wiring, `session-record` and `guard-edit` hooks, and a start skill; the release-binary installer arrives separately, as a cc-guides fragment layout in your plugin's repo. [`plugin-template/`](plugin-template) documents every variable and the installer layout.
 
 ## What the framework owns
 
