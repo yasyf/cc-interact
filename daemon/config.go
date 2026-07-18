@@ -40,6 +40,9 @@ type Config struct {
 	// Version is this binary's own build version, used for same-or-newer-wins
 	// socket eviction (compared via version.Newer).
 	Version string
+	// MaxFrameBytes overrides the control server's request-frame limit. Zero uses
+	// the 64 MiB default.
+	MaxFrameBytes int
 
 	// ActiveStatuses is the subject status set Policy.Active treats as live and
 	// resumable across session rotation (cc-review: {"open"}).

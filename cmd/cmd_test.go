@@ -97,6 +97,59 @@ func testDeps(socket string) Deps {
 	}
 }
 
+func liveDaemon(t *testing.T, maxFrameBytes int) string {
+	t.Helper()
+	home, err := os.MkdirTemp("/tmp", "cci-cmd-test-")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+
+	p := paths.Paths{App: ".cc-interact-test"}
+	s, err := daemon.New(daemon.Config{
+		AppName:        "cc-interact-test",
+		Paths:          p,
+		Version:        "9.9.9",
+		ActiveStatuses: []string{"open"},
+		MaxFrameBytes:  maxFrameBytes,
+	})
+	if err != nil {
+		t.Fatalf("new daemon: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- s.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-served:
+			if err != nil {
+				t.Errorf("serve daemon: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+
+	client := daemon.NewClient(p.SocketPath())
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if reply, err := client.Health(); err == nil && reply.OK {
+			return p.SocketPath()
+		}
+		select {
+		case err := <-served:
+			t.Fatalf("serve daemon: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("daemon did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestGuardEditAllowSendsEnvelope proves the allow path returns without exiting
 // and stamps the window pid, scope, and the {tool_name, tool_input} body the
 // daemon's guard-edit handler expects.
@@ -139,6 +192,41 @@ func TestGuardEditDaemonDownAllows(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("guard-edit daemon-down: %v", err)
+	}
+}
+
+// TestGuardEditOversizeLogsAndAllows pins fail-open visibility at a lowered cap.
+func TestGuardEditOversizeLogsAndAllows(t *testing.T) {
+	const maxFrameBytes = 256
+	socket := liveDaemon(t, maxFrameBytes)
+	input := fmt.Sprintf(`{"session_id":"s1","cwd":"/repo","tool_name":"Write","tool_input":{"content":%q}}`, strings.Repeat("x", 512))
+	cmd := GuardEditCmd(testDeps(socket))
+	cmd.SetIn(strings.NewReader(input))
+	cmd.SetOut(&bytes.Buffer{})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("guard-edit oversize: %v", err)
+	}
+
+	var in hookInput
+	if err := json.Unmarshal([]byte(input), &in); err != nil {
+		t.Fatalf("hook input: %v", err)
+	}
+	body, err := json.Marshal(guardEditBody{ToolName: in.ToolName, ToolInput: in.ToolInput})
+	if err != nil {
+		t.Fatalf("guard-edit body: %v", err)
+	}
+	frame, err := json.Marshal(daemon.Envelope{
+		Proto: daemon.ProtocolVersion, Op: daemon.OpGuardEdit, Session: in.SessionID,
+		ClaudePID: testClaudePID, Scope: in.Cwd, Body: body,
+	})
+	if err != nil {
+		t.Fatalf("guard-edit frame: %v", err)
+	}
+	want := fmt.Sprintf("guard-edit: frame-too-large: request frame is %d bytes; allowing edit", len(frame))
+	if got := strings.TrimSpace(stderr.String()); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 }
 

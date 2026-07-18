@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-interact/daemon"
+	"github.com/yasyf/daemonkit/proc"
+	"github.com/yasyf/daemonkit/wire"
 )
 
 // DaemonCmd is the hidden entry point the lazy-start spawns; it runs the
@@ -20,6 +22,11 @@ func DaemonCmd(d Deps) *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Detached child (proc.Spawn contract): sweep inherited non-CLOEXEC fds
+			// before opening anything, so no parent lease fd stays pinned for life.
+			if err := proc.CloseInheritedFDs(); err != nil {
+				return err
+			}
 			return d.Serve(cmd.Context())
 		},
 	}
@@ -85,7 +92,7 @@ func ChannelAckCmd(d Deps) *cobra.Command {
 // GuardEditCmd is the hidden PreToolUse(Edit|Write|NotebookEdit) hook handler.
 // It denies edits while the gate refuses by writing the reason to stderr and
 // exiting 2 — Claude Code's PreToolUse block signal — and fails open (exit 0)
-// when the daemon is unreachable.
+// on daemon errors. Oversized request frames are logged before allowing the edit.
 func GuardEditCmd(d Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:    "guard-edit",
@@ -94,11 +101,18 @@ func GuardEditCmd(d Deps) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			in := readHookInput(cmd.InOrStdin())
 			body, _ := json.Marshal(guardEditBody{ToolName: in.ToolName, ToolInput: in.ToolInput})
-			reply, err := d.NewClient().Do(cmd.Context(), daemon.Envelope{
+			env := daemon.Envelope{
 				Op: daemon.OpGuardEdit, Session: in.SessionID, ClaudePID: d.ClaudePID(), Scope: in.Cwd, Body: body,
-			})
+			}
+			reply, err := d.NewClient().Do(cmd.Context(), env)
 			if err != nil {
 				return nil // daemon down: nothing to guard
+			}
+			if !reply.OK && reply.Error == wire.ErrFrameTooLarge.Error() {
+				env.Proto = daemon.ProtocolVersion
+				frame, _ := json.Marshal(env)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "guard-edit: frame-too-large: request frame is %d bytes; allowing edit\n", len(frame))
+				return nil
 			}
 			if reply.OK && !reply.Allow {
 				fmt.Fprintln(os.Stderr, reply.Reason)

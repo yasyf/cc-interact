@@ -81,6 +81,10 @@ type Config struct {
 
 	// PresenceDebounce overrides DefaultPresenceDebounce when non-zero.
 	PresenceDebounce time.Duration
+
+	// Admit registers a new stream as in-flight for as long as it is open (release
+	// ends it); a non-nil error refuses the stream as draining. nil admits every stream.
+	Admit func() (release func(), err error)
 }
 
 // Server is the HTTP handler tree. It owns the mux and always mounts GET
@@ -147,6 +151,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		http.Error(w, "stream unsupported", http.StatusInternalServerError)
 		return
+	}
+	if s.cfg.Admit != nil {
+		release, err := s.cfg.Admit()
+		if err != nil {
+			http.Error(w, "draining", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
 	}
 	excludeOrigin := r.URL.Query().Get("exclude_origin")
 	// Named stream consumers (the agent's Monitor, the MCP channel) register their

@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -23,13 +21,19 @@ import (
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
-	"github.com/yasyf/cc-interact/version"
+	"github.com/yasyf/daemonkit/drain"
+	"github.com/yasyf/daemonkit/proc"
+	"github.com/yasyf/daemonkit/wire"
 )
 
 // handleTimeout bounds a single control RPC. It is generous because a domain
 // handler may shell out (cc-review's start snapshots the tree); core ops are
 // sub-second.
 const handleTimeout = 35 * time.Second
+
+// maxFrameBytes caps one request frame at 64 MiB so a guard-edit carrying a
+// whole Write payload remains visible to the gate.
+const maxFrameBytes = 64 << 20
 
 // defaultEvictTimeout bounds each phase of evicting a version-skewed holder: the
 // graceful-shutdown wait, the post-SIGKILL wait, and the process-exit wait.
@@ -57,9 +61,10 @@ type Server struct {
 	gateObserve     func(ctx context.Context, s subject.Subject, tool ToolCall, allow bool, reason string)
 	bootReconcile   func(ctx context.Context, s *Server) error
 
-	paths  paths.Paths
-	socket string
-	log    *log.Logger
+	paths         paths.Paths
+	socket        string
+	maxFrameBytes int
+	log           *log.Logger
 
 	handlers map[Op]HandlerFunc
 
@@ -76,6 +81,8 @@ type Server struct {
 
 	repoMu    sync.Mutex
 	repoLocks map[string]*sync.Mutex
+
+	drain *drain.Simple
 
 	serveCtxMu      sync.Mutex
 	serveCtx        context.Context
@@ -101,6 +108,10 @@ func New(cfg Config) (*Server, error) {
 	if scopeResolve == nil {
 		scopeResolve = func(_ context.Context, raw string) string { return raw }
 	}
+	frameBytes := cfg.MaxFrameBytes
+	if frameBytes == 0 {
+		frameBytes = maxFrameBytes
+	}
 	s := &Server{
 		appName:         cfg.AppName,
 		version:         cfg.Version,
@@ -115,6 +126,7 @@ func New(cfg Config) (*Server, error) {
 		bootReconcile:   cfg.BootReconcile,
 		paths:           cfg.Paths,
 		socket:          cfg.Paths.SocketPath(),
+		maxFrameBytes:   frameBytes,
 		log:             log.New(os.Stderr, "["+cfg.AppName+"] ", log.LstdFlags),
 		handlers:        make(map[Op]HandlerFunc),
 		fixedPort:       cfg.FixedPort,
@@ -127,6 +139,7 @@ func New(cfg Config) (*Server, error) {
 		publicHandler:   cfg.PublicHandler,
 		evictTimeout:    defaultEvictTimeout,
 		repoLocks:       make(map[string]*sync.Mutex),
+		drain:           &drain.Simple{},
 	}
 	s.subjects = subject.Resolver{
 		Store: store.NewSubjectStore(s.db),
@@ -152,6 +165,7 @@ func New(cfg Config) (*Server, error) {
 		OnPresenceChange:  ssePresence,
 		PresenceEventType: cfg.PresenceEventType,
 		PresenceDebounce:  cfg.PresenceDebounce,
+		Admit:             s.drain.Admit,
 	})
 	// Core ops ride the same registry as domain ops. A scope with no canonical
 	// form reaches them as the resolver's fallback value, which matches no
@@ -206,10 +220,11 @@ func (s *Server) Serve(parent context.Context) error {
 	// Bind the control socket before publishing the HTTP handshake; connections
 	// queue in the listener backlog until the accept loop starts, so nothing
 	// observes the gap.
-	ln, err := s.listen()
+	ln, lock, err := s.listen(ctx)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = lock.Close() }() // held for the listener's life; see SingleEntrant
 	var once sync.Once
 	closeListener := func() { once.Do(func() { _ = ln.Close() }) }
 	defer closeListener()
@@ -225,9 +240,18 @@ func (s *Server) Serve(parent context.Context) error {
 
 	s.log.Printf("daemon %s started; socket=%s http=%s", s.version, s.socket, net.JoinHostPort(s.bindHost(), strconv.Itoa(s.httpPort)))
 
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		<-ctx.Done()
-		closeListener()
+		// Settle in-flight SSE streams and refuse new admissions; startHTTP closes HTTP.
+		drainCtx, cancel := context.WithTimeout(context.Background(), handleTimeout)
+		defer cancel()
+		_ = s.drain.Drain(drainCtx, drain.SimpleConfig{
+			Deactivate:      func(context.Context) error { closeListener(); return nil },
+			MarkClosing:     func() {},
+			CancelExecutors: func() {},
+		})
 	}()
 
 	for {
@@ -252,68 +276,16 @@ func (s *Server) Serve(parent context.Context) error {
 	return nil
 }
 
-// listen binds the control socket, first evicting any strictly older daemon
-// holding it. A stale socket left by a crashed daemon is removed before binding;
-// the lazy-start flock prevents two live daemons from racing here.
-func (s *Server) listen() (net.Listener, error) {
-	if err := s.evictHolder(); err != nil {
-		return nil, err
+// listen binds the control socket single-entrant, evicting any strictly older
+// holder through the version-gated takeover (s.evict). The returned lock is held
+// for the listener's life.
+func (s *Server) listen(ctx context.Context) (net.Listener, *os.File, error) {
+	se := proc.SingleEntrant{
+		Socket:  s.socket,
+		Evict:   func() (bool, error) { return s.evict(ctx) },
+		Timeout: s.evictTimeout,
 	}
-	_ = os.Remove(s.socket)
-	if err := os.MkdirAll(filepath.Dir(s.socket), 0o700); err != nil {
-		return nil, err
-	}
-	ln, err := net.Listen("unix", s.socket)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(s.socket, 0o600); err != nil {
-		ln.Close()
-		return nil, err
-	}
-	return ln, nil
-}
-
-// evictHolder clears a strictly older daemon holding the socket: ask it to step
-// down, then SIGKILL the exact socket peer if it wedges. A same-or-newer holder
-// is never evicted — refusing the tie is what prevents two daemons from evicting
-// each other, and refusing a newer holder makes a spawned older daemon exit
-// while its spawning client converges on the newer holder.
-func (s *Server) evictHolder() error {
-	c := NewClient(s.socket)
-	resp, err := c.Health()
-	if err != nil {
-		return nil // no live holder; a stale socket file is removed by listen
-	}
-	if !version.Newer(s.version, resp.DaemonVersion) {
-		return fmt.Errorf("%s daemon %s already holds the socket (this binary is %s)", s.appName, resp.DaemonVersion, s.version)
-	}
-	s.log.Printf("evicting older daemon (%s) holding the socket", resp.DaemonVersion)
-	pid, _ := c.peerPID() // grab before shutdown: the peer is gone afterwards
-	if _, err := c.Shutdown(); err != nil {
-		return fmt.Errorf("evict holder %s: %w", resp.DaemonVersion, err)
-	}
-	if !c.WaitGone(s.evictTimeout) {
-		if _, err := c.KillHolder(); err != nil {
-			s.log.Printf("kill holder: %v", err)
-		}
-		if !c.WaitGone(s.evictTimeout) {
-			return fmt.Errorf("holder %s did not release the socket within %s", resp.DaemonVersion, s.evictTimeout)
-		}
-	}
-	// Wait for the peer process to exit so a successor's handshake is not
-	// clobbered by a dying predecessor, and so the port can be reused.
-	if pid > 1 && pid != os.Getpid() {
-		deadline := time.Now().Add(s.evictTimeout)
-		for time.Now().Before(deadline) {
-			if err := killProc(pid, syscall.Signal(0)); errors.Is(err, syscall.ESRCH) {
-				return nil
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		s.log.Printf("holder pid %d still exiting; the handshake may be rewritten once", pid)
-	}
-	return nil
+	return se.Listen(ctx)
 }
 
 // bindHost is the address the HTTP plane binds, defaulting to loopback-only
@@ -417,8 +389,24 @@ func (s *Server) startHTTP(ctx context.Context) error {
 func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(handleTimeout))
+	f := wire.NewFraming(conn)
+	f.MaxLine = s.maxFrameBytes
+	peer, err := wire.PeerFromConn(conn.(*net.UnixConn))
+	if err != nil {
+		s.writeReply(conn, Reply{OK: false, Error: "peer credentials: " + err.Error()})
+		return
+	}
+	if peer.UID != os.Geteuid() {
+		s.log.Printf("refusing peer uid %d (daemon euid %d)", peer.UID, os.Geteuid())
+		s.writeReply(conn, Reply{OK: false, Error: "untrusted peer"})
+		return
+	}
 	var env Envelope
-	if err := json.NewDecoder(conn).Decode(&env); err != nil {
+	if err := f.ReadJSON(&env); err != nil {
+		if errors.Is(err, wire.ErrFrameTooLarge) {
+			s.writeReply(conn, Reply{OK: false, Error: wire.ErrFrameTooLarge.Error()})
+			return
+		}
 		s.writeReply(conn, Reply{OK: false, Error: "bad request: " + err.Error()})
 		return
 	}
@@ -484,5 +472,5 @@ func (s *Server) Dispatch(ctx context.Context, env Envelope) Reply {
 
 func (s *Server) writeReply(conn net.Conn, r Reply) {
 	r.Proto = ProtocolVersion
-	_ = json.NewEncoder(conn).Encode(r)
+	_ = wire.NewFraming(conn).WriteJSON(r)
 }

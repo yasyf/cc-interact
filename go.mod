@@ -6,13 +6,14 @@ require (
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/shirou/gopsutil/v4 v4.26.5
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/sys v0.42.0
+	github.com/yasyf/daemonkit v0.1.0
+	golang.org/x/sys v0.46.0
 	modernc.org/sqlite v1.52.0
 )
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/purego v0.10.0 // indirect
+	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
