@@ -30,10 +30,13 @@ import (
 	"github.com/yasyf/cc-interact/subject"
 )
 
+// appVersion is the ldflags stamp target: -X main.appVersion=<version>.
+// A var, not a const — -X on a const is a silent no-op.
+var appVersion = "0.0.0"
+
 const (
-	appName    = "echo"
-	appDir     = ".cc-echo"
-	appVersion = "0.0.0"
+	appName = "echo"
+	appDir  = ".cc-echo"
 
 	// defaultSession keys every echo subject. A headless demo spans several
 	// short-lived CLI processes with no stable window pid between them, so the

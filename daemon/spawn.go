@@ -29,6 +29,11 @@ func (l Launcher) client() *Client { return NewClient(l.Paths.SocketPath()) }
 // availability gate is version-gated, not mere reachability, since the old daemon
 // keeps answering throughout its own eviction.
 func (l Launcher) EnsureCurrent(timeout time.Duration) error {
+	// The spawn side opens the child log before any daemon exists, so a cold
+	// start must create the state dir here, not in daemon.New.
+	if err := l.Paths.EnsureStateDir(); err != nil {
+		return err
+	}
 	c := l.client()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
