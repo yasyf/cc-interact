@@ -6,7 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-19
+
+### Added
+- `daemon`: runtime HTTP listeners. `Server.AddHTTPListener` serves the daemon's
+  mux on an additional listener after startup — refusing tokenless+untrusted
+  exposure, pre-start calls, and adds racing shutdown — and republishes the
+  `http.json` handshake (now written atomically) with the new address before
+  serving; `Server.HTTPExtraAddrs` returns the live extra addresses. Legs are
+  never pruned: a listener whose address vanished is inert, since auth is
+  per-request.
+
 ### Changed
+- `sse`: the static handler's SPA fallback is scoped — an embed miss serves
+  `index.html` only for client-route-shaped paths (extensionless, not under
+  `assets/`); any other miss is an honest 404 instead of a 200 HTML shell
+  masquerading as the requested asset.
 - `daemon`: control-socket request frames are capped at 64 MiB
   (`Config.MaxFrameBytes` overrides). An oversized `guard-edit` request stays
   fail-open — the hook logs `frame-too-large` with the frame size and allows
