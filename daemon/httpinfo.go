@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // HTTPInfo is the handshake the daemon publishes so stream consumers and the
@@ -31,12 +32,30 @@ func (s *Server) readHTTPInfo() HTTPInfo {
 	return info
 }
 
+// writeHTTPInfo publishes the handshake atomically: a same-directory temp file
+// (0600 via os.CreateTemp) renamed over the target, so a concurrent reader never
+// sees a half-written file and a runtime republish never truncates the old one.
 func (s *Server) writeHTTPInfo(info HTTPInfo) error {
 	b, err := json.Marshal(info)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(s.paths.HTTPInfoPath(), b, 0o600); err != nil {
+	path := s.paths.HTTPInfoPath()
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".http-*.json")
+	if err != nil {
+		return fmt.Errorf("write http info: %w", err)
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write http info: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write http info: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("write http info: %w", err)
 	}
 	return nil

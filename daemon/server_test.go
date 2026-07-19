@@ -323,6 +323,111 @@ func TestNewRefusesUnauthenticatedExtraListeners(t *testing.T) {
 	}
 }
 
+func assertListenerClosed(t *testing.T, ln net.Listener) {
+	t.Helper()
+	_ = ln.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := ln.Accept(); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("listener Accept err = %v, want net.ErrClosed", err)
+	}
+}
+
+func TestAddHTTPListener(t *testing.T) {
+	const token = "s3cret-token"
+
+	t.Run("added listener serves and republishes handshake", func(t *testing.T) {
+		isolateStateDir(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		s := &Server{
+			paths:     testPaths(),
+			log:       log.New(io.Discard, "", 0),
+			httpToken: token,
+		}
+		s.sse = sse.NewServer(s, sse.Config{})
+		s.Mux().HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("pong"))
+		})
+		if err := s.startHTTP(ctx); err != nil {
+			t.Fatalf("startHTTP: %v", err)
+		}
+		t.Cleanup(func() {
+			cancel()
+			s.wg.Wait()
+		})
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := ln.Addr().String()
+		if err := s.AddHTTPListener(ln); err != nil {
+			t.Fatalf("AddHTTPListener: %v", err)
+		}
+
+		if got := s.readHTTPInfo().ExtraAddrs; len(got) != 1 || got[0] != addr {
+			t.Fatalf("handshake ExtraAddrs = %v, want [%s]", got, addr)
+		}
+		if got := s.HTTPExtraAddrs(); len(got) != 1 || got[0] != addr {
+			t.Fatalf("HTTPExtraAddrs = %v, want [%s]", got, addr)
+		}
+
+		resp, err := http.Get("http://" + addr + "/ping")
+		if err != nil {
+			t.Fatalf("GET %s: %v", addr, err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || string(body) != "pong" {
+			t.Fatalf("GET %s = %d %q, want 200 pong", addr, resp.StatusCode, body)
+		}
+	})
+
+	t.Run("before start errors and closes the listener", func(t *testing.T) {
+		isolateStateDir(t)
+		s := &Server{
+			paths:     testPaths(),
+			log:       log.New(io.Discard, "", 0),
+			httpToken: token,
+		}
+		s.sse = sse.NewServer(s, sse.Config{})
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AddHTTPListener(ln); err == nil {
+			t.Fatal("AddHTTPListener before start must error")
+		}
+		assertListenerClosed(t, ln)
+	})
+
+	t.Run("tokenless untrusted refuses and closes the listener", func(t *testing.T) {
+		isolateStateDir(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		s := &Server{
+			paths: testPaths(),
+			log:   log.New(io.Discard, "", 0),
+		}
+		s.sse = sse.NewServer(s, sse.Config{})
+		if err := s.startHTTP(ctx); err != nil {
+			t.Fatalf("startHTTP: %v", err)
+		}
+		t.Cleanup(func() {
+			cancel()
+			s.wg.Wait()
+		})
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AddHTTPListener(ln); !errors.Is(err, ErrUnauthenticatedBind) {
+			t.Fatalf("AddHTTPListener err = %v, want ErrUnauthenticatedBind", err)
+		}
+		assertListenerClosed(t, ln)
+	})
+}
+
 // spoofAddrListener wraps accepted connections so they report a fixed peer
 // address, exercising the per-connection loopback bypass with a non-loopback
 // peer over a real socket.

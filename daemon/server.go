@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -81,8 +82,13 @@ type Server struct {
 	onHTTPStart    func(ctx context.Context, port int)
 	extraListeners []func(ctx context.Context) (net.Listener, error)
 	publicHandler  http.Handler
-	repoMu         sync.Mutex
-	repoLocks      map[string]*sync.Mutex
+
+	httpMu     sync.Mutex
+	httpSrv    *http.Server
+	extraAddrs []string
+
+	repoMu    sync.Mutex
+	repoLocks map[string]*sync.Mutex
 
 	wireIntake *drain.Intake
 	httpIntake *drain.Intake
@@ -304,17 +310,6 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	for _, l := range listeners[1:] {
 		extraAddrs = append(extraAddrs, l.Addr().String())
 	}
-	if err := s.writeHTTPInfo(HTTPInfo{Port: s.httpPort, Bind: s.bindHost(), ExtraAddrs: extraAddrs}); err != nil {
-		closeAll()
-		return err
-	}
-	if s.onHTTPStart != nil {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.onHTTPStart(ctx, s.httpPort)
-		}()
-	}
 	handler := authHandler(s.httpToken, s.trustedPeer, s.trustedOrigin, peerReauthInterval, s.sse.Handler())
 	if s.publicHandler != nil {
 		handler = publicFallback(s.sse.Mux(), handler, s.publicHandler)
@@ -323,14 +318,25 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		Handler:     handler,
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
-	for _, l := range listeners {
+	s.httpMu.Lock()
+	s.httpSrv = srv
+	s.extraAddrs = extraAddrs
+	writeErr := s.writeHTTPInfo(s.httpInfoLocked())
+	s.httpMu.Unlock()
+	if writeErr != nil {
+		closeAll()
+		return writeErr
+	}
+	if s.onHTTPStart != nil {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				s.log.Printf("http serve %s: %v", l.Addr(), err)
-			}
+			s.onHTTPStart(ctx, s.httpPort)
 		}()
+	}
+	for _, l := range listeners {
+		s.wg.Add(1)
+		go s.serveOn(l)
 	}
 	s.wg.Add(1)
 	go func() {
@@ -341,6 +347,63 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		_ = srv.Shutdown(sctx)
 	}()
 	return nil
+}
+
+// serveOn runs the shared HTTP server on ln until a graceful Shutdown closes it.
+func (s *Server) serveOn(ln net.Listener) {
+	defer s.wg.Done()
+	if err := s.httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		s.log.Printf("http serve %s: %v", ln.Addr(), err)
+	}
+}
+
+// httpInfoLocked builds the handshake for the live port and extra addrs; the
+// caller holds httpMu.
+func (s *Server) httpInfoLocked() HTTPInfo {
+	return HTTPInfo{Port: s.httpPort, Bind: s.bindHost(), ExtraAddrs: s.extraAddrs}
+}
+
+// AddHTTPListener serves the HTTP/SSE plane on ln at runtime, republishing the
+// handshake with ln's address before serving. It refuses — closing ln — before
+// start, while draining, or for a tokenless untrusted daemon (per
+// validateBindAuth). Legs are never removed: a vanished address is inert, auth
+// being per-request and watchPeerTrust already closing revoked streams.
+func (s *Server) AddHTTPListener(ln net.Listener) error {
+	if err := validateBindAuth(s.bindHost(), s.httpToken, true, s.trustedPeer != nil); err != nil {
+		_ = ln.Close()
+		return err
+	}
+	s.httpMu.Lock()
+	defer s.httpMu.Unlock()
+	if s.httpSrv == nil {
+		_ = ln.Close()
+		return errors.New("daemon: AddHTTPListener before HTTP start")
+	}
+	s.serveCtxMu.Lock()
+	if s.workersClosed {
+		s.serveCtxMu.Unlock()
+		_ = ln.Close()
+		return errors.New("daemon: AddHTTPListener while draining")
+	}
+	s.wg.Add(1)
+	s.serveCtxMu.Unlock()
+	s.extraAddrs = append(s.extraAddrs, ln.Addr().String())
+	if err := s.writeHTTPInfo(s.httpInfoLocked()); err != nil {
+		s.extraAddrs = s.extraAddrs[:len(s.extraAddrs)-1]
+		s.wg.Done()
+		_ = ln.Close()
+		return err
+	}
+	go s.serveOn(ln)
+	return nil
+}
+
+// HTTPExtraAddrs returns a copy of the extra HTTP listeners' bound addresses,
+// empty before startHTTP runs.
+func (s *Server) HTTPExtraAddrs() []string {
+	s.httpMu.Lock()
+	defer s.httpMu.Unlock()
+	return slices.Clone(s.extraAddrs)
 }
 
 // repoLock returns the mutex serializing scope-bound work (cc-review: working-tree
