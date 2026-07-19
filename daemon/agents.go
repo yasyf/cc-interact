@@ -83,18 +83,21 @@ type rosterReply struct {
 }
 
 type startedPayload struct {
+	Type          string `json:"type"`
 	AgentID       string `json:"agent_id"`
 	AgentType     string `json:"agent_type"`
 	ParentAgentID string `json:"parent_agent_id"`
 }
 
 type stoppedPayload struct {
+	Type                 string `json:"type"`
 	AgentID              string `json:"agent_id"`
 	LastAssistantMessage string `json:"last_assistant_message,omitempty"`
 	AgentTranscriptPath  string `json:"agent_transcript_path,omitempty"`
 }
 
 type directedPayload struct {
+	Type        string `json:"type"`
 	AgentID     string `json:"agent_id"`
 	Origin      string `json:"origin"`
 	DirectiveID int64  `json:"directive_id"`
@@ -102,13 +105,20 @@ type directedPayload struct {
 }
 
 type deliveredPayload struct {
+	Type         string  `json:"type"`
 	AgentID      string  `json:"agent_id"`
 	Via          string  `json:"via"`
 	DirectiveIDs []int64 `json:"directive_ids"`
 }
 
 type agentPayload struct {
+	Type    string `json:"type"`
 	AgentID string `json:"agent_id"`
+}
+
+type reportPayload struct {
+	Type   string          `json:"type"`
+	Report json.RawMessage `json:"report"`
 }
 
 // gateBlockCounter tracks consecutive stop-gate blocks per (subject, agent) so
@@ -143,7 +153,7 @@ func (g *gateBlockCounter) reset(subjectID, agentID string) {
 }
 
 func startedEvent(info agent.Info) *event.Event {
-	payload, _ := json.Marshal(startedPayload{info.AgentID, info.AgentType, info.ParentAgentID})
+	payload, _ := json.Marshal(startedPayload{agent.EventStarted, info.AgentID, info.AgentType, info.ParentAgentID})
 	return &event.Event{
 		SubjectID: info.SubjectID,
 		Origin:    event.OriginSystem,
@@ -154,12 +164,12 @@ func startedEvent(info agent.Info) *event.Event {
 }
 
 func stoppedEvent(subjectID string, b agentStopBody) *event.Event {
-	payload, _ := json.Marshal(stoppedPayload(b))
+	payload, _ := json.Marshal(stoppedPayload{agent.EventStopped, b.AgentID, b.LastAssistantMessage, b.AgentTranscriptPath})
 	return &event.Event{SubjectID: subjectID, Origin: event.OriginSystem, Type: agent.EventStopped, Payload: payload}
 }
 
 func directedEvent(d agent.Directive) *event.Event {
-	payload, _ := json.Marshal(directedPayload{d.AgentID, d.Origin, d.ID, d.Text})
+	payload, _ := json.Marshal(directedPayload{agent.EventDirected, d.AgentID, d.Origin, d.ID, d.Text})
 	return &event.Event{SubjectID: d.SubjectID, Origin: d.Origin, Type: agent.EventDirected, Payload: payload}
 }
 
@@ -168,17 +178,17 @@ func deliveredEvent(subjectID, agentID, via string, directives []agent.Directive
 	for i, d := range directives {
 		ids[i] = d.ID
 	}
-	payload, _ := json.Marshal(deliveredPayload{agentID, via, ids})
+	payload, _ := json.Marshal(deliveredPayload{agent.EventDelivered, agentID, via, ids})
 	return &event.Event{SubjectID: subjectID, Origin: event.OriginSystem, Type: agent.EventDelivered, Payload: payload}
 }
 
 func relayEvent(subjectID, agentID string) *event.Event {
-	payload, _ := json.Marshal(agentPayload{agentID})
+	payload, _ := json.Marshal(agentPayload{agent.EventRelay, agentID})
 	return &event.Event{SubjectID: subjectID, Origin: event.OriginSystem, Type: agent.EventRelay, Payload: payload}
 }
 
 func forcedAllowEvent(subjectID, agentID string) *event.Event {
-	payload, _ := json.Marshal(agentPayload{agentID})
+	payload, _ := json.Marshal(agentPayload{agent.EventForcedAllow, agentID})
 	return &event.Event{SubjectID: subjectID, Origin: event.OriginSystem, Type: agent.EventForcedAllow, Payload: payload}
 }
 
@@ -419,11 +429,12 @@ func (s *Server) handleAgentReport(hc HandlerCtx) Reply {
 	if marker && !bytes.Contains(b.ToolResponse, []byte(`"text"`)) {
 		typ = agent.EventLaunched
 	}
+	payload, _ := json.Marshal(reportPayload{typ, hc.Env.Body})
 	if _, err := s.Append(hc.Ctx, &event.Event{
 		SubjectID: sub.ID,
 		Origin:    event.OriginSystem,
 		Type:      typ,
-		Payload:   append(json.RawMessage(nil), hc.Env.Body...),
+		Payload:   payload,
 		DedupKey:  b.ToolUseID,
 	}); err != nil {
 		return errReply(err.Error())

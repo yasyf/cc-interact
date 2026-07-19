@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -860,8 +861,19 @@ func TestAgentReportClassificationAndDedup(t *testing.T) {
 			if events[0].Origin != event.OriginSystem || events[0].DedupKey != body.ToolUseID {
 				t.Fatalf("event = %+v, want system origin and tool-use dedup key", events[0])
 			}
-			if string(events[0].Payload) != string(tc.raw) {
-				t.Fatalf("payload = %s, want verbatim %s", events[0].Payload, tc.raw)
+			var payload reportPayload
+			if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+				t.Fatalf("payload: %v", err)
+			}
+			if payload.Type != tc.want {
+				t.Fatalf("payload type = %q, want %q", payload.Type, tc.want)
+			}
+			var compacted bytes.Buffer
+			if err := json.Compact(&compacted, tc.raw); err != nil {
+				t.Fatalf("compact fixture: %v", err)
+			}
+			if string(payload.Report) != compacted.String() {
+				t.Fatalf("payload report = %s, want %s", payload.Report, compacted.String())
 			}
 		})
 	}
@@ -899,5 +911,33 @@ func TestAgentAwaitTimeoutReDrainReturnsLateRows(t *testing.T) {
 	}
 	if len(reply.Directives) != 1 || reply.Directives[0].Text != "late" {
 		t.Fatalf("await directives = %+v, want the late row", reply.Directives)
+	}
+}
+
+func TestAgentEventPayloadsEmbedType(t *testing.T) {
+	info := agent.Info{SubjectID: "s1", AgentID: "a1", AgentType: "general-purpose"}
+	directive := agent.Directive{ID: 1, SubjectID: "s1", AgentID: "a1", Origin: "human", Text: "x"}
+	for _, tc := range []struct {
+		name string
+		ev   *event.Event
+	}{
+		{"started", startedEvent(info)},
+		{"stopped", stoppedEvent("s1", agentStopBody{AgentID: "a1"})},
+		{"directed", directedEvent(directive)},
+		{"delivered", deliveredEvent("s1", "a1", deliveredViaHook, []agent.Directive{directive})},
+		{"relay", relayEvent("s1", "a1")},
+		{"forced allow", forcedAllowEvent("s1", "a1")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var payload struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(tc.ev.Payload, &payload); err != nil {
+				t.Fatalf("payload: %v", err)
+			}
+			if payload.Type != tc.ev.Type {
+				t.Fatalf("payload type = %q, want the event type %q", payload.Type, tc.ev.Type)
+			}
+		})
 	}
 }
