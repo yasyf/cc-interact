@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
-	"github.com/yasyf/cc-interact/paths"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 func eventType(data string) string {

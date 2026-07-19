@@ -11,8 +11,8 @@ import (
 
 	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/event"
-	"github.com/yasyf/cc-interact/paths"
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 // AppendFunc persists an event then publishes its subject's wakeup — the single

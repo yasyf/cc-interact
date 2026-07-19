@@ -7,8 +7,8 @@ import (
 
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
-	"github.com/yasyf/cc-interact/paths"
 	"github.com/yasyf/cc-interact/store"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 func newDaemon(t *testing.T) *daemon.Server {

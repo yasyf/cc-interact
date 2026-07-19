@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
-	"github.com/yasyf/cc-interact/paths"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 // reconnectDelay is how long a stream consumer waits before reconnecting after

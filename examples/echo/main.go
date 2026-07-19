@@ -26,8 +26,8 @@ import (
 	"github.com/yasyf/cc-interact/cmd"
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
-	"github.com/yasyf/cc-interact/paths"
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 // appVersion is the ldflags stamp target: -X main.appVersion=<version>.

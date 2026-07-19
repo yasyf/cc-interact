@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yasyf/cc-interact/paths"
 	"github.com/yasyf/cc-interact/sse"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 func testPaths() paths.Paths { return paths.Paths{App: ".cc-interact-test"} }

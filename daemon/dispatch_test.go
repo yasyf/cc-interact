@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yasyf/cc-interact/paths"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 func newTestServer(t *testing.T, cfg Config) *Server {

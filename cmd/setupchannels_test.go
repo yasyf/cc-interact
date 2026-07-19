@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-interact/channelsetup"
-	"github.com/yasyf/cc-interact/paths"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 func TestSetupChannelsCheck(t *testing.T) {

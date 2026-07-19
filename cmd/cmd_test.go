@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/daemon"
-	"github.com/yasyf/cc-interact/paths"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 const testClaudePID = 4242

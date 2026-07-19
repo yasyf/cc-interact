@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yasyf/cc-interact/paths"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 // TestConsumeEventsExitsWhenWindowDead proves the leaked-watcher fix: a pid-bound

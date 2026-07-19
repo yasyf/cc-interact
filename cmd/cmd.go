@@ -14,7 +14,7 @@ import (
 
 	"github.com/yasyf/cc-interact/channel"
 	"github.com/yasyf/cc-interact/daemon"
-	"github.com/yasyf/cc-interact/paths"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 // Deps is the host wiring every substrate command shares. The consumer builds it

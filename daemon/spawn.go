@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/yasyf/cc-interact/paths"
 	"github.com/yasyf/cc-interact/version"
+	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/proc"
 )
 

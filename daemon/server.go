@@ -17,11 +17,11 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
-	"github.com/yasyf/cc-interact/paths"
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
 	"github.com/yasyf/daemonkit/drain"
+	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/proc"
 	"github.com/yasyf/daemonkit/wire"
 )
