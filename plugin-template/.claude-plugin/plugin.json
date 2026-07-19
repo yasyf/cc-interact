@@ -8,6 +8,13 @@
   },
   "homepage": "https://github.com/{{RELEASE_REPO}}",
   "license": "MIT",
+  "dependencies": [
+    {
+      "name": "captain-hook",
+      "marketplace": "captain-hook",
+      "version": ">=10.5.0"
+    }
+  ],
   "mcpServers": {
     "{{MCP_SERVER_NAME}}": {
       "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-channel.sh"

@@ -64,7 +64,7 @@ The binary is half the ship surface; the MCP server wiring, session hooks, and s
   MCP_SUBCOMMAND=channel SKILL_NAME=mytool:start
 ```
 
-You get cc-review's plugin payload with the review strings swapped for yours. The rendered tree carries the channel MCP server wiring, `session-record` and `guard-edit` hooks, and a start skill; the release-binary installer arrives separately, as a cc-guides fragment layout in your plugin's repo. [`plugin-template/`](plugin-template) documents every variable and the installer layout.
+You get cc-review's plugin payload with the review strings swapped for yours. The rendered tree carries the channel MCP server wiring, a capt-hook hook pack (session record, edit guard, and the optional agent-steering plane — dispatched by the captain-hook plugin the manifest declares as a dependency), and a start skill; the release-binary installer arrives separately, as a cc-guides fragment layout in your plugin's repo. [`plugin-template/`](plugin-template) documents every variable, the pack contract, and the installer layout.
 
 ## What the framework owns
 

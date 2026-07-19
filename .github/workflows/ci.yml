@@ -31,3 +31,25 @@ jobs:
 
       - name: go test
         run: go test -race ./...
+
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Render plugin template
+        run: |
+          ./plugin-template/render.sh "$RUNNER_TEMP/pack-smoke" \
+            PLUGIN_NAME=echo-demo DISPLAY_NAME=EchoDemo BINARY_NAME=echo-demo \
+            RELEASE_REPO=yasyf/echo-demo MCP_SUBCOMMAND=channel SKILL_NAME=start
+
+      - name: Lint hook pack
+        run: uvx capt-hook pack lint "$RUNNER_TEMP/pack-smoke"
+
+      - name: Test inline hooks
+        run: uvx --isolated capt-hook --hooks "$RUNNER_TEMP/pack-smoke/hooks" test
+
+      - name: Test hook contracts
+        run: uv run "$RUNNER_TEMP/pack-smoke/hooks/tests/test_pack.py"

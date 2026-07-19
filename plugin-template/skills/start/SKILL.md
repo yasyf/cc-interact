@@ -79,12 +79,12 @@ After you make changes, the user can run `/{{SKILL_NAME}}` again. It resumes the
 
 ## 6. Steering child agents (optional — the agent plane)
 
-Four hooks wire this window's subagents into a parent↔child steering channel, so an operator's directives reach a running child. All four are best-effort and no-op when the daemon is down; drop all four (and their `hooks.json` entries) if your agent never steers the children it spawns.
+Four hooks in one capt-hook pack module, `hooks/agent_plane.py`, wire this window's subagents into a parent↔child steering channel, so an operator's directives reach a running child. All four are best-effort and no-op when the daemon is down; delete that one file if your agent never steers the children it spawns. They dispatch through the captain-hook plugin the manifest declares as a dependency — with that plugin missing or disabled, the whole pack stays dark until `claude plugin marketplace add yasyf/captain-hook`.
 
-- **`SubagentStart` → `hooks/agent-start.sh`** — registers each child with the plane under its `agent_id`. If your daemon sets `AgentGreeting`, the child's first directive is an identity greeting that names its `agent_id`.
-- **`PreToolUse` (no matcher) → `hooks/agent-inject.sh`** — before each child tool call, drains that child's pending directives and injects them as additional context (`[<origin> #<id>] <text>`).
-- **`SubagentStop` → `hooks/agent-stop.sh`** — when a child tries to stop, drains any pending directives; if none and your daemon's `AgentGate` blocks, the child keeps running with the gate's reason.
-- **`PostToolUse` (`Task|Agent`) → `hooks/agent-report.sh`** — records the parent's raw subagent tool observations so the plane tracks launched and returned children.
+- **`SubagentStart` → `agent_start`** — registers each child with the plane under its `agent_id`, synchronously, so the registration (and its greeting directive) lands before the child's first tool call. If your daemon sets `AgentGreeting`, the child's first directive is an identity greeting that names its `agent_id`.
+- **`PreToolUse` (no matcher) → `agent_inject`** — before each child tool call, drains that child's pending directives and injects them as additional context (`[<origin> #<id>] <text>`), via a context-only result that never auto-approves the tool call it rides on.
+- **`SubagentStop` → `agent_stop`** — when a child tries to stop, drains any pending directives; if none and your daemon's `AgentGate` blocks, the child keeps running with the gate's reason.
+- **`PostToolUse` (`Task|Agent`) → `agent_report`** — records the parent's raw subagent tool observations so the plane tracks launched and returned children.
 
 **The greeting wording is load-bearing.** A child that receives an unattributed directive treats it as prompt injection and refuses; the same child complies fully once the channel is legitimized. Your `AgentGreeting` must name the child's `agent_id` and state that steering-channel directives are operator-authorized (echo's greeting in `examples/echo` is the reference wording) — and when the parent controls a child's spawn prompt, repeat the authorization there.
 
