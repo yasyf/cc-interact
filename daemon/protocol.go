@@ -33,6 +33,7 @@ const (
 	OpAgentStart     Op = "agent-start"     // register a child participant and record its start
 	OpAgentStop      Op = "agent-stop"      // stop-gate: drain pending directives, else consult the agent gate
 	OpAgentInject    Op = "agent-inject"    // drain and return an agent's pending directives in one round trip
+	OpAgentReport    Op = "agent-report"    // record a parent's raw Task or Agent tool observation
 	OpAgentDirect    Op = "agent-direct"    // enqueue a directive addressed to an agent
 	OpAgentReconcile Op = "agent-reconcile" // re-announce directives stranded on stopped agents
 )

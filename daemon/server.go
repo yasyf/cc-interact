@@ -189,6 +189,7 @@ func New(cfg Config) (*Server, error) {
 	s.Register(OpAgentStart, s.handleAgentStart)
 	s.Register(OpAgentStop, s.handleAgentStop)
 	s.Register(OpAgentInject, s.handleAgentInject)
+	s.Register(OpAgentReport, s.handleAgentReport)
 	s.Register(OpAgentDirect, s.handleAgentDirect)
 	s.Register(OpAgentReconcile, s.handleAgentReconcile)
 	// The agent participant plane rides the SSE mux beside GET /events: a

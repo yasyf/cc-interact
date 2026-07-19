@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -52,6 +53,15 @@ type agentStopBody struct {
 
 type agentInjectBody struct {
 	AgentID string `json:"agent_id"`
+}
+
+type agentReportBody struct {
+	Session      string          `json:"session"`
+	Scope        string          `json:"scope"`
+	ToolName     string          `json:"tool_name"`
+	ToolUseID    string          `json:"tool_use_id"`
+	ToolInput    json.RawMessage `json:"tool_input"`
+	ToolResponse json.RawMessage `json:"tool_response"`
 }
 
 type agentDirectBody struct {
@@ -303,7 +313,7 @@ func (s *Server) handleAgentStop(hc HandlerCtx) Reply {
 		return errReply(err.Error())
 	}
 	if !ok {
-		return Reply{OK: true}
+		return Reply{OK: true, Allow: true}
 	}
 	var b agentStopBody
 	if err := json.Unmarshal(hc.Env.Body, &b); err != nil {
@@ -379,9 +389,6 @@ func (s *Server) handleAgentInject(hc HandlerCtx) Reply {
 	if err := json.Unmarshal(hc.Env.Body, &b); err != nil {
 		return errReply(fmt.Errorf("agent-inject body: %w", err).Error())
 	}
-	if b.AgentID == "" {
-		return errReply("agent-inject requires an agent_id")
-	}
 	drained, err := s.store.DrainDirectives(hc.Ctx, sub.ID, b.AgentID, time.Now())
 	if err != nil {
 		return errReply(err.Error())
@@ -392,6 +399,36 @@ func (s *Server) handleAgentInject(hc HandlerCtx) Reply {
 		}
 	}
 	return directivesBody(drained)
+}
+
+// handleAgentReport records the parent's raw Task or Agent tool observation.
+func (s *Server) handleAgentReport(hc HandlerCtx) Reply {
+	sub, ok, err := hc.Subjects.Find(hc.Ctx, hc.Window, hc.Scope)
+	if err != nil {
+		return errReply(err.Error())
+	}
+	if !ok {
+		return Reply{OK: true}
+	}
+	var b agentReportBody
+	if err := json.Unmarshal(hc.Env.Body, &b); err != nil {
+		return errReply(fmt.Errorf("agent-report body: %w", err).Error())
+	}
+	typ := agent.EventResult
+	marker := bytes.Contains(b.ToolResponse, []byte(`"agentId"`)) || bytes.Contains(b.ToolResponse, []byte(`"outputFile"`))
+	if marker && !bytes.Contains(b.ToolResponse, []byte(`"text"`)) {
+		typ = agent.EventLaunched
+	}
+	if _, err := s.Append(hc.Ctx, &event.Event{
+		SubjectID: sub.ID,
+		Origin:    event.OriginSystem,
+		Type:      typ,
+		Payload:   append(json.RawMessage(nil), hc.Env.Body...),
+		DedupKey:  b.ToolUseID,
+	}); err != nil {
+		return errReply(err.Error())
+	}
+	return Reply{OK: true}
 }
 
 // handleAgentDirect enqueues a directive addressed to an agent through Direct. An

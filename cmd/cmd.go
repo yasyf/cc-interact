@@ -54,13 +54,19 @@ type Deps struct {
 }
 
 // hookInput is the subset of a Claude Code hook's stdin JSON the substrate hooks
-// read: the session identity, the working directory (the raw ownership scope),
-// and the PreToolUse tool call.
+// read.
 type hookInput struct {
-	SessionID string          `json:"session_id"`
-	Cwd       string          `json:"cwd"`
-	ToolName  string          `json:"tool_name"`
-	ToolInput json.RawMessage `json:"tool_input"`
+	SessionID            string          `json:"session_id"`
+	Cwd                  string          `json:"cwd"`
+	AgentID              string          `json:"agent_id"`
+	AgentType            string          `json:"agent_type"`
+	TranscriptPath       string          `json:"transcript_path"`
+	AgentTranscriptPath  string          `json:"agent_transcript_path"`
+	LastAssistantMessage string          `json:"last_assistant_message"`
+	ToolName             string          `json:"tool_name"`
+	ToolInput            json.RawMessage `json:"tool_input"`
+	ToolResponse         json.RawMessage `json:"tool_response"`
+	ToolUseID            string          `json:"tool_use_id"`
 }
 
 // readHookInput parses a hook's stdin JSON, tolerating an empty body.

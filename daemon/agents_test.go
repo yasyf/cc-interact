@@ -197,6 +197,17 @@ func TestAgentStopStopGateDelivers(t *testing.T) {
 	}
 }
 
+func TestAgentStopNoSubjectAllows(t *testing.T) {
+	s := newTestServer(t, Config{})
+	r := s.dispatch(context.Background(), Envelope{
+		Proto: ProtocolVersion, Op: OpAgentStop, Scope: "/untracked", Session: "nope",
+		Body: json.RawMessage(`{"agent_id":"w1"}`),
+	})
+	if !r.OK || !r.Allow || r.Error != "" || r.Reason != "" {
+		t.Fatalf("agent-stop no subject = %+v, want explicit allow", r)
+	}
+}
+
 func TestAgentStopEmptyDrainCloses(t *testing.T) {
 	allow := func(context.Context, subject.Subject, agent.Info) (bool, string) { return true, "" }
 	for _, tc := range []struct {
@@ -779,7 +790,7 @@ func TestAgentEnvelopesRejectEmptyAgentID(t *testing.T) {
 	s := newTestServer(t, Config{})
 	sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 42, "open")
 
-	for _, op := range []Op{OpAgentStart, OpAgentStop, OpAgentInject} {
+	for _, op := range []Op{OpAgentStart, OpAgentStop} {
 		r := s.dispatch(context.Background(), agentEnvelope(op, sub, map[string]string{"agent_id": ""}))
 		if r.OK || !contains(r.Error, "agent_id") {
 			t.Fatalf("%s with empty agent_id = %+v, want an agent_id error", op, r)
@@ -791,6 +802,69 @@ func TestAgentEnvelopesRejectEmptyAgentID(t *testing.T) {
 	}))
 	if !r.OK {
 		t.Fatalf("agent-direct to top-level = %+v, want ok", r)
+	}
+	r = s.dispatch(context.Background(), agentEnvelope(OpAgentInject, sub, agentInjectBody{AgentID: agent.TopLevel}))
+	if !r.OK {
+		t.Fatalf("agent-inject for top-level = %+v, want ok", r)
+	}
+	var drained directivesReply
+	if err := json.Unmarshal(r.Body, &drained); err != nil {
+		t.Fatalf("top-level inject body: %v", err)
+	}
+	if len(drained.Directives) != 1 || drained.Directives[0].Text != "steer top level" {
+		t.Fatalf("top-level directives = %+v, want the queued directive", drained.Directives)
+	}
+}
+
+func TestAgentReportClassificationAndDedup(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{
+			name: "launched with markers and no final text",
+			raw:  json.RawMessage(`{ "session":"sess1", "scope":"scopeA", "tool_name":"Task", "tool_use_id":"tool-launch", "tool_input":{"prompt":"inspect"}, "tool_response":{"agentId":"a1","outputFile":"/tmp/a1.out"} }`),
+			want: agent.EventLaunched,
+		},
+		{
+			name: "marker plus final text is a result",
+			raw:  json.RawMessage(`{"session":"sess1","scope":"scopeA","tool_name":"Agent","tool_use_id":"tool-result","tool_input":{"prompt":"inspect"},"tool_response":{"agentId":"a1","content":[{"type":"text","text":"finished"}]}}`),
+			want: agent.EventResult,
+		},
+		{
+			name: "response without marker is a result",
+			raw:  json.RawMessage(`{"session":"sess1","scope":"scopeA","tool_name":"Task","tool_use_id":"tool-plain","tool_input":{},"tool_response":{"status":"done"}}`),
+			want: agent.EventResult,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t, Config{})
+			sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 42, "open")
+			env := Envelope{
+				Proto: ProtocolVersion, Op: OpAgentReport, Session: sub.SessionID,
+				Scope: sub.Scope, ClaudePID: sub.ClaudePID, Body: tc.raw,
+			}
+			for i := 0; i < 2; i++ {
+				if r := s.dispatch(context.Background(), env); !r.OK {
+					t.Fatalf("agent-report re-fire %d = %+v, want ok", i, r)
+				}
+			}
+			events := eventsOfType(t, s, sub.ID, tc.want)
+			if len(events) != 1 {
+				t.Fatalf("%s events = %d, want exactly 1 after re-fire", tc.want, len(events))
+			}
+			var body agentReportBody
+			if err := json.Unmarshal(tc.raw, &body); err != nil {
+				t.Fatalf("test body: %v", err)
+			}
+			if events[0].Origin != event.OriginSystem || events[0].DedupKey != body.ToolUseID {
+				t.Fatalf("event = %+v, want system origin and tool-use dedup key", events[0])
+			}
+			if string(events[0].Payload) != string(tc.raw) {
+				t.Fatalf("payload = %s, want verbatim %s", events[0].Payload, tc.raw)
+			}
+		})
 	}
 }
 
