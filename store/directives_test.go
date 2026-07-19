@@ -57,7 +57,7 @@ func TestEnqueueDirective(t *testing.T) {
 				s, subjects := openTestStore(t)
 				subject := create(t, subjects, "session-1", "/repo", 0)
 				info := agentInfo(subject.ID, "worker-1", time.Unix(100, 0))
-				if err := s.RegisterAgent(ctx, info); err != nil {
+				if _, err := s.RegisterAgent(ctx, info); err != nil {
 					t.Fatalf("register agent: %v", err)
 				}
 
@@ -71,7 +71,7 @@ func TestEnqueueDirective(t *testing.T) {
 						name:       "done",
 						wantStatus: agent.StatusDone,
 						before: func(t *testing.T) {
-							if err := s.CloseAgent(ctx, subject.ID, info.AgentID, time.Unix(200, 0)); err != nil {
+							if _, err := s.CloseAgent(ctx, subject.ID, info.AgentID, time.Unix(200, 0)); err != nil {
 								t.Fatalf("close agent: %v", err)
 							}
 						},
@@ -111,7 +111,7 @@ func TestDrainDirectives(t *testing.T) {
 				s, subjects := openTestStore(t)
 				subject := create(t, subjects, "session-1", "/repo", 0)
 				info := agentInfo(subject.ID, "worker-1", time.Unix(50, 0))
-				if err := s.RegisterAgent(ctx, info); err != nil {
+				if _, err := s.RegisterAgent(ctx, info); err != nil {
 					t.Fatalf("register agent: %v", err)
 				}
 				for i, directive := range []struct {
@@ -166,7 +166,7 @@ func TestDrainDirectives(t *testing.T) {
 					agentInfo(subjectA.ID, "worker-2", time.Unix(50, 0)),
 					agentInfo(subjectB.ID, "worker-1", time.Unix(50, 0)),
 				} {
-					if err := s.RegisterAgent(ctx, info); err != nil {
+					if _, err := s.RegisterAgent(ctx, info); err != nil {
 						t.Fatalf("register %s/%s: %v", info.SubjectID, info.AgentID, err)
 					}
 					if _, _, err := s.EnqueueDirective(
@@ -222,7 +222,7 @@ func TestConcurrentEnqueueAndClose(t *testing.T) {
 			s, subjects := openTestStore(t)
 			subject := create(t, subjects, "session-1", "/repo", 0)
 			info := agentInfo(subject.ID, "worker-1", time.Unix(50, 0))
-			if err := s.RegisterAgent(ctx, info); err != nil {
+			if _, err := s.RegisterAgent(ctx, info); err != nil {
 				t.Fatalf("register agent: %v", err)
 			}
 
@@ -250,7 +250,8 @@ func TestConcurrentEnqueueAndClose(t *testing.T) {
 			}
 			go func() {
 				<-start
-				closeResult <- s.CloseAgent(ctx, subject.ID, info.AgentID, time.Unix(1000, 0))
+				_, err := s.CloseAgent(ctx, subject.ID, info.AgentID, time.Unix(1000, 0))
+				closeResult <- err
 			}()
 			close(start)
 

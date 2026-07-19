@@ -23,13 +23,18 @@ type Op string
 // registrations made in New, so a consumer re-registering one panics as a
 // duplicate. Domain ops are defined by the consumer and attached with Register.
 const (
-	OpHealth        Op = "health"         // liveness + version probe
-	OpShutdown      Op = "shutdown"       // step down and release the socket
-	OpResolve       Op = "resolve"        // look up an existing subject (no create) for a stream consumer
-	OpSessionRecord Op = "session-record" // record SessionStart hook facts (session rotation rebind)
-	OpGuardEdit     Op = "guard-edit"     // PreToolUse: ask the gate whether an edit is permitted
-	OpChannelAck    Op = "channel-ack"    // the model proves the window's channel round trip
-	OpStatus        Op = "status"         // daemon version + subject status
+	OpHealth         Op = "health"          // liveness + version probe
+	OpShutdown       Op = "shutdown"        // step down and release the socket
+	OpResolve        Op = "resolve"         // look up an existing subject (no create) for a stream consumer
+	OpSessionRecord  Op = "session-record"  // record SessionStart hook facts (session rotation rebind)
+	OpGuardEdit      Op = "guard-edit"      // PreToolUse: ask the gate whether an edit is permitted
+	OpChannelAck     Op = "channel-ack"     // the model proves the window's channel round trip
+	OpStatus         Op = "status"          // daemon version + subject status
+	OpAgentStart     Op = "agent-start"     // register a child participant and record its start
+	OpAgentStop      Op = "agent-stop"      // stop-gate: drain pending directives, else consult the agent gate
+	OpAgentInject    Op = "agent-inject"    // drain and return an agent's pending directives in one round trip
+	OpAgentDirect    Op = "agent-direct"    // enqueue a directive addressed to an agent
+	OpAgentReconcile Op = "agent-reconcile" // re-announce directives stranded on stopped agents
 )
 
 // Envelope is one control-plane RPC. The generic fields the daemon itself reads

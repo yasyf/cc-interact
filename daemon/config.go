@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/paths"
 	"github.com/yasyf/cc-interact/subject"
@@ -29,6 +30,15 @@ type ToolCall struct {
 // GateFunc is the edit-gate verdict the consumer injects. It runs only for a
 // resolved subject; allow=false carries a human-readable reason.
 type GateFunc func(ctx context.Context, s subject.Subject, tool ToolCall) (allow bool, reason string)
+
+// AgentGateFunc is the stop-gate verdict the consumer injects. agent-stop
+// consults it only when the agent's mailbox drained empty; allow=false keeps the
+// agent running with reason as its instruction. nil always allows.
+type AgentGateFunc func(ctx context.Context, s subject.Subject, info agent.Info) (allow bool, reason string)
+
+// AgentGreetingFunc returns a newly registered agent's identity-bootstrap
+// directive, enqueued as its first instruction. Empty enqueues nothing; nil is off.
+type AgentGreetingFunc func(info agent.Info) string
 
 // Config builds a Server. The zero value is not runnable; AppName, Paths,
 // Version, and ActiveStatuses are the load-bearing inputs.
@@ -63,6 +73,12 @@ type Config struct {
 	GateErrorReason string
 	// GateObserve, when set, records every resolved verdict (a ledger hook).
 	GateObserve func(ctx context.Context, s subject.Subject, tool ToolCall, allow bool, reason string)
+
+	// AgentGate is the stop-gate verdict for a child participant, consulted by
+	// agent-stop only when the drain found no pending directives. nil always allows.
+	AgentGate AgentGateFunc
+	// AgentGreeting supplies a newly registered agent's first directive. nil is off.
+	AgentGreeting AgentGreetingFunc
 
 	// OnPresenceChange fires when a named consumer's connectivity to a subject
 	// flips. It receives the live Server so it can Append a domain presence event

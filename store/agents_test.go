@@ -9,6 +9,84 @@ import (
 	"github.com/yasyf/cc-interact/agent"
 )
 
+func TestListPendingDirectiveAgents(t *testing.T) {
+	ctx := context.Background()
+	s, subjects := openTestStore(t)
+	subjectA := create(t, subjects, "session-a", "/repo/a", 0)
+	subjectB := create(t, subjects, "session-b", "/repo/b", 0)
+
+	mk := func(subjectID, agentID string, done bool, pending, delivered int) {
+		t.Helper()
+		if _, err := s.RegisterAgent(ctx, agentInfo(subjectID, agentID, time.Unix(100, 0))); err != nil {
+			t.Fatalf("register %s/%s: %v", subjectID, agentID, err)
+		}
+		for i := 0; i < delivered; i++ {
+			if _, _, err := s.EnqueueDirective(ctx, subjectID, agentID, "human", "delivered", time.Unix(150, 0)); err != nil {
+				t.Fatalf("enqueue delivered %s/%s: %v", subjectID, agentID, err)
+			}
+		}
+		if delivered > 0 {
+			if _, err := s.DrainDirectives(ctx, subjectID, agentID, time.Unix(160, 0)); err != nil {
+				t.Fatalf("drain delivered %s/%s: %v", subjectID, agentID, err)
+			}
+		}
+		for i := 0; i < pending; i++ {
+			if _, _, err := s.EnqueueDirective(ctx, subjectID, agentID, "human", "pending", time.Unix(170, 0)); err != nil {
+				t.Fatalf("enqueue pending %s/%s: %v", subjectID, agentID, err)
+			}
+		}
+		if done {
+			if _, err := s.CloseAgent(ctx, subjectID, agentID, time.Unix(200, 0)); err != nil {
+				t.Fatalf("close %s/%s: %v", subjectID, agentID, err)
+			}
+		}
+	}
+
+	// Two done+pending agents in subject A exercise intra-subject ordering.
+	mk(subjectA.ID, "a-1-done-pending", true, 1, 0)
+	mk(subjectA.ID, "a-0-done-pending", true, 2, 1)
+	mk(subjectA.ID, "a-done-delivered", true, 0, 2)   // done, all delivered → excluded
+	mk(subjectA.ID, "a-running-pending", false, 1, 0) // running, pending → excluded
+	mk(subjectB.ID, "b-done-pending", true, 1, 0)     // second subject → cross-subject ordering
+
+	got, err := s.ListPendingDirectiveAgents(ctx)
+	if err != nil {
+		t.Fatalf("list pending directive agents: %v", err)
+	}
+
+	type pair struct{ subjectID, agentID string }
+	want := []pair{
+		{subjectA.ID, "a-0-done-pending"},
+		{subjectA.ID, "a-1-done-pending"},
+		{subjectB.ID, "b-done-pending"},
+	}
+	if subjectB.ID < subjectA.ID {
+		want = []pair{
+			{subjectB.ID, "b-done-pending"},
+			{subjectA.ID, "a-0-done-pending"},
+			{subjectA.ID, "a-1-done-pending"},
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("pending directive agents = %d, want %d (done+pending only): %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].SubjectID != w.subjectID || got[i].AgentID != w.agentID {
+			t.Fatalf("pending agent %d = %s/%s, want %s/%s (ordered by subject then agent)",
+				i, got[i].SubjectID, got[i].AgentID, w.subjectID, w.agentID)
+		}
+	}
+
+	// The peek is non-destructive: the pending rows are still drainable afterward.
+	drained, err := s.DrainDirectives(ctx, subjectA.ID, "a-1-done-pending", time.Unix(300, 0))
+	if err != nil {
+		t.Fatalf("drain after peek: %v", err)
+	}
+	if len(drained) != 1 {
+		t.Fatalf("drained %d after peek, want 1 (peek must not mark delivered)", len(drained))
+	}
+}
+
 func agentInfo(subjectID, agentID string, startedAt time.Time) agent.Info {
 	return agent.Info{
 		SubjectID:      subjectID,
@@ -35,10 +113,10 @@ func TestAgentStore(t *testing.T) {
 				subject := create(t, subjects, "session-1", "/repo", 0)
 				startedAt := time.Unix(100, 0)
 				info := agentInfo(subject.ID, "worker-1", startedAt)
-				if err := s.RegisterAgent(ctx, info); err != nil {
+				if _, err := s.RegisterAgent(ctx, info); err != nil {
 					t.Fatalf("register agent: %v", err)
 				}
-				if err := s.CloseAgent(ctx, subject.ID, info.AgentID, time.Unix(200, 0)); err != nil {
+				if _, err := s.CloseAgent(ctx, subject.ID, info.AgentID, time.Unix(200, 0)); err != nil {
 					t.Fatalf("close agent: %v", err)
 				}
 
@@ -47,7 +125,7 @@ func TestAgentStore(t *testing.T) {
 				info.SessionID = "session-2"
 				info.TranscriptPath = "/tmp/transcript-2.jsonl"
 				info.StartedAt = time.Unix(300, 0)
-				if err := s.RegisterAgent(ctx, info); err != nil {
+				if _, err := s.RegisterAgent(ctx, info); err != nil {
 					t.Fatalf("re-register agent: %v", err)
 				}
 
@@ -78,7 +156,7 @@ func TestAgentStore(t *testing.T) {
 				ctx := context.Background()
 				s, subjects := openTestStore(t)
 				subject := create(t, subjects, "session-1", "/repo", 0)
-				err := s.CloseAgent(ctx, subject.ID, "missing", time.Unix(100, 0))
+				_, err := s.CloseAgent(ctx, subject.ID, "missing", time.Unix(100, 0))
 				if !errors.Is(err, ErrNotFound) {
 					t.Fatalf("close unknown agent err = %v, want ErrNotFound", err)
 				}
@@ -105,7 +183,7 @@ func TestAgentStore(t *testing.T) {
 					agentInfo(subject.ID, "later", time.Unix(200, 0)),
 					agentInfo(subject.ID, "earlier", time.Unix(100, 0)),
 				} {
-					if err := s.RegisterAgent(ctx, info); err != nil {
+					if _, err := s.RegisterAgent(ctx, info); err != nil {
 						t.Fatalf("register %s: %v", info.AgentID, err)
 					}
 				}

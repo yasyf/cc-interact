@@ -84,6 +84,18 @@ func (s *Store) EnqueueDirective(
 	}, status, nil
 }
 
+// HasPendingDirectives reports whether the agent holds at least one undelivered
+// directive, without delivering any — a non-destructive EXISTS peek.
+func (s *Store) HasPendingDirectives(ctx context.Context, subjectID, agentID string) (bool, error) {
+	var pending int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM directives WHERE subject_id=? AND agent_id=? AND delivered_at IS NULL)`,
+		subjectID, agentID).Scan(&pending); err != nil {
+		return false, fmt.Errorf("has pending directives: %w", err)
+	}
+	return pending == 1, nil
+}
+
 // DrainDirectives atomically marks and returns pending directives in FIFO order.
 func (s *Store) DrainDirectives(
 	ctx context.Context,

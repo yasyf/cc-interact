@@ -61,6 +61,11 @@ type Server struct {
 	gateObserve     func(ctx context.Context, s subject.Subject, tool ToolCall, allow bool, reason string)
 	bootReconcile   func(ctx context.Context, s *Server) error
 
+	agentGate     AgentGateFunc
+	agentGreeting AgentGreetingFunc
+	parks         *parkRegistry
+	gateBlocks    *gateBlockCounter
+
 	paths         paths.Paths
 	socket        string
 	maxFrameBytes int
@@ -124,6 +129,10 @@ func New(cfg Config) (*Server, error) {
 		gateErrorReason: cfg.GateErrorReason,
 		gateObserve:     cfg.GateObserve,
 		bootReconcile:   cfg.BootReconcile,
+		agentGate:       cfg.AgentGate,
+		agentGreeting:   cfg.AgentGreeting,
+		parks:           newParkRegistry(),
+		gateBlocks:      newGateBlockCounter(),
 		paths:           cfg.Paths,
 		socket:          cfg.Paths.SocketPath(),
 		maxFrameBytes:   frameBytes,
@@ -177,6 +186,15 @@ func New(cfg Config) (*Server, error) {
 	s.Register(OpGuardEdit, s.handleGuardEdit)
 	s.Register(OpStatus, s.handleStatus)
 	s.Register(OpChannelAck, s.handleChannelAck)
+	s.Register(OpAgentStart, s.handleAgentStart)
+	s.Register(OpAgentStop, s.handleAgentStop)
+	s.Register(OpAgentInject, s.handleAgentInject)
+	s.Register(OpAgentDirect, s.handleAgentDirect)
+	s.Register(OpAgentReconcile, s.handleAgentReconcile)
+	// The agent participant plane rides the SSE mux beside GET /events: a
+	// long-poll await for directives and a roster read, both under the same auth.
+	s.sse.Mux().HandleFunc("GET /agents/await", s.handleAgentAwait)
+	s.sse.Mux().HandleFunc("GET /agents", s.handleAgentRoster)
 	return s, nil
 }
 
@@ -233,6 +251,9 @@ func (s *Server) Serve(parent context.Context) error {
 		if err := s.bootReconcile(ctx, s); err != nil {
 			return err
 		}
+	}
+	if err := s.reconcileDirectives(ctx); err != nil {
+		return err
 	}
 	if err := s.startHTTP(ctx); err != nil {
 		return err
