@@ -200,7 +200,7 @@ func stopGateReason(pending []agent.Directive) string {
 		if i > 0 {
 			b.WriteString("\n\n")
 		}
-		b.WriteString(d.Text)
+		fmt.Fprintf(&b, "[%s #%d] %s", d.Origin, d.ID, d.Text)
 	}
 	b.WriteString("\n\n")
 	b.WriteString(agentStopGateInstruction)

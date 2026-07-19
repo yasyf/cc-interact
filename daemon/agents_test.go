@@ -175,8 +175,8 @@ func TestAgentStopStopGateDelivers(t *testing.T) {
 	if !r.OK || r.Allow {
 		t.Fatalf("stop with pending = %+v, want a block", r)
 	}
-	if !contains(r.Reason, "do the thing") || !contains(r.Reason, agentStopGateInstruction) {
-		t.Fatalf("stop reason = %q, want directive text + instruction", r.Reason)
+	if !contains(r.Reason, "[human #1] do the thing") || !contains(r.Reason, agentStopGateInstruction) {
+		t.Fatalf("stop reason = %q, want attributed directive + instruction", r.Reason)
 	}
 	if got := getAgent(t, s, sub.ID, "w1"); got.Status != agent.StatusRunning {
 		t.Fatalf("agent status = %q, want running (stop-gate keeps it alive)", got.Status)
