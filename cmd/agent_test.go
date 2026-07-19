@@ -40,7 +40,7 @@ func TestAgentStartSendsEnvelope(t *testing.T) {
 	socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
 	d := testDeps(socket)
 	ensured := 0
-	d.EnsureCurrentIfRunning = func() error { ensured++; return nil }
+	d.EnsureCurrentIfRunning = func(context.Context) error { ensured++; return nil }
 	stdout, stderr := executeAgentHook(t, AgentStartCmd(d), `{
 		"session_id":"s1","cwd":"/repo","agent_id":"a1","agent_type":"Explore",
 		"transcript_path":"/tmp/projects/repo/session.jsonl"
@@ -99,10 +99,9 @@ func TestAgentInjectEmitsExactAdditionalContext(t *testing.T) {
 	})
 	d := testDeps(socket)
 	ensureCalls := 0
-	d.EnsureCurrentIfRunning = func() error {
+	d.EnsureCurrentIfRunning = func(context.Context) error {
 		ensureCalls++
-		_, err := d.NewClient().Health()
-		return err
+		return nil
 	}
 	stdout, stderr := executeAgentHook(t, AgentInjectCmd(d), `{
 		"session_id":"s1","cwd":"/repo","tool_name":"Read"
@@ -257,7 +256,7 @@ func TestAgentStopOversizeLogsAndAllows(t *testing.T) {
 	const maxFrameBytes = 256
 	socket := liveDaemon(t, maxFrameBytes)
 	input := `{"session_id":"s1","cwd":"/repo","agent_id":"a1","last_assistant_message":"` + strings.Repeat("x", 512) + `"}`
-	d := testDeps(socket)
+	d := testDepsWithMaxFrame(socket, maxFrameBytes)
 	stdout, stderr := executeAgentHook(t, AgentStopCmd(d), input)
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want allow without block output", stdout)
@@ -274,7 +273,7 @@ func TestAgentStopOversizeLogsAndAllows(t *testing.T) {
 		t.Fatalf("agent-stop body: %v", err)
 	}
 	frame, err := json.Marshal(daemon.Envelope{
-		Proto: daemon.ProtocolVersion, Op: daemon.OpAgentStop, Session: in.SessionID,
+		Op: daemon.OpAgentStop, Session: in.SessionID,
 		ClaudePID: testClaudePID, Scope: in.Cwd, Body: body,
 	})
 	if err != nil {

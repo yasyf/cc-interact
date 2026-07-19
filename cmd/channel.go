@@ -53,9 +53,8 @@ func ChannelCmd(d Deps) *cobra.Command {
 // resolved once at boot — the channel server lives as long as the window — and
 // keys the stream even when the session id is stale or unset.
 func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, scope, notifyMethod string) {
-	client := d.NewClient()
 	claudePID := d.ClaudePID()
-	subjectID, port := waitForSubject(ctx, client, session, scope, claudePID, channelConsumer)
+	subjectID, port := waitForSubject(ctx, d.NewClient, session, scope, claudePID, channelConsumer)
 	if subjectID == "" {
 		return
 	}
@@ -63,7 +62,7 @@ func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, 
 		Port: port, SubjectID: subjectID, Consumer: channelConsumer, ClaudePID: claudePID,
 		ExcludeOrigin: event.OriginAgent,
 		Paths:         d.Paths, WindowAlive: d.WindowAlive,
-		Refresh: refreshHandshake(client, session, scope, claudePID, channelConsumer),
+		Refresh: refreshHandshake(d.NewClient, session, scope, claudePID, channelConsumer),
 	}
 	// No push at attach: an unsolicited tag wakes an idle agent for nothing. The
 	// channel stays silent until the subject produces an event — or the daemon

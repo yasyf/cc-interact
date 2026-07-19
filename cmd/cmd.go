@@ -26,15 +26,14 @@ type Deps struct {
 	// Version is this binary's build version, advertised in the channel server's
 	// initialize handshake.
 	Version string
-	// NewClient returns a control-socket client (typically
-	// daemon.NewClient(Paths.SocketPath())).
-	NewClient func() *daemon.Client
+	// NewClient opens an exact-build persistent control session.
+	NewClient func(ctx context.Context) (*daemon.Client, error)
 	// EnsureCurrent lazily starts or upgrades the daemon, blocking until a
 	// current one answers (daemon.Launcher.EnsureCurrent).
 	EnsureCurrent func(ctx context.Context) error
 	// EnsureCurrentIfRunning upgrades a running daemon but never cold-starts one —
 	// for hooks, which must not boot daemons (daemon.Launcher.EnsureCurrentIfRunning).
-	EnsureCurrentIfRunning func() error
+	EnsureCurrentIfRunning func(ctx context.Context) error
 	// ClaudePID resolves the window identity stamped on every envelope (typically
 	// procs.ClaudePID). 0 is a pid-less consumer outside any Claude window.
 	ClaudePID func() int

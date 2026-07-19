@@ -8,13 +8,8 @@ import (
 	"sync"
 
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit/wire"
 )
-
-// reserved is the set of protocol ops dispatch answers before the registry —
-// health and shutdown must work across protocol versions, so they can never be
-// registrations. The other core ops are ordinary registrations made in New;
-// re-registering one panics as a duplicate.
-var reserved = map[Op]struct{}{OpHealth: {}, OpShutdown: {}}
 
 // HandlerCtx is everything a domain handler needs: the request, the window and
 // resolved scope, the subject resolver, the database for the consumer's own
@@ -31,16 +26,19 @@ type HandlerCtx struct {
 	HTTPPort int
 	Activity *Activity
 	RepoLock *sync.Mutex
+	Peer     wire.Peer
+	Build    string
 }
 
 // HandlerFunc handles one domain op and returns its reply.
 type HandlerFunc func(HandlerCtx) Reply
 
-// Register attaches a domain handler for op. It panics on a reserved op or a
-// duplicate registration — both are programmer errors caught at wiring time.
+// Register attaches a domain handler for op. Duplicate registration panics.
 func (s *Server) Register(op Op, h HandlerFunc) {
-	if _, ok := reserved[op]; ok {
-		panic(fmt.Sprintf("daemon: cannot register reserved core op %q", op))
+	s.handlersMu.Lock()
+	defer s.handlersMu.Unlock()
+	if s.registrationsClosed {
+		panic("daemon: handler registration is closed")
 	}
 	if _, ok := s.handlers[op]; ok {
 		panic(fmt.Sprintf("daemon: op %q already registered", op))

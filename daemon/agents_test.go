@@ -19,7 +19,6 @@ import (
 func agentEnvelope(op Op, sub subject.Subject, body any) Envelope {
 	raw, _ := json.Marshal(body)
 	return Envelope{
-		Proto:     ProtocolVersion,
 		Op:        op,
 		Session:   sub.SessionID,
 		Scope:     sub.Scope,
@@ -84,7 +83,7 @@ func TestAgentStartNoSubjectNoOp(t *testing.T) {
 		AgentGreeting: func(agent.Info) string { return "hello" },
 	})
 	r := s.dispatch(context.Background(), Envelope{
-		Proto: ProtocolVersion, Op: OpAgentStart, Scope: "/untracked", Session: "nope",
+		Op: OpAgentStart, Scope: "/untracked", Session: "nope",
 		Body: json.RawMessage(`{"agent_id":"w1"}`),
 	})
 	if !r.OK || r.Error != "" {
@@ -200,7 +199,7 @@ func TestAgentStopStopGateDelivers(t *testing.T) {
 func TestAgentStopNoSubjectAllows(t *testing.T) {
 	s := newTestServer(t, Config{})
 	r := s.dispatch(context.Background(), Envelope{
-		Proto: ProtocolVersion, Op: OpAgentStop, Scope: "/untracked", Session: "nope",
+		Op: OpAgentStop, Scope: "/untracked", Session: "nope",
 		Body: json.RawMessage(`{"agent_id":"w1"}`),
 	})
 	if !r.OK || !r.Allow || r.Error != "" || r.Reason != "" {
@@ -842,7 +841,7 @@ func TestAgentReportClassificationAndDedup(t *testing.T) {
 			s := newTestServer(t, Config{})
 			sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 42, "open")
 			env := Envelope{
-				Proto: ProtocolVersion, Op: OpAgentReport, Session: sub.SessionID,
+				Op: OpAgentReport, Session: sub.SessionID,
 				Scope: sub.Scope, ClaudePID: sub.ClaudePID, Body: tc.raw,
 			}
 			for i := 0; i < 2; i++ {

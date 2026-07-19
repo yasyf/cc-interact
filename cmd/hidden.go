@@ -44,10 +44,16 @@ func SessionRecordCmd(d Deps) *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			in := readHookInput(cmd.InOrStdin())
-			if err := d.EnsureCurrentIfRunning(); err != nil {
+			ctx := cmd.Context()
+			if err := d.EnsureCurrentIfRunning(ctx); err != nil {
 				return nil
 			}
-			_, _ = d.NewClient().Do(cmd.Context(), daemon.Envelope{
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return nil
+			}
+			defer func() { _ = client.Close() }()
+			_, _ = client.Do(ctx, daemon.Envelope{
 				Op: daemon.OpSessionRecord, Session: in.SessionID, ClaudePID: d.ClaudePID(), Scope: in.Cwd,
 			})
 			return nil
@@ -72,7 +78,12 @@ func ChannelAckCmd(d Deps) *cobra.Command {
 			if err := d.EnsureCurrent(ctx); err != nil {
 				return err
 			}
-			reply, err := d.NewClient().Do(ctx, daemon.Envelope{
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
+			reply, err := client.Do(ctx, daemon.Envelope{
 				Op: daemon.OpChannelAck, Session: session, ClaudePID: d.ClaudePID(), Scope: mustCwd(cwd),
 			})
 			if err != nil {
@@ -104,14 +115,18 @@ func GuardEditCmd(d Deps) *cobra.Command {
 			env := daemon.Envelope{
 				Op: daemon.OpGuardEdit, Session: in.SessionID, ClaudePID: d.ClaudePID(), Scope: in.Cwd, Body: body,
 			}
-			reply, err := d.NewClient().Do(cmd.Context(), env)
+			client, err := d.NewClient(cmd.Context())
 			if err != nil {
 				return nil // daemon down: nothing to guard
 			}
-			if !reply.OK && reply.Error == wire.ErrFrameTooLarge.Error() {
-				env.Proto = daemon.ProtocolVersion
+			defer func() { _ = client.Close() }()
+			reply, err := client.Do(cmd.Context(), env)
+			if errors.Is(err, wire.ErrFrameTooLarge) {
 				frame, _ := json.Marshal(env)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "guard-edit: frame-too-large: request frame is %d bytes; allowing edit\n", len(frame))
+				return nil
+			}
+			if err != nil {
 				return nil
 			}
 			if reply.OK && !reply.Allow {

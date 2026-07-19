@@ -1,28 +1,29 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
-	"os/signal"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/drain"
 	"github.com/yasyf/daemonkit/paths"
-	"github.com/yasyf/daemonkit/proc"
 	"github.com/yasyf/daemonkit/wire"
 )
 
@@ -34,10 +35,6 @@ const handleTimeout = 35 * time.Second
 // maxFrameBytes caps one request frame at 64 MiB so a guard-edit carrying a
 // whole Write payload remains visible to the gate.
 const maxFrameBytes = 64 << 20
-
-// defaultEvictTimeout bounds each phase of evicting a version-skewed holder: the
-// graceful-shutdown wait, the post-SIGKILL wait, and the process-exit wait.
-const defaultEvictTimeout = 5 * time.Second
 
 // attachGrace is how recently a subject's last SSE attachment must have dropped
 // for it to still report as connected in status.
@@ -71,7 +68,9 @@ type Server struct {
 	maxFrameBytes int
 	log           *log.Logger
 
-	handlers map[Op]HandlerFunc
+	handlersMu          sync.RWMutex
+	handlers            map[Op]HandlerFunc
+	registrationsClosed bool
 
 	fixedPort      int
 	httpPort       int
@@ -82,17 +81,17 @@ type Server struct {
 	onHTTPStart    func(ctx context.Context, port int)
 	extraListeners []func(ctx context.Context) (net.Listener, error)
 	publicHandler  http.Handler
-	evictTimeout   time.Duration
+	repoMu         sync.Mutex
+	repoLocks      map[string]*sync.Mutex
 
-	repoMu    sync.Mutex
-	repoLocks map[string]*sync.Mutex
+	wireIntake *drain.Intake
+	httpIntake *drain.Intake
 
-	drain *drain.Simple
-
-	serveCtxMu      sync.Mutex
-	serveCtx        context.Context
-	triggerShutdown context.CancelFunc
-	wg              sync.WaitGroup
+	serveCtxMu    sync.Mutex
+	serveCtx      context.Context
+	serveCancel   context.CancelFunc
+	workersClosed bool
+	wg            sync.WaitGroup
 }
 
 // New opens the store, builds the bus, resolver, presence registry, and SSE
@@ -146,9 +145,9 @@ func New(cfg Config) (*Server, error) {
 		onHTTPStart:     cfg.OnHTTPStart,
 		extraListeners:  cfg.ExtraHTTPListeners,
 		publicHandler:   cfg.PublicHandler,
-		evictTimeout:    defaultEvictTimeout,
 		repoLocks:       make(map[string]*sync.Mutex),
-		drain:           &drain.Simple{},
+		wireIntake:      &drain.Intake{},
+		httpIntake:      &drain.Intake{},
 	}
 	s.subjects = subject.Resolver{
 		Store: store.NewSubjectStore(s.db),
@@ -174,7 +173,7 @@ func New(cfg Config) (*Server, error) {
 		OnPresenceChange:  ssePresence,
 		PresenceEventType: cfg.PresenceEventType,
 		PresenceDebounce:  cfg.PresenceDebounce,
-		Admit:             s.drain.Admit,
+		Admit:             s.httpIntake.Admit,
 	})
 	// Core ops ride the same registry as domain ops. A scope with no canonical
 	// form reaches them as the resolver's fallback value, which matches no
@@ -214,100 +213,36 @@ func (s *Server) DB() *sql.DB { return s.db }
 func (s *Server) Background(fn func(context.Context)) {
 	s.serveCtxMu.Lock()
 	ctx := s.serveCtx
-	s.serveCtxMu.Unlock()
+	closed := s.workersClosed
+	if ctx == nil {
+		s.serveCtxMu.Unlock()
+		panic("daemon: Background called before Serve")
+	}
+	if closed {
+		s.serveCtxMu.Unlock()
+		panic("daemon: Background called while draining")
+	}
 	s.wg.Add(1)
+	s.serveCtxMu.Unlock()
 	go func() {
 		defer s.wg.Done()
 		fn(ctx)
 	}()
 }
 
-// Serve binds (and evicts any older holder of) the control socket, runs the boot
-// reconcile, boots the HTTP plane, then serves control RPCs until ctx is
-// cancelled or a shutdown op arrives. It closes the store on return.
+// Serve runs the exact daemonkit lifecycle and persistent control session.
 func (s *Server) Serve(parent context.Context) error {
-	defer s.store.Close()
-	defer s.wg.Wait()
-
-	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	s.triggerShutdown = stop
-	s.serveCtxMu.Lock()
-	s.serveCtx = ctx
-	s.serveCtxMu.Unlock()
-
-	// Bind the control socket before publishing the HTTP handshake; connections
-	// queue in the listener backlog until the accept loop starts, so nothing
-	// observes the gap.
-	ln, lock, err := s.listen(ctx)
+	wireServer, runtime, err := s.runtime()
 	if err != nil {
+		_ = s.store.Close()
 		return err
 	}
-	defer func() { _ = lock.Close() }() // held for the listener's life; see SingleEntrant
-	var once sync.Once
-	closeListener := func() { once.Do(func() { _ = ln.Close() }) }
-	defer closeListener()
-
-	if s.bootReconcile != nil {
-		if err := s.bootReconcile(ctx, s); err != nil {
-			return err
-		}
+	wireServer.RegisterLifecycle(runtime)
+	err = runtime.Run(parent)
+	if parent.Err() != nil && errors.Is(err, parent.Err()) {
+		return nil
 	}
-	if err := s.reconcileDirectives(ctx); err != nil {
-		return err
-	}
-	if err := s.startHTTP(ctx); err != nil {
-		return err
-	}
-
-	s.log.Printf("daemon %s started; socket=%s http=%s", s.version, s.socket, net.JoinHostPort(s.bindHost(), strconv.Itoa(s.httpPort)))
-
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		<-ctx.Done()
-		// Settle in-flight SSE streams and refuse new admissions; startHTTP closes HTTP.
-		drainCtx, cancel := context.WithTimeout(context.Background(), handleTimeout)
-		defer cancel()
-		_ = s.drain.Drain(drainCtx, drain.SimpleConfig{
-			Deactivate:      func(context.Context) error { closeListener(); return nil },
-			MarkClosing:     func() {},
-			CancelExecutors: func() {},
-		})
-	}()
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				break
-			}
-			s.log.Printf("accept: %v", err)
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.handle(ctx, conn)
-		}()
-	}
-
-	s.wg.Wait()
-	s.log.Printf("daemon stopped")
-	return nil
-}
-
-// listen binds the control socket single-entrant, evicting any strictly older
-// holder through the version-gated takeover (s.evict). The returned lock is held
-// for the listener's life.
-func (s *Server) listen(ctx context.Context) (net.Listener, *os.File, error) {
-	se := proc.SingleEntrant{
-		Socket:  s.socket,
-		Evict:   func() (bool, error) { return s.evict(ctx) },
-		Timeout: s.evictTimeout,
-	}
-	return se.Listen(ctx)
+	return err
 }
 
 // bindHost is the address the HTTP plane binds, defaulting to loopback-only
@@ -408,33 +343,6 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) handle(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(handleTimeout))
-	f := wire.NewFraming(conn)
-	f.MaxLine = s.maxFrameBytes
-	peer, err := wire.PeerFromConn(conn.(*net.UnixConn))
-	if err != nil {
-		s.writeReply(conn, Reply{OK: false, Error: "peer credentials: " + err.Error()})
-		return
-	}
-	if peer.UID != os.Geteuid() {
-		s.log.Printf("refusing peer uid %d (daemon euid %d)", peer.UID, os.Geteuid())
-		s.writeReply(conn, Reply{OK: false, Error: "untrusted peer"})
-		return
-	}
-	var env Envelope
-	if err := f.ReadJSON(&env); err != nil {
-		if errors.Is(err, wire.ErrFrameTooLarge) {
-			s.writeReply(conn, Reply{OK: false, Error: wire.ErrFrameTooLarge.Error()})
-			return
-		}
-		s.writeReply(conn, Reply{OK: false, Error: "bad request: " + err.Error()})
-		return
-	}
-	s.writeReply(conn, s.dispatch(ctx, env))
-}
-
 // repoLock returns the mutex serializing scope-bound work (cc-review: working-tree
 // snapshots) so a turn boundary and a capture never describe interleaved state.
 func (s *Server) repoLock(scope string) *sync.Mutex {
@@ -448,25 +356,14 @@ func (s *Server) repoLock(scope string) *sync.Mutex {
 	return mu
 }
 
-// dispatch answers health and shutdown before anything else (cross-version
-// eviction depends on both working regardless of protocol version), then routes
-// every other op through the registry: Config.ScopeResolve canonicalizes the
-// scope once and the handler runs with the result.
 func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
-	switch env.Op {
-	case OpHealth:
-		return Reply{OK: true, DaemonVersion: s.version}
-	case OpShutdown:
-		s.triggerShutdown()
-		return Reply{OK: true}
-	}
-	if env.Proto != ProtocolVersion {
-		return errReply(fmt.Sprintf(
-			"%s protocol skew: daemon speaks v%d, request is v%d — this session is pinned to an older plugin version; restart the session to pick up the current one",
-			s.appName, ProtocolVersion, env.Proto,
-		))
-	}
+	return s.dispatchPeer(ctx, env, wire.Peer{}, "")
+}
+
+func (s *Server) dispatchPeer(ctx context.Context, env Envelope, peer wire.Peer, build string) Reply {
+	s.handlersMu.RLock()
 	handler, ok := s.handlers[env.Op]
+	s.handlersMu.RUnlock()
 	if !ok {
 		return errReply("unknown op: " + string(env.Op))
 	}
@@ -482,6 +379,8 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 		HTTPPort: s.httpPort,
 		Activity: s.activity,
 		RepoLock: s.repoLock(scope),
+		Peer:     peer,
+		Build:    build,
 	})
 }
 
@@ -492,7 +391,150 @@ func (s *Server) Dispatch(ctx context.Context, env Envelope) Reply {
 	return s.dispatch(ctx, env)
 }
 
-func (s *Server) writeReply(conn net.Conn, r Reply) {
-	r.Proto = ProtocolVersion
-	_ = wire.NewFraming(conn).WriteJSON(r)
+func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
+	handlers := s.freezeHandlers()
+	serverDeadlines := make(map[wire.Op]time.Duration, len(handlers))
+	clientDeadlines := make(map[wire.Op]time.Duration, len(handlers))
+	for op := range handlers {
+		serverDeadlines[wire.Op(op)] = handleTimeout
+		clientDeadlines[wire.Op(op)] = handleTimeout + time.Second
+	}
+	ladder, err := wire.NewLadder(serverDeadlines, clientDeadlines)
+	if err != nil {
+		return nil, nil, err
+	}
+	wireServer := &wire.Server{
+		Build: s.version, MaxFrame: s.maxFrameBytes, Ladder: ladder,
+		Trust: func(peer wire.Peer) error {
+			if peer.UID != os.Geteuid() {
+				return fmt.Errorf("%w: peer uid %d, daemon uid %d", wire.ErrUntrustedPeer, peer.UID, os.Geteuid())
+			}
+			return nil
+		},
+	}
+	for op := range handlers {
+		op := op
+		wireServer.RegisterConcurrent(wire.Op(op), func(ctx context.Context, req wire.Request) (any, error) {
+			env, err := decodeEnvelope(req.Payload)
+			if err != nil {
+				return nil, err
+			}
+			env.Op = op
+			return s.dispatchPeer(ctx, env, req.Peer, req.Build), nil
+		})
+	}
+	peer := &wire.LifecyclePeer{Config: wire.ClientConfig{
+		Dial: wire.UnixDialer(s.socket), Build: s.version, MaxFrame: s.maxFrameBytes,
+	}}
+	runtime, err := dkdaemon.NewRuntime(dkdaemon.RuntimeConfig{
+		Socket: s.socket, Build: s.version, Protocol: int(wire.ProtocolVersion),
+		Peer: peer, Contract: dkdaemon.RequestDaemon, WaitMode: dkdaemon.PIDExit,
+		Admission: s.wireIntake, Server: &sessionServer{owner: s, wire: wireServer},
+		Workers: &serverWorkers{owner: s}, State: s.store, Resources: lifecycleResource{peer},
+	})
+	if err != nil {
+		_ = peer.Close()
+		return nil, nil, err
+	}
+	return wireServer, runtime, nil
 }
+
+func (s *Server) freezeHandlers() map[Op]HandlerFunc {
+	s.handlersMu.Lock()
+	defer s.handlersMu.Unlock()
+	s.registrationsClosed = true
+	handlers := make(map[Op]HandlerFunc, len(s.handlers))
+	for op, handler := range s.handlers {
+		handlers[op] = handler
+	}
+	return handlers
+}
+
+func decodeEnvelope(payload []byte) (Envelope, error) {
+	var env Envelope
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&env); err != nil {
+		return Envelope{}, fmt.Errorf("daemon: decode envelope: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return Envelope{}, errors.New("daemon: trailing envelope value")
+		}
+		return Envelope{}, fmt.Errorf("daemon: decode trailing envelope: %w", err)
+	}
+	return env, nil
+}
+
+type sessionServer struct {
+	owner *Server
+	wire  *wire.Server
+}
+
+func (s *sessionServer) Serve(
+	ctx context.Context,
+	listener net.Listener,
+	admit, admitLifecycle func() (func(), error),
+) error {
+	workerCtx, cancel := context.WithCancel(ctx)
+	s.owner.serveCtxMu.Lock()
+	s.owner.serveCtx = workerCtx
+	s.owner.serveCancel = cancel
+	s.owner.serveCtxMu.Unlock()
+	if s.owner.bootReconcile != nil {
+		if err := s.owner.bootReconcile(workerCtx, s.owner); err != nil {
+			return err
+		}
+	}
+	if err := s.owner.reconcileDirectives(workerCtx); err != nil {
+		return err
+	}
+	if err := s.owner.startHTTP(workerCtx); err != nil {
+		return err
+	}
+	s.owner.log.Printf("daemon %s started; socket=%s http=%s", s.owner.version, s.owner.socket, net.JoinHostPort(s.owner.bindHost(), strconv.Itoa(s.owner.httpPort)))
+	err := s.wire.Serve(ctx, listener, admit, admitLifecycle)
+	s.owner.log.Printf("daemon stopped")
+	return err
+}
+
+func (s *sessionServer) CloseIntake() error { return s.wire.CloseIntake() }
+
+type serverWorkers struct{ owner *Server }
+
+func (w *serverWorkers) Close() {
+	w.owner.serveCtxMu.Lock()
+	w.owner.workersClosed = true
+	w.owner.serveCtxMu.Unlock()
+	w.owner.httpIntake.Close()
+}
+
+func (w *serverWorkers) Cancel() {
+	w.owner.serveCtxMu.Lock()
+	cancel := w.owner.serveCancel
+	w.owner.serveCtxMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (w *serverWorkers) Wait(ctx context.Context) error {
+	settleErr := w.owner.httpIntake.Settle(ctx)
+	if settleErr != nil {
+		if err := w.owner.httpIntake.Settle(context.WithoutCancel(ctx)); err != nil {
+			settleErr = errors.Join(settleErr, err)
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		w.owner.wg.Wait()
+		close(done)
+	}()
+	<-done
+	return settleErr
+}
+
+type lifecycleResource struct{ peer *wire.LifecyclePeer }
+
+func (r lifecycleResource) Close() error { return r.peer.Close() }

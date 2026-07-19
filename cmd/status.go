@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-interact/daemon"
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
 )
 
 // StatusCmd reports daemon liveness and the subject bound to the session+scope.
@@ -20,16 +22,17 @@ func StatusCmd(d Deps) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			client := d.NewClient()
-			if !client.Available() {
+			if err := d.EnsureCurrentIfRunning(ctx); errors.Is(err, dkdaemon.ErrNoPeer) {
 				fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
 				return nil
-			}
-			// A running daemon gets the version handshake (and upgrade) like every
-			// other op; a stopped one is just reported, not spawned.
-			if err := d.EnsureCurrent(ctx); err != nil {
+			} else if err != nil {
 				return err
 			}
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
 			reply, err := client.Do(ctx, daemon.Envelope{
 				Op: daemon.OpStatus, Session: session, ClaudePID: d.ClaudePID(), Scope: mustCwd(cwd),
 			})
@@ -59,12 +62,19 @@ func StopCmd(d Deps) *cobra.Command {
 		Short: "Stop the background daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			client := d.NewClient()
-			if !client.Available() {
+			ctx := cmd.Context()
+			if err := d.EnsureCurrentIfRunning(ctx); errors.Is(err, dkdaemon.ErrNoPeer) {
 				fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
 				return nil
+			} else if err != nil {
+				return err
 			}
-			if _, err := client.Shutdown(); err != nil {
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
+			if err := client.Shutdown(ctx); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "daemon: stopping")

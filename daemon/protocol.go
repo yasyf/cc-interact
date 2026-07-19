@@ -1,60 +1,41 @@
-// Package daemon is cc-interact's lazily-started local daemon: a control-plane
-// unix-socket server speaking newline-delimited JSON (a generic Op + Body
-// envelope, so the domain rides in the opaque Body), plus the realtime HTTP/SSE
-// plane it boots. A handful of core ops are answered internally; everything
-// domain-specific is a HandlerFunc the consumer Registers. Newest-wins eviction
-// of a strictly older socket holder makes upgrades seamless; a flock guards
-// lazy start. Every control op is fast request/response — realtime delivery is
-// the SSE stream (package sse), not a blocking socket op.
+// Package daemon is cc-interact's lazily-started local daemon. Daemonkit owns
+// its lifecycle, exact v4 persistent transport, peer identity, admission, and
+// takeover; this package owns only cc-interact operations and dispatch policy.
 package daemon
 
 import "encoding/json"
 
-// ProtocolVersion is stamped on every envelope. health and shutdown answer
-// regardless of it (cross-version eviction depends on both); every other op
-// requires an exact match.
-const ProtocolVersion = 1
-
-// Op is a control-plane request operation.
+// Op is a cc-interact business operation.
 type Op string
 
-// Core ops the daemon wires itself. health and shutdown are reserved (answered
-// before the registry, across protocol versions); the rest are ordinary
-// registrations made in New, so a consumer re-registering one panics as a
-// duplicate. Domain ops are defined by the consumer and attached with Register.
+// Core business operations registered by New. Consumers may add domain ops.
 const (
-	OpHealth         Op = "health"          // liveness + version probe
-	OpShutdown       Op = "shutdown"        // step down and release the socket
-	OpResolve        Op = "resolve"         // look up an existing subject (no create) for a stream consumer
-	OpSessionRecord  Op = "session-record"  // record SessionStart hook facts (session rotation rebind)
-	OpGuardEdit      Op = "guard-edit"      // PreToolUse: ask the gate whether an edit is permitted
-	OpChannelAck     Op = "channel-ack"     // the model proves the window's channel round trip
-	OpStatus         Op = "status"          // daemon version + subject status
-	OpAgentStart     Op = "agent-start"     // register a child participant and record its start
-	OpAgentStop      Op = "agent-stop"      // stop-gate: drain pending directives, else consult the agent gate
-	OpAgentInject    Op = "agent-inject"    // drain and return an agent's pending directives in one round trip
-	OpAgentReport    Op = "agent-report"    // record a parent's raw Task or Agent tool observation
-	OpAgentDirect    Op = "agent-direct"    // enqueue a directive addressed to an agent
-	OpAgentReconcile Op = "agent-reconcile" // re-announce directives stranded on stopped agents
+	OpResolve        Op = "resolve"
+	OpSessionRecord  Op = "session-record"
+	OpGuardEdit      Op = "guard-edit"
+	OpChannelAck     Op = "channel-ack"
+	OpStatus         Op = "status"
+	OpAgentStart     Op = "agent-start"
+	OpAgentStop      Op = "agent-stop"
+	OpAgentInject    Op = "agent-inject"
+	OpAgentReport    Op = "agent-report"
+	OpAgentDirect    Op = "agent-direct"
+	OpAgentReconcile Op = "agent-reconcile"
 )
 
-// Envelope is one control-plane RPC. The generic fields the daemon itself reads
-// are first-class; everything domain-specific rides in Body, which the consumer's
-// handler unmarshals.
+// Envelope is one cc-interact operation payload. Op selects the v4 wire route
+// and is never duplicated inside the payload.
 type Envelope struct {
-	Proto     int             `json:"proto"`
-	Op        Op              `json:"op"`
+	Op        Op              `json:"-"`
 	Session   string          `json:"session,omitempty"`
-	ClaudePID int             `json:"claude_pid,omitempty"` // window identity: stamped by the client
-	Scope     string          `json:"scope,omitempty"`      // raw ownership scope, run through Config.ScopeResolve
-	Consumer  string          `json:"consumer,omitempty"`   // stream consumer name on resolve
-	Body      json.RawMessage `json:"body,omitempty"`       // domain payload
+	ClaudePID int             `json:"claude_pid,omitempty"`
+	Scope     string          `json:"scope,omitempty"`
+	Consumer  string          `json:"consumer,omitempty"`
+	Body      json.RawMessage `json:"body,omitempty"`
 }
 
-// Reply is one control-plane response. The generic fields the daemon sets are
-// first-class; a handler returns domain output in Body.
+// Reply is one cc-interact business response.
 type Reply struct {
-	Proto         int             `json:"proto"`
 	OK            bool            `json:"ok"`
 	Error         string          `json:"error,omitempty"`
 	DaemonVersion string          `json:"daemon_version,omitempty"`

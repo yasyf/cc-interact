@@ -47,8 +47,7 @@ type Config struct {
 	AppName string
 	// Paths is the state-directory layout (socket, db, http handshake, locks).
 	Paths paths.Paths
-	// Version is this binary's own build version, used for same-or-newer-wins
-	// socket eviction (compared via version.Newer).
+	// Version is this binary's exact daemon build identity.
 	Version string
 	// MaxFrameBytes overrides the control server's request-frame limit. Zero uses
 	// the 64 MiB default.

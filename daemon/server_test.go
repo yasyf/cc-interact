@@ -16,6 +16,7 @@ import (
 
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/wire"
 )
 
 func testPaths() paths.Paths { return paths.Paths{App: ".cc-interact-test"} }
@@ -63,9 +64,22 @@ func TestBackgroundWaitedBeforeServeReturns(t *testing.T) {
 	served := make(chan error, 1)
 	go func() { served <- s.Serve(ctx) }()
 
-	client := NewClient(testPaths().SocketPath())
 	deadline := time.Now().Add(5 * time.Second)
-	for !client.Available() {
+	for {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		client, connectErr := NewClient(probeCtx, ClientConfig{
+			Socket: testPaths().SocketPath(), Build: "0.0.1",
+		})
+		if connectErr == nil {
+			health, healthErr := client.Health(probeCtx)
+			_ = client.Close()
+			probeCancel()
+			if healthErr == nil && health.Protocol == int(wire.ProtocolVersion) {
+				break
+			}
+		} else {
+			probeCancel()
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("daemon did not come up")
 		}

@@ -6,8 +6,7 @@ require (
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/shirou/gopsutil/v4 v4.26.5
 	github.com/spf13/cobra v1.10.2
-	github.com/yasyf/daemonkit v0.1.0
-	golang.org/x/sys v0.46.0
+	github.com/yasyf/daemonkit v0.1.1-0.20260719045607-173abb1e83d4
 	modernc.org/sqlite v1.52.0
 )
 
@@ -26,6 +25,7 @@ require (
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

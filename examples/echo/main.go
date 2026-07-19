@@ -69,7 +69,7 @@ type itemBody struct {
 
 func appPaths() paths.Paths { return paths.Paths{App: appDir} }
 
-func newClient() *daemon.Client { return daemon.NewClient(appPaths().SocketPath()) }
+func newClient(ctx context.Context) (*daemon.Client, error) { return launcher().NewClient(ctx) }
 
 func launcher() daemon.Launcher {
 	return daemon.Launcher{Paths: appPaths(), Version: appVersion, Args: []string{"daemon"}}
@@ -212,7 +212,6 @@ func mountREST(s *daemon.Server) {
 // channel. The handler round-trips to the daemon via opReply because the channel
 // server is a separate stdio process and cannot Append directly.
 func channelTools(ctx context.Context, session, scope string) ([]channel.Tool, string, string, error) {
-	client := newClient()
 	pid := os.Getpid()
 	reply := channel.Tool{
 		Name:        "reply",
@@ -226,6 +225,11 @@ func channelTools(ctx context.Context, session, scope string) ([]channel.Tool, s
 			"required": []string{"subject", "text"},
 		},
 		Handler: func(ctx context.Context, args json.RawMessage, _ func(string)) (string, bool) {
+			client, err := newClient(ctx)
+			if err != nil {
+				return "reply failed: " + err.Error(), true
+			}
+			defer func() { _ = client.Close() }()
 			r, err := client.Do(ctx, daemon.Envelope{
 				Op: opReply, Session: session, ClaudePID: pid, Scope: scope, Body: args,
 			})
@@ -246,8 +250,8 @@ func deps() cmd.Deps {
 		Paths:                  appPaths(),
 		Version:                appVersion,
 		NewClient:              newClient,
-		EnsureCurrent:          func(context.Context) error { return launcher().EnsureCurrent(daemon.UpgradeTimeout) },
-		EnsureCurrentIfRunning: func() error { return launcher().EnsureCurrentIfRunning() },
+		EnsureCurrent:          func(ctx context.Context) error { return launcher().EnsureCurrent(ctx, daemon.UpgradeTimeout) },
+		EnsureCurrentIfRunning: func(ctx context.Context) error { return launcher().EnsureCurrentIfRunning(ctx) },
 		ClaudePID:              os.Getpid,
 		TerminalEvent:          func(t string) bool { return t == eventDone },
 		Serve:                  func(ctx context.Context) error { return serve(ctx) },
@@ -277,7 +281,12 @@ func startCmd(d cmd.Deps) *cobra.Command {
 				return err
 			}
 			scope := cwdOr(cwd)
-			reply, err := d.NewClient().Do(ctx, daemon.Envelope{
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
+			reply, err := client.Do(ctx, daemon.Envelope{
 				Op: opStart, Session: session, ClaudePID: d.ClaudePID(), Scope: scope,
 			})
 			if err != nil {
@@ -312,7 +321,12 @@ func itemCmd(d cmd.Deps) *cobra.Command {
 			if err := d.EnsureCurrent(ctx); err != nil {
 				return err
 			}
-			reply, err := d.NewClient().Do(ctx, daemon.Envelope{
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
+			reply, err := client.Do(ctx, daemon.Envelope{
 				Op: daemon.OpResolve, Session: session, ClaudePID: d.ClaudePID(), Scope: cwdOr(cwd), Consumer: "item",
 			})
 			if err != nil {

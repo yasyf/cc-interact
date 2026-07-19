@@ -25,7 +25,8 @@ func AgentStartCmd(d Deps) *cobra.Command {
 			if in.SessionID == "" || in.AgentID == "" {
 				return nil
 			}
-			if err := d.EnsureCurrentIfRunning(); err != nil {
+			ctx := cmd.Context()
+			if err := d.EnsureCurrentIfRunning(ctx); err != nil {
 				return nil
 			}
 			transcriptPath := ""
@@ -36,7 +37,12 @@ func AgentStartCmd(d Deps) *cobra.Command {
 				AgentID: in.AgentID, AgentType: in.AgentType, SessionID: in.SessionID,
 				TranscriptPath: transcriptPath,
 			})
-			_, _ = d.NewClient().Do(cmd.Context(), daemon.Envelope{
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return nil
+			}
+			defer func() { _ = client.Close() }()
+			_, _ = client.Do(ctx, daemon.Envelope{
 				Op: daemon.OpAgentStart, Session: in.SessionID, ClaudePID: d.ClaudePID(), Scope: in.Cwd, Body: body,
 			})
 			return nil
@@ -53,7 +59,13 @@ func AgentInjectCmd(d Deps) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			in := readHookInput(cmd.InOrStdin())
 			body, _ := json.Marshal(agentInjectBody{AgentID: in.AgentID})
-			reply, err := d.NewClient().Do(cmd.Context(), daemon.Envelope{
+			ctx := cmd.Context()
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return nil
+			}
+			defer func() { _ = client.Close() }()
+			reply, err := client.Do(ctx, daemon.Envelope{
 				Op: daemon.OpAgentInject, Session: in.SessionID, ClaudePID: d.ClaudePID(), Scope: in.Cwd, Body: body,
 			})
 			if err != nil || !reply.OK || len(reply.Body) == 0 {
@@ -95,19 +107,25 @@ func AgentStopCmd(d Deps) *cobra.Command {
 			env := daemon.Envelope{
 				Op: daemon.OpAgentStop, Session: in.SessionID, ClaudePID: d.ClaudePID(), Scope: in.Cwd, Body: body,
 			}
-			reply, err := d.NewClient().Do(cmd.Context(), env)
+			client, err := d.NewClient(cmd.Context())
 			if err != nil {
-				if !errors.Is(err, daemon.ErrDaemonUnavailable) {
+				return nil
+			}
+			defer func() { _ = client.Close() }()
+			reply, err := client.Do(cmd.Context(), env)
+			if errors.Is(err, wire.ErrFrameTooLarge) {
+				frame, _ := json.Marshal(env)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent-stop: frame-too-large: request frame is %d bytes; allowing stop\n", len(frame))
+				return nil
+			}
+			if err != nil {
+				var callErr *daemon.CallError
+				if !errors.As(err, &callErr) {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent-stop: malformed daemon reply: %v; allowing stop\n", err)
 				}
 				return nil
 			}
 			if !reply.OK {
-				if reply.Error == wire.ErrFrameTooLarge.Error() {
-					env.Proto = daemon.ProtocolVersion
-					frame, _ := json.Marshal(env)
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent-stop: frame-too-large: request frame is %d bytes; allowing stop\n", len(frame))
-				}
 				return nil
 			}
 			if !reply.Allow {
@@ -130,7 +148,12 @@ func AgentReportCmd(d Deps) *cobra.Command {
 				Session: in.SessionID, Scope: in.Cwd, ToolName: in.ToolName, ToolUseID: in.ToolUseID,
 				ToolInput: in.ToolInput, ToolResponse: in.ToolResponse,
 			})
-			_, _ = d.NewClient().Do(cmd.Context(), daemon.Envelope{
+			client, err := d.NewClient(cmd.Context())
+			if err != nil {
+				return nil
+			}
+			defer func() { _ = client.Close() }()
+			_, _ = client.Do(cmd.Context(), daemon.Envelope{
 				Op: daemon.OpAgentReport, Session: in.SessionID, ClaudePID: d.ClaudePID(), Scope: in.Cwd, Body: body,
 			})
 			return nil

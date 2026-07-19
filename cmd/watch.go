@@ -37,7 +37,11 @@ func WatchCmd(d Deps) *cobra.Command {
 			if err := d.EnsureCurrent(ctx); err != nil {
 				return err
 			}
-			client := d.NewClient()
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
 			scope := mustCwd(cwd)
 			claudePID := d.ClaudePID()
 			subjectID, port, err := resolveSubject(ctx, client, session, scope, claudePID, watchConsumer)
@@ -49,7 +53,7 @@ func WatchCmd(d Deps) *cobra.Command {
 				Port: port, SubjectID: subjectID, Consumer: watchConsumer, ClaudePID: claudePID,
 				ExcludeOrigin: event.OriginAgent,
 				Paths:         d.Paths, WindowAlive: d.WindowAlive,
-				Refresh: refreshHandshake(client, session, scope, claudePID, watchConsumer),
+				Refresh: refreshHandshake(d.NewClient, session, scope, claudePID, watchConsumer),
 			}
 			return consume.ConsumeEvents(ctx, src, func(_ int64, data string) (bool, error) {
 				// A failed write must propagate so the cursor doesn't advance past

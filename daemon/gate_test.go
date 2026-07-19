@@ -32,7 +32,7 @@ func TestGuardEditBlocksOpenSubject(t *testing.T) {
 
 	body, _ := json.Marshal(guardEditBody{ToolName: "Edit", ToolInput: json.RawMessage(`{"file_path":"x.go"}`)})
 	r := s.dispatch(context.Background(), Envelope{
-		Proto: ProtocolVersion, Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242, Body: body,
+		Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242, Body: body,
 	})
 	if !r.OK || r.Allow || r.Reason == "" {
 		t.Fatalf("guard-edit on open subject = %+v, want block with reason", r)
@@ -48,7 +48,7 @@ func TestGuardEditAllowsClosedSubject(t *testing.T) {
 	seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 4242, "closed")
 
 	r := s.dispatch(context.Background(), Envelope{
-		Proto: ProtocolVersion, Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242,
+		Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242,
 	})
 	if !r.OK || !r.Allow || r.Reason != "" {
 		t.Fatalf("guard-edit on closed subject = %+v, want allow", r)
@@ -62,7 +62,7 @@ func TestGuardEditNoSubjectAllows(t *testing.T) {
 	var observed []bool
 	s := newTestServer(t, gateConfig(&observed))
 	r := s.dispatch(context.Background(), Envelope{
-		Proto: ProtocolVersion, Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242,
+		Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242,
 	})
 	if !r.OK || !r.Allow {
 		t.Fatalf("guard-edit with no subject = %+v, want allow (nothing to guard)", r)
@@ -79,7 +79,7 @@ func TestGuardEditFailsClosedOnResolveError(t *testing.T) {
 	s.store.Close() // force the resolver's query to fail
 
 	r := s.dispatch(context.Background(), Envelope{
-		Proto: ProtocolVersion, Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242,
+		Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242,
 	})
 	if !r.OK || r.Allow || r.Reason != "fail-closed: status unreadable" {
 		t.Fatalf("guard-edit on resolve error = %+v, want fail-closed block", r)

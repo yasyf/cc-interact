@@ -36,15 +36,17 @@ func resolveSubject(ctx context.Context, client *daemon.Client, session, scope s
 // channel server loads at session start, before either the daemon or the subject
 // is guaranteed up, and lives for the whole window. It returns ("", 0) only when
 // ctx is cancelled.
-func waitForSubject(ctx context.Context, client *daemon.Client, session, scope string, claudePID int, consumer string) (subjectID string, port int) {
+func waitForSubject(ctx context.Context, connect func(context.Context) (*daemon.Client, error), session, scope string, claudePID int, consumer string) (subjectID string, port int) {
 	for {
 		if ctx.Err() != nil {
 			return "", 0
 		}
-		if client.Available() {
+		client, err := connect(ctx)
+		if err == nil {
 			reply, err := client.Do(ctx, daemon.Envelope{
 				Op: daemon.OpResolve, Session: session, ClaudePID: claudePID, Scope: scope, Consumer: consumer,
 			})
+			_ = client.Close()
 			if err == nil && reply.SubjectID != "" {
 				return reply.SubjectID, reply.HTTPPort
 			}
@@ -58,10 +60,15 @@ func waitForSubject(ctx context.Context, client *daemon.Client, session, scope s
 }
 
 // refreshHandshake returns a consume.StreamSource.Refresh that re-resolves the
-// daemon's current HTTP port, so a stream survives the daemon being replaced
-// underneath it by a version-skew eviction.
-func refreshHandshake(client *daemon.Client, session, scope string, claudePID int, consumer string) func(context.Context) (int, error) {
+// daemon's current HTTP port, so a stream survives an exact-build daemon
+// replacement.
+func refreshHandshake(connect func(context.Context) (*daemon.Client, error), session, scope string, claudePID int, consumer string) func(context.Context) (int, error) {
 	return func(ctx context.Context) (int, error) {
+		client, err := connect(ctx)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = client.Close() }()
 		reply, err := client.Do(ctx, daemon.Envelope{
 			Op: daemon.OpResolve, Session: session, ClaudePID: claudePID, Scope: scope, Consumer: consumer,
 		})

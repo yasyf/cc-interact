@@ -19,7 +19,10 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/daemon"
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/daemonkit/drain"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/wire"
 )
 
 const testClaudePID = 4242
@@ -51,25 +54,37 @@ func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (string,
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
 	rec := &recorder{}
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
+	server := &wire.Server{Build: "9.9.9"}
+	for _, op := range []daemon.Op{
+		daemon.OpResolve, daemon.OpSessionRecord, daemon.OpGuardEdit, daemon.OpChannelAck, daemon.OpStatus,
+		daemon.OpAgentStart, daemon.OpAgentStop, daemon.OpAgentInject, daemon.OpAgentReport,
+		daemon.OpAgentDirect, daemon.OpAgentReconcile,
+	} {
+		op := op
+		server.RegisterConcurrent(wire.Op(op), func(_ context.Context, request wire.Request) (any, error) {
+			var env daemon.Envelope
+			if err := json.Unmarshal(request.Payload, &env); err != nil {
+				return nil, err
 			}
-			go func() {
-				defer conn.Close()
-				var env daemon.Envelope
-				if err := json.NewDecoder(conn).Decode(&env); err != nil {
-					return
-				}
-				rec.record(env)
-				_ = json.NewEncoder(conn).Encode(reply(env))
-			}()
-		}
+			env.Op = op
+			rec.record(env)
+			return reply(env), nil
+		})
+	}
+	intake := &drain.Intake{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(ctx, ln, intake.Admit, intake.AdmitLifecycle)
 	}()
+	t.Cleanup(func() {
+		intake.Close()
+		_ = server.CloseIntake()
+		cancel()
+		_ = ln.Close()
+		<-done
+	})
 	return socket, rec
 }
 
@@ -86,12 +101,20 @@ func shortTempDir(t *testing.T) string {
 }
 
 func testDeps(socket string) Deps {
+	return testDepsWithMaxFrame(socket, 0)
+}
+
+func testDepsWithMaxFrame(socket string, maxFrameBytes int) Deps {
 	return Deps{
-		Paths:                  paths.Paths{App: ".cc-interact-test"},
-		Version:                "9.9.9",
-		NewClient:              func() *daemon.Client { return daemon.NewClient(socket) },
+		Paths:   paths.Paths{App: ".cc-interact-test"},
+		Version: "9.9.9",
+		NewClient: func(ctx context.Context) (*daemon.Client, error) {
+			return daemon.NewClient(ctx, daemon.ClientConfig{
+				Socket: socket, Build: "9.9.9", MaxFrameBytes: maxFrameBytes,
+			})
+		},
 		EnsureCurrent:          func(context.Context) error { return nil },
-		EnsureCurrentIfRunning: func() error { return nil },
+		EnsureCurrentIfRunning: func(context.Context) error { return nil },
 		ClaudePID:              func() int { return testClaudePID },
 		TerminalEvent:          func(t string) bool { return t == "submit" },
 	}
@@ -132,11 +155,19 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 		}
 	})
 
-	client := daemon.NewClient(p.SocketPath())
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if reply, err := client.Health(); err == nil && reply.OK {
-			return p.SocketPath()
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		client, err := daemon.NewClient(probeCtx, daemon.ClientConfig{Socket: p.SocketPath(), Build: "9.9.9"})
+		if err == nil {
+			health, healthErr := client.Health(probeCtx)
+			_ = client.Close()
+			probeCancel()
+			if healthErr == nil && health.Build == "9.9.9" && health.Protocol == int(wire.ProtocolVersion) {
+				return p.SocketPath()
+			}
+		} else {
+			probeCancel()
 		}
 		select {
 		case err := <-served:
@@ -200,7 +231,7 @@ func TestGuardEditOversizeLogsAndAllows(t *testing.T) {
 	const maxFrameBytes = 256
 	socket := liveDaemon(t, maxFrameBytes)
 	input := fmt.Sprintf(`{"session_id":"s1","cwd":"/repo","tool_name":"Write","tool_input":{"content":%q}}`, strings.Repeat("x", 512))
-	cmd := GuardEditCmd(testDeps(socket))
+	cmd := GuardEditCmd(testDepsWithMaxFrame(socket, maxFrameBytes))
 	cmd.SetIn(strings.NewReader(input))
 	cmd.SetOut(&bytes.Buffer{})
 	var stderr bytes.Buffer
@@ -218,7 +249,7 @@ func TestGuardEditOversizeLogsAndAllows(t *testing.T) {
 		t.Fatalf("guard-edit body: %v", err)
 	}
 	frame, err := json.Marshal(daemon.Envelope{
-		Proto: daemon.ProtocolVersion, Op: daemon.OpGuardEdit, Session: in.SessionID,
+		Op: daemon.OpGuardEdit, Session: in.SessionID,
 		ClaudePID: testClaudePID, Scope: in.Cwd, Body: body,
 	})
 	if err != nil {
@@ -310,7 +341,9 @@ func TestStatusReportsSubject(t *testing.T) {
 
 // TestStatusNotRunning proves a stopped daemon is reported, not spawned.
 func TestStatusNotRunning(t *testing.T) {
-	cmd := StatusCmd(testDeps(filepath.Join(t.TempDir(), "absent.sock")))
+	deps := testDeps(filepath.Join(t.TempDir(), "absent.sock"))
+	deps.EnsureCurrentIfRunning = func(context.Context) error { return dkdaemon.ErrNoPeer }
+	cmd := StatusCmd(deps)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
