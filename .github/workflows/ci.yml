@@ -46,10 +46,10 @@ jobs:
             RELEASE_REPO=yasyf/echo-demo MCP_SUBCOMMAND=channel SKILL_NAME=start
 
       - name: Lint hook pack
-        run: uvx capt-hook pack lint "$RUNNER_TEMP/pack-smoke"
+        run: uvx --from 'capt-hook>=10.5.0' capt-hook pack lint "$RUNNER_TEMP/pack-smoke"
 
       - name: Test inline hooks
-        run: uvx --isolated capt-hook --hooks "$RUNNER_TEMP/pack-smoke/hooks" test
+        run: uvx --isolated --from 'capt-hook>=10.5.0' capt-hook --hooks "$RUNNER_TEMP/pack-smoke/hooks" test
 
       - name: Test hook contracts
         run: uv run "$RUNNER_TEMP/pack-smoke/hooks/tests/test_pack.py"
