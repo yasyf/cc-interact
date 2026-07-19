@@ -46,6 +46,29 @@ CREATE TABLE IF NOT EXISTS events (
   PRIMARY KEY (subject_id, seq)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup ON events(subject_id, dedup_key) WHERE dedup_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS agents (
+  subject_id      TEXT NOT NULL REFERENCES subjects(id),
+  agent_id        TEXT NOT NULL,
+  parent_agent_id TEXT NOT NULL,
+  agent_type      TEXT NOT NULL,
+  session_id      TEXT NOT NULL,
+  transcript_path TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  started_at      INTEGER NOT NULL,
+  ended_at        INTEGER,
+  PRIMARY KEY (subject_id, agent_id)
+);
+CREATE TABLE IF NOT EXISTS directives (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  subject_id   TEXT NOT NULL REFERENCES subjects(id),
+  agent_id     TEXT NOT NULL,
+  origin       TEXT NOT NULL,
+  text         TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  delivered_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_directives_pending
+  ON directives(subject_id, agent_id) WHERE delivered_at IS NULL;
 `
 
 // Open opens (creating if needed) the database at dbPath, applies the core
