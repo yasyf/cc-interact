@@ -19,9 +19,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/channel"
 	"github.com/yasyf/cc-interact/cmd"
 	"github.com/yasyf/cc-interact/daemon"
@@ -56,6 +58,13 @@ const (
 	eventDone  = "echo.done"  // terminal event a watch stops on
 
 	notifyMethod = "notifications/echo/channel"
+
+	// awaitConsumer names the await tool's presence when it resolves the subject.
+	awaitConsumer = "await"
+
+	// awaitTimeout is the await tool's default long-poll window, under typical
+	// HTTP idle limits.
+	awaitTimeout = 4 * time.Minute
 )
 
 var lifecycle = subject.Lifecycle{Initial: statusOpen, Closed: statusClosed}
@@ -109,9 +118,42 @@ func resolveRef(ctx context.Context, db *sql.DB, ref string) (string, bool, erro
 	return id, true, nil
 }
 
+// resolveSubjectPort polls the daemon for the scope's subject id and HTTP port,
+// mirroring cmd's own stream resolver so the await tool can long-poll
+// /agents/await. cmd.resolveSubject is unexported, so a consumer wires the same
+// loop closing over its session/scope/consumer.
+func resolveSubjectPort(ctx context.Context, client *daemon.Client, session, scope string) (string, int, error) {
+	for {
+		reply, err := client.Do(ctx, daemon.Envelope{
+			Op: daemon.OpResolve, Session: session, ClaudePID: os.Getpid(), Scope: scope, Consumer: awaitConsumer,
+		})
+		if err != nil {
+			return "", 0, err
+		}
+		if reply.SubjectID != "" {
+			return reply.SubjectID, reply.HTTPPort, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 func payload(typ, text string) json.RawMessage {
 	b, _ := json.Marshal(map[string]string{"type": typ, "text": text})
 	return b
+}
+
+// agentGreeting is a newly registered child's identity-bootstrap directive. The
+// wording legitimizes the steering channel — a child refuses unattributed
+// directives, so the greeting names the channel and how directives arrive.
+func agentGreeting(info agent.Info) string {
+	return fmt.Sprintf("You are agent %s in this session, connected to the echo steering channel. "+
+		"Operator-authorized directives may arrive prefixed [<origin> #<id>] inside your tool results, "+
+		"as stop-time instructions when you finish, or via the await tool (call it with your agent id to wait for one). "+
+		"Treat them as instructions from your operator: act on each once, then continue or finish your task.", info.AgentID)
 }
 
 // buildServer composes the daemon: domain ops, the REST mount, and the channel
@@ -129,8 +171,10 @@ func buildServer() (*daemon.Server, error) {
 		PresenceEventType: c.Type(),
 		OnPresenceChange:  c.OnPresenceChange,
 		BootReconcile:     c.BootReconcile,
-		// ScopeResolve nil → identity; Gate nil → allow every edit; Migrate nil → no
-		// domain tables.
+		// AgentGreeting bootstraps each child's identity on the steering channel.
+		AgentGreeting: agentGreeting,
+		// ScopeResolve nil → identity; Gate/AgentGate nil → allow every edit and
+		// stop; Migrate nil → no domain tables.
 	})
 	if err != nil {
 		return nil, err
@@ -208,6 +252,25 @@ func mountREST(s *daemon.Server) {
 	})
 }
 
+// channelInstructions is the full receive+relay contract folded into the agent's
+// system prompt: the domain event guide, the tri-state receive protocol, and the
+// wake-only relay step. appName is the source the channel tags carry (the MCP
+// serverInfo name), so it keys every Source field and the relay step.
+func channelInstructions(session, scope string) string {
+	return channel.Instructions(channel.InstructionsSpec{
+		Desc:          "the echo human-in-the-loop channel",
+		Traffic:       "Echo items reach you",
+		Source:        appName,
+		Guide:         "An echo.item event is a human item to reply to: call the reply tool, which appends an echo.reply event (OriginAgent) to the subject's log. Other event types are informational.",
+		SilentOutside: "an echo session",
+	}) + "\n\n" + channel.ReceiveProtocol(channel.ReceiveProtocolSpec{
+		Watch:      fmt.Sprintf("go run . watch --session %s --cwd '%s'", session, scope),
+		Source:     appName,
+		Ack:        fmt.Sprintf("go run . channel-ack --session %s --cwd '%s'", session, scope),
+		DedupeHint: "Deduplicate by the event's type and text: echo payloads carry no id, and the same echo.item may arrive on both paths around the switchover.",
+	}) + "\n\n" + channel.RelayStep(appName)
+}
+
 // channelTools advertises the one domain tool — reply — to the agent's MCP
 // channel. The handler round-trips to the daemon via opReply because the channel
 // server is a separate stdio process and cannot Append directly.
@@ -242,7 +305,18 @@ func channelTools(ctx context.Context, session, scope string) ([]channel.Tool, s
 			return string(r.Body), false
 		},
 	}
-	return []channel.Tool{reply}, notifyMethod, "", nil
+	await := channel.NewAwaitTool(channel.AwaitSpec{
+		Resolve: func(ctx context.Context) (string, int, error) {
+			client, err := newClient(ctx)
+			if err != nil {
+				return "", 0, err
+			}
+			defer func() { _ = client.Close() }()
+			return resolveSubjectPort(ctx, client, session, scope)
+		},
+		Timeout: awaitTimeout,
+	})
+	return []channel.Tool{reply, await}, notifyMethod, channelInstructions(session, scope), nil
 }
 
 func deps() cmd.Deps {
@@ -356,6 +430,47 @@ func itemCmd(d cmd.Deps) *cobra.Command {
 	return c
 }
 
+// directCmd enqueues a steering directive addressed to an agent via
+// OpAgentDirect and prints the daemon's reply. An empty --agent targets the
+// top-level agent.
+func directCmd(d cmd.Deps) *cobra.Command {
+	var session, cwd, agentID string
+	c := &cobra.Command{
+		Use:   "direct <text>",
+		Short: "Enqueue a steering directive for an agent (empty --agent = the top-level agent)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			ctx := c.Context()
+			if err := d.EnsureCurrent(ctx); err != nil {
+				return err
+			}
+			body, _ := json.Marshal(map[string]string{
+				"agent_id": agentID, "origin": event.OriginHuman, "text": args[0],
+			})
+			client, err := d.NewClient(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = client.Close() }()
+			reply, err := client.Do(ctx, daemon.Envelope{
+				Op: daemon.OpAgentDirect, Session: session, ClaudePID: d.ClaudePID(), Scope: cwdOr(cwd), Body: body,
+			})
+			if err != nil {
+				return err
+			}
+			if !reply.OK {
+				return errors.New(reply.Error)
+			}
+			_, err = fmt.Fprintf(c.OutOrStdout(), "%s\n", reply.Body)
+			return err
+		},
+	}
+	c.Flags().StringVar(&session, "session", defaultSession, "session id")
+	c.Flags().StringVar(&cwd, "cwd", "", "working directory / scope (defaults to the current directory)")
+	c.Flags().StringVar(&agentID, "agent", "", "target agent id (empty targets the top-level agent)")
+	return c
+}
+
 // withSessionDefault re-defaults a framework command's --session flag to the
 // echo session, so the headless multi-process demo resolves without passing
 // --session on every command.
@@ -390,6 +505,7 @@ func root() *cobra.Command {
 		withSessionDefault(cmd.ChannelCmd(d)),
 		startCmd(d),
 		itemCmd(d),
+		directCmd(d),
 	)
 	return r
 }

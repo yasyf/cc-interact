@@ -76,3 +76,22 @@ This prints the frozen feedback JSON: the full thread history plus any questions
 ## 5. Later rounds
 
 After you make changes, the user can run `/{{SKILL_NAME}}` again. It resumes the **same** session as a new version against the new state, across `/clear` and resume in the same Claude window; `--new` forces a fresh one.
+
+## 6. Steering child agents (optional — the agent plane)
+
+Four hooks wire this window's subagents into a parent↔child steering channel, so an operator's directives reach a running child. All four are best-effort and no-op when the daemon is down; drop all four (and their `hooks.json` entries) if your agent never steers the children it spawns.
+
+- **`SubagentStart` → `hooks/agent-start.sh`** — registers each child with the plane under its `agent_id`. If your daemon sets `AgentGreeting`, the child's first directive is an identity greeting that names its `agent_id`.
+- **`PreToolUse` (no matcher) → `hooks/agent-inject.sh`** — before each child tool call, drains that child's pending directives and injects them as additional context (`[<origin> #<id>] <text>`).
+- **`SubagentStop` → `hooks/agent-stop.sh`** — when a child tries to stop, drains any pending directives; if none and your daemon's `AgentGate` blocks, the child keeps running with the gate's reason.
+- **`PostToolUse` (`Task|Agent`) → `hooks/agent-report.sh`** — records the parent's raw subagent tool observations so the plane tracks launched and returned children.
+
+**The greeting wording is load-bearing.** A child that receives an unattributed directive treats it as prompt injection and refuses; the same child complies fully once the channel is legitimized. Your `AgentGreeting` must name the child's `agent_id` and state that steering-channel directives are operator-authorized (echo's greeting in `examples/echo` is the reference wording) — and when the parent controls a child's spawn prompt, repeat the authorization there.
+
+### Await and relay
+
+A child that has finished its own work but should stay reachable calls the **`await`** MCP tool with its own `agent_id` (named in the greeting) to long-poll the channel for new directives. Add it to your channel tools with `channel.NewAwaitTool(channel.AwaitSpec{Resolve: ..., Timeout: ...})`.
+
+The **parent** learns the wake-only relay contract from `channel.RelayStep("{{MCP_SERVER_NAME}}")`, appended to your channel instructions after the `ReceiveProtocol` steps: when a `<channel source="{{MCP_SERVER_NAME}}">` tag carries an `agent.relay` event naming an `agent_id`, the parent SendMessages that child a **wake only** — the mailbox is the sole delivery path, so the wake carries no directive content, and a repeated relay tag is safe to re-nudge.
+
+An operator enqueues a directive through the daemon's `agent-direct` op, addressed by `agent_id`; an empty id targets the top-level agent through the same mailbox.
