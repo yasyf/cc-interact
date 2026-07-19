@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func decodeReplies(t *testing.T, out *bytes.Buffer) []map[string]any {
@@ -22,13 +25,27 @@ func decodeReplies(t *testing.T, out *bytes.Buffer) []map[string]any {
 	return replies
 }
 
+// replyByID finds the reply carrying the given JSON-RPC id. tools/call replies
+// are written from their own goroutine, so the output order no longer tracks the
+// request order — a reply must be matched by id, not position.
+func replyByID(t *testing.T, replies []map[string]any, id float64) map[string]any {
+	t.Helper()
+	for _, r := range replies {
+		if rid, ok := r["id"].(float64); ok && rid == id {
+			return r
+		}
+	}
+	t.Fatalf("no reply with id %v; got %+v", id, replies)
+	return nil
+}
+
 func TestServerInitializeListCall(t *testing.T) {
 	var gotArgs string
 	tools := []Tool{{
 		Name:        "echo",
 		Description: "echo back",
 		InputSchema: map[string]any{"type": "object"},
-		Handler: func(_ context.Context, args json.RawMessage) (string, bool) {
+		Handler: func(_ context.Context, args json.RawMessage, _ func(string)) (string, bool) {
 			gotArgs = string(args)
 			return "pong", false
 		},
@@ -53,7 +70,7 @@ func TestServerInitializeListCall(t *testing.T) {
 		t.Fatalf("got %d replies, want 5 (client notification answered nothing)", len(replies))
 	}
 
-	initResult := replies[0]["result"].(map[string]any)
+	initResult := replyByID(t, replies, 1)["result"].(map[string]any)
 	if initResult["protocolVersion"] != mcpProtocolVersion {
 		t.Fatalf("protocolVersion = %v, want %s", initResult["protocolVersion"], mcpProtocolVersion)
 	}
@@ -65,7 +82,7 @@ func TestServerInitializeListCall(t *testing.T) {
 		t.Fatalf("initialize must omit instructions when unset: %+v", initResult)
 	}
 
-	listTools := replies[1]["result"].(map[string]any)["tools"].([]any)
+	listTools := replyByID(t, replies, 2)["result"].(map[string]any)["tools"].([]any)
 	if len(listTools) != 1 {
 		t.Fatalf("tools/list returned %d tools, want 1", len(listTools))
 	}
@@ -74,7 +91,7 @@ func TestServerInitializeListCall(t *testing.T) {
 		t.Fatalf("listed tool = %+v, want echo/echo back", tool)
 	}
 
-	callContent := replies[2]["result"].(map[string]any)["content"].([]any)
+	callContent := replyByID(t, replies, 3)["result"].(map[string]any)["content"].([]any)
 	if text := callContent[0].(map[string]any)["text"]; text != "pong" {
 		t.Fatalf("tools/call text = %v, want pong", text)
 	}
@@ -82,11 +99,11 @@ func TestServerInitializeListCall(t *testing.T) {
 		t.Fatalf("handler saw args %q, want {\"x\":1}", gotArgs)
 	}
 
-	if ping := replies[3]["result"].(map[string]any); len(ping) != 0 {
+	if ping := replyByID(t, replies, 4)["result"].(map[string]any); len(ping) != 0 {
 		t.Fatalf("ping result = %+v, want empty object", ping)
 	}
 
-	errObj := replies[4]["error"].(map[string]any)
+	errObj := replyByID(t, replies, 5)["error"].(map[string]any)
 	if errObj["code"].(float64) != -32601 {
 		t.Fatalf("bogus method error code = %v, want -32601", errObj["code"])
 	}
@@ -110,7 +127,7 @@ func TestServerInitializeInstructions(t *testing.T) {
 func TestServerToolCallErrors(t *testing.T) {
 	tools := []Tool{{
 		Name: "boom",
-		Handler: func(_ context.Context, _ json.RawMessage) (string, bool) {
+		Handler: func(_ context.Context, _ json.RawMessage, _ func(string)) (string, bool) {
 			return "it failed", true
 		},
 	}}
@@ -130,7 +147,7 @@ func TestServerToolCallErrors(t *testing.T) {
 		t.Fatalf("got %d replies, want 2", len(replies))
 	}
 
-	boom := replies[0]["result"].(map[string]any)
+	boom := replyByID(t, replies, 1)["result"].(map[string]any)
 	if boom["isError"] != true {
 		t.Fatalf("handler isErr=true should map to isError result: %+v", boom)
 	}
@@ -138,7 +155,7 @@ func TestServerToolCallErrors(t *testing.T) {
 		t.Fatalf("error text = %v, want it failed", text)
 	}
 
-	missing := replies[1]["result"].(map[string]any)
+	missing := replyByID(t, replies, 2)["result"].(map[string]any)
 	if missing["isError"] != true {
 		t.Fatalf("unknown tool should be an error result: %+v", missing)
 	}
@@ -185,5 +202,138 @@ func TestEventType(t *testing.T) {
 	}
 	if got := eventType(`not json`); got != "" {
 		t.Fatalf("eventType on garbage = %q, want empty", got)
+	}
+}
+
+// safeBuffer is an io.Writer safe for the concurrent writes a parked handler's
+// progress, a sibling tools/call reply, and Notify all make to the same pipe.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitFor polls out until cond holds or the deadline fires.
+func waitFor(t *testing.T, out *safeBuffer, cond func(string) bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if cond(out.String()) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("condition not met before deadline; out = %q", out.String())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// TestServerParkUnderLoad pins the async-dispatch contract: a tools/call whose
+// handler parks must not stall the loop. While "block" is parked, a sibling
+// tools/call ("ping") still replies, a Notify push still goes out, and the parked
+// call's own progress notification still lands. Serve's deferred wait then drains
+// the released handler before returning, so the buffer is stable for accounting.
+func TestServerParkUnderLoad(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	tools := []Tool{
+		{
+			Name: "block",
+			Handler: func(_ context.Context, _ json.RawMessage, progress func(string)) (string, bool) {
+				progress("working")
+				close(started)
+				<-release
+				return "unblocked", false
+			},
+		},
+		{
+			Name: "ping",
+			Handler: func(_ context.Context, _ json.RawMessage, _ func(string)) (string, bool) {
+				return "pong", false
+			},
+		},
+	}
+	srv := NewServer(ServerInfo{Name: "x", Version: "v1"}, tools)
+
+	inR, inW := io.Pipe()
+	out := &safeBuffer{}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), inR, out) }()
+
+	if _, err := io.WriteString(inW, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"block","_meta":{"progressToken":"tok-1"}}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking handler never started; the loop is frozen")
+	}
+
+	// (a) a sibling tools/call replies while "block" is parked.
+	if _, err := io.WriteString(inW, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ping"}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	// (b) a Notify push goes out while "block" is parked.
+	if err := srv.Notify("notifications/test", map[string]any{"k": "v"}); err != nil {
+		t.Fatalf("Notify while parked: %v", err)
+	}
+
+	// (a)+(b)+(c): all three land before the parked call is ever released.
+	waitFor(t, out, func(s string) bool {
+		return strings.Contains(s, "pong") &&
+			strings.Contains(s, "notifications/test") &&
+			strings.Contains(s, "notifications/progress")
+	})
+
+	close(release)
+	if err := inW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after EOF and release")
+	}
+
+	replies := decodeReplies(t, bytes.NewBufferString(out.String()))
+	if text := replyByID(t, replies, 1)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]; text != "unblocked" {
+		t.Fatalf("block reply text = %v, want unblocked", text)
+	}
+	if text := replyByID(t, replies, 2)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]; text != "pong" {
+		t.Fatalf("ping reply text = %v, want pong", text)
+	}
+
+	var progress map[string]any
+	for _, r := range replies {
+		if r["method"] == "notifications/progress" {
+			progress = r["params"].(map[string]any)
+		}
+	}
+	if progress == nil {
+		t.Fatalf("no notifications/progress frame; got %+v", replies)
+	}
+	if progress["progressToken"] != "tok-1" {
+		t.Fatalf("progressToken = %v, want tok-1", progress["progressToken"])
+	}
+	if progress["progress"].(float64) != 1 {
+		t.Fatalf("progress = %v, want 1 (monotonic per call)", progress["progress"])
+	}
+	if progress["message"] != "working" {
+		t.Fatalf("progress message = %v, want working", progress["message"])
 	}
 }

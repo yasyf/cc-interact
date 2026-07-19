@@ -225,7 +225,7 @@ func channelTools(ctx context.Context, session, scope string) ([]channel.Tool, s
 			},
 			"required": []string{"subject", "text"},
 		},
-		Handler: func(ctx context.Context, args json.RawMessage) (string, bool) {
+		Handler: func(ctx context.Context, args json.RawMessage, _ func(string)) (string, bool) {
 			r, err := client.Do(ctx, daemon.Envelope{
 				Op: opReply, Session: session, ClaudePID: pid, Scope: scope, Body: args,
 			})

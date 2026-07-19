@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 )
 
 // mcpProtocolVersion is the MCP version advertised when the client omits one.
@@ -20,12 +21,14 @@ const mcpProtocolVersion = "2025-06-18"
 // Tool is one MCP tool: its advertised name, description, and JSON input schema,
 // plus the handler that runs on tools/call. The handler returns the result text
 // and whether it is an error; the server maps that to the MCP content/isError
-// result shape.
+// result shape. progress reports incremental progress: when the request carried a
+// _meta.progressToken, each call pushes a notifications/progress frame; otherwise
+// it is a no-op, so a handler may call progress unconditionally (it is never nil).
 type Tool struct {
 	Name        string
 	Description string
 	InputSchema map[string]any
-	Handler     func(ctx context.Context, args json.RawMessage) (text string, isErr bool)
+	Handler     func(ctx context.Context, args json.RawMessage, progress func(string)) (text string, isErr bool)
 }
 
 // ServerInfo carries the initialize handshake fields: the serverInfo name and
@@ -51,8 +54,9 @@ type Server struct {
 	tools map[string]Tool
 	list  []Tool
 
-	mu  sync.Mutex
-	out io.Writer
+	mu   sync.Mutex
+	out  io.Writer
+	work sync.WaitGroup
 }
 
 // NewServer builds a Server advertising tools. tools/list preserves the given
@@ -68,11 +72,16 @@ func NewServer(info ServerInfo, tools []Tool) *Server {
 // Serve runs the JSON-RPC loop over in, writing replies and notifications to
 // out, until in reaches EOF or errors. It answers initialize, tools/list,
 // tools/call, and ping; client notifications (messages without an id) are
-// ignored, and any other method returns method-not-found.
+// ignored, and any other method returns method-not-found. Each tools/call runs
+// in its own goroutine so a blocking handler never freezes the loop's other
+// replies or the consumer's notifications — the synchronized writer serializes
+// them. Serve waits for every dispatched handler before returning, so no
+// goroutine writes to out after Serve has returned.
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	s.mu.Lock()
 	s.out = out
 	s.mu.Unlock()
+	defer s.work.Wait()
 
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -102,7 +111,12 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		case "tools/list":
 			s.reply(msg.ID, map[string]any{"tools": s.toolSchemas()})
 		case "tools/call":
-			s.reply(msg.ID, s.handleToolCall(ctx, msg.Params))
+			id, params := msg.ID, msg.Params
+			s.work.Add(1)
+			go func() {
+				defer s.work.Done()
+				s.reply(id, s.handleToolCall(ctx, params))
+			}()
 		case "ping":
 			s.reply(msg.ID, map[string]any{})
 		default:
@@ -136,6 +150,9 @@ func (s *Server) handleToolCall(ctx context.Context, params json.RawMessage) map
 	var call struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
+		Meta      struct {
+			ProgressToken json.RawMessage `json:"progressToken"`
+		} `json:"_meta"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
 		return toolError("bad tool arguments: " + err.Error())
@@ -147,11 +164,25 @@ func (s *Server) handleToolCall(ctx context.Context, params json.RawMessage) map
 	if !ok {
 		return toolError("unknown tool: " + call.Name)
 	}
-	text, isErr := tool.Handler(ctx, call.Arguments)
+	text, isErr := tool.Handler(ctx, call.Arguments, s.progressFunc(call.Meta.ProgressToken))
 	if isErr {
 		return toolError(text)
 	}
 	return toolOK(text)
+}
+
+func (s *Server) progressFunc(token json.RawMessage) func(string) {
+	if len(token) == 0 || string(token) == "null" {
+		return func(string) {}
+	}
+	var n atomic.Int64
+	return func(msg string) {
+		_ = s.Notify("notifications/progress", map[string]any{
+			"progressToken": token,
+			"progress":      n.Add(1),
+			"message":       msg,
+		})
+	}
 }
 
 func (s *Server) reply(id json.RawMessage, result any) {
