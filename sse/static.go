@@ -3,15 +3,15 @@ package sse
 import (
 	"io/fs"
 	"net/http"
+	"path"
 	"strings"
 )
 
-// StaticHandler serves a single-page app from dist: real files (hashed assets,
-// index.html) are served with their correct Content-Type via http.FileServerFS;
-// any other path is a client-side route and falls back to index.html so deep
-// links load the app. It is opt-in — the consumer owns the embed and mounts this
-// on the catch-all "/" of the server's Mux, where Go's pattern mux gives the more
-// specific /events and REST routes precedence so it never shadows them.
+// StaticHandler serves a single-page app from dist via http.FileServerFS. A miss
+// falls back to index.html only for a client-route-shaped path (clientRoute) so
+// deep links load the app while a missing asset 404s honestly; root "/" serves
+// index. Opt-in: the consumer mounts it on the catch-all "/", below the pattern
+// mux's /events and REST routes.
 func StaticHandler(dist fs.FS) http.Handler {
 	fileServer := http.FileServerFS(dist)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,9 +22,24 @@ func StaticHandler(dist fs.FS) http.Handler {
 				fileServer.ServeHTTP(w, r)
 				return
 			}
+			if !clientRoute(p) {
+				http.NotFound(w, r)
+				return
+			}
 		}
 		serveIndex(w, dist)
 	})
+}
+
+// clientRoute reports whether p (leading slash trimmed) is shaped like an SPA
+// deep link rather than a real file: no extension on its last segment and not
+// under assets/. Anything with an extension or under assets/ names a file that is
+// simply absent, so a miss on it 404s.
+func clientRoute(p string) bool {
+	if strings.HasPrefix(p, "assets/") {
+		return false
+	}
+	return path.Ext(p) == ""
 }
 
 func serveIndex(w http.ResponseWriter, dist fs.FS) {
