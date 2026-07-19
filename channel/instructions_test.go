@@ -73,3 +73,10 @@ Then stop the watch Monitor with TaskStop and rely on channel tags from then on.
 		t.Fatalf("ReceiveProtocol() = %q, want %q", got, want)
 	}
 }
+
+func TestRelayStep(t *testing.T) {
+	want := `4. When a <channel source="cc-interact"> tag carries an agent.relay event naming an agent_id, SendMessage that agent a wake ONLY: tell it that it has pending directives — they arrive with its next tool call or when it calls the await tool — and identify yourself as the sender. Do NOT include any directive content: the mailbox is the single delivery channel, and a repeated agent.relay tag for the same agent is safe to re-nudge.`
+	if got := RelayStep("cc-interact"); got != want {
+		t.Fatalf("RelayStep() = %q, want %q", got, want)
+	}
+}

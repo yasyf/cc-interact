@@ -32,3 +32,11 @@ Then stop the watch Monitor with TaskStop and rely on channel tags from then on.
 
 3. Delivery is at-least-once, and the watch and channel have independent cursors. ` + s.DedupeHint
 }
+
+// RelayStep renders step 4: how a parent wakes a child named by an agent.relay
+// tag. It is a wake only — the mailbox is the sole delivery path, so the message
+// carries no directive content and a repeated relay tag is safe to re-nudge.
+// Consumers append it after ReceiveProtocol's step 3.
+func RelayStep(source string) string {
+	return `4. When a <channel source="` + source + `"> tag carries an agent.relay event naming an agent_id, SendMessage that agent a wake ONLY: tell it that it has pending directives — they arrive with its next tool call or when it calls the await tool — and identify yourself as the sender. Do NOT include any directive content: the mailbox is the single delivery channel, and a repeated agent.relay tag for the same agent is safe to re-nudge.`
+}
