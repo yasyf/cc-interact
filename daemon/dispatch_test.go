@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -178,11 +179,21 @@ func TestDispatchChannelAck(t *testing.T) {
 func TestDispatchStatusReportsSubject(t *testing.T) {
 	s := newTestServer(t, Config{})
 	seedSubject(t, s, "id2", "slug2", "sess2", "scopeB", 9, "open")
+	s.activity.Attach("id2", "watch-100", 100)
+	s.activity.Attach("id2", "watch-100", 200)
+	s.activity.Attach("id2", "channel", 100)
 	r := s.dispatch(context.Background(), Envelope{
 		Op: OpStatus, Scope: "scopeB", Session: "sess2", ClaudePID: 9,
 	})
 	if !r.OK || r.SubjectID != "id2" || r.Status != "open" || r.DaemonVersion == "" {
 		t.Fatalf("status = %+v, want id2/open with daemon version", r)
+	}
+	var body StatusBody
+	if err := json.Unmarshal(r.Body, &body); err != nil {
+		t.Fatalf("unmarshal status body: %v", err)
+	}
+	if !body.ConsumerConnected || !maps.Equal(body.Consumers, map[string]int{"watch-100": 2, "channel": 1}) {
+		t.Fatalf("status body = %+v, want connected consumers", body)
 	}
 }
 

@@ -4,7 +4,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.14.0] - 2026-07-20
+
+### Added
+- `daemon.StatusBody.Consumers` exposes live connection counts by consumer, and
+  `status` prints the aggregate as `watchers: N`.
+
+### Changed
+- The daemon lifecycle rides the daemonkit runtime: lifecycle release is
+  separated from the business wire, as a hard cut with no compatibility shim.
+- Each `watch` process keeps its own `watch-<pid>` cursor, seeded from the
+  furthest sibling cursor before cursors belonging to dead processes are
+  garbage-collected.
+
+### Fixed
+- Concurrent watchers no longer race through a shared cursor temporary file.
+- Cursor persistence failures warn instead of killing an otherwise healthy
+  stream.
+- A fatal persistence error coinciding with a terminal event is no longer
+  silently discarded.
+
+## [0.13.0] - 2026-07-20
+
+### Added
+- `daemon`: event-to-mailbox subscriptions and presence-aware consumer muting.
 
 ## [0.12.0] - 2026-07-19
 

@@ -336,7 +336,10 @@ func TestChannelAckErrorPropagates(t *testing.T) {
 // the bound subject.
 func TestStatusReportsSubject(t *testing.T) {
 	socket, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
-		return daemon.Reply{OK: true, DaemonVersion: "1.2.3", HTTPPort: 5678, SubjectID: "sub-9", Status: "open"}
+		return daemon.Reply{
+			OK: true, DaemonVersion: "1.2.3", HTTPPort: 5678, SubjectID: "sub-9", Status: "open",
+			Body: json.RawMessage(`{"consumer_connected":true,"consumers":{"watch":1,"watch-123":2,"watchdog":9,"channel":1}}`),
+		}
 	})
 	cmd := StatusCmd(testDeps(socket))
 	var out bytes.Buffer
@@ -346,11 +349,9 @@ func TestStatusReportsSubject(t *testing.T) {
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	got := out.String()
-	for _, want := range []string{"daemon: running (1.2.3)", "127.0.0.1:5678", "subject: sub-9 (open)"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("status output %q missing %q", got, want)
-		}
+	want := "daemon: running (1.2.3)\nhttp:   127.0.0.1:5678\nsubject: sub-9 (open)\nwatchers: 3\n"
+	if got := out.String(); got != want {
+		t.Fatalf("status output = %q, want %q", got, want)
 	}
 }
 
@@ -375,9 +376,10 @@ func TestStatusNotRunning(t *testing.T) {
 // stop on the terminal event.
 func TestWatchStreamsUntilTerminal(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	wantConsumer := fmt.Sprintf("%s-%d", watchConsumer, os.Getpid())
 	sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("consumer"); got != watchConsumer {
-			t.Errorf("consumer = %q, want %q", got, watchConsumer)
+		if got := r.URL.Query().Get("consumer"); got != wantConsumer {
+			t.Errorf("consumer = %q, want %q", got, wantConsumer)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "id: 1\ndata: {\"type\":\"comment.created\"}\n\n")

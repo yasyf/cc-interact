@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"maps"
 	"testing"
 	"time"
 )
@@ -24,6 +25,36 @@ func TestActivityAttachDetachCounts(t *testing.T) {
 	}
 	if a.Attached("s1", "watch", 100) || a.Attached("s2", "channel", 100) || a.Attached("s1", "channel", 200) {
 		t.Fatal("attachment leaked across consumer, subject, or window")
+	}
+}
+
+func TestActivityCounts(t *testing.T) {
+	a := NewActivity()
+	d1 := a.Attach("s1", "watch", 100)
+	d2 := a.Attach("s1", "watch", 200)
+	overlap := a.Attach("s1", "watch", 100)
+	dChannel := a.Attach("s1", "channel", 100)
+	dOther := a.Attach("s2", "watch", 100)
+	defer dOther()
+
+	for _, tc := range []struct {
+		name string
+		drop func()
+		want map[string]int
+	}{
+		{"connections sum across pids and reconnect overlap", func() {}, map[string]int{"watch": 3, "channel": 1}},
+		{"overlap detach decrements", overlap, map[string]int{"watch": 2, "channel": 1}},
+		{"first pid detach decrements", d1, map[string]int{"watch": 1, "channel": 1}},
+		{"duplicate detach does not underflow", d1, map[string]int{"watch": 1, "channel": 1}},
+		{"second pid detach removes consumer", d2, map[string]int{"channel": 1}},
+		{"last detach empties counts", dChannel, map[string]int{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.drop()
+			if got := a.Counts("s1"); !maps.Equal(got, tc.want) {
+				t.Fatalf("Counts = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

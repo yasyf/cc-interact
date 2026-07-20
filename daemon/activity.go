@@ -74,6 +74,18 @@ func (a *Activity) Attached(subjectID, consumer string, pid int) bool {
 	return a.attached[subjectID][attachKey{consumer, pid}] > 0
 }
 
+// Counts reports live SSE connection counts by consumer name for subjectID,
+// summing connections across PIDs.
+func (a *Activity) Counts(subjectID string) map[string]int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	counts := make(map[string]int)
+	for key, count := range a.attached[subjectID] {
+		counts[key.consumer] += count
+	}
+	return counts
+}
+
 // AttachedWithin reports whether any consumer is attached to the subject now, or
 // the subject's last attachment dropped within grace of now.
 func (a *Activity) AttachedWithin(subjectID string, grace time.Duration) bool {

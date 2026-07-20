@@ -83,8 +83,10 @@ func (s *Server) handleChannelAck(hc HandlerCtx) Reply {
 	return Reply{OK: true}
 }
 
-type statusBody struct {
-	ConsumerConnected bool `json:"consumer_connected"`
+// StatusBody reports subject consumer presence.
+type StatusBody struct {
+	ConsumerConnected bool           `json:"consumer_connected"`
+	Consumers         map[string]int `json:"consumers,omitempty"`
 }
 
 func (s *Server) handleStatus(hc HandlerCtx) Reply {
@@ -92,7 +94,10 @@ func (s *Server) handleStatus(hc HandlerCtx) Reply {
 	if sub, ok, err := hc.Subjects.Find(hc.Ctx, hc.Window, hc.Scope); err == nil && ok {
 		reply.SubjectID = sub.ID
 		reply.Status = sub.Status
-		reply.Body, _ = json.Marshal(statusBody{ConsumerConnected: s.activity.AttachedWithin(sub.ID, attachGrace)})
+		reply.Body, _ = json.Marshal(StatusBody{
+			ConsumerConnected: s.activity.AttachedWithin(sub.ID, attachGrace),
+			Consumers:         s.activity.Counts(sub.ID),
+		})
 	}
 	return reply
 }

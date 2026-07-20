@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -39,6 +41,12 @@ func StatusCmd(d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var body daemon.StatusBody
+			if len(reply.Body) > 0 {
+				if err := json.Unmarshal(reply.Body, &body); err != nil {
+					return fmt.Errorf("decode status body: %w", err)
+				}
+			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "daemon: running (%s)\n", reply.DaemonVersion)
 			fmt.Fprintf(out, "http:   127.0.0.1:%d\n", reply.HTTPPort)
@@ -46,6 +54,15 @@ func StatusCmd(d Deps) *cobra.Command {
 				fmt.Fprintf(out, "subject: %s (%s)\n", reply.SubjectID, reply.Status)
 			} else {
 				fmt.Fprintln(out, "subject: none for this session/scope")
+			}
+			if len(reply.Body) > 0 {
+				watchers := 0
+				for consumer, count := range body.Consumers {
+					if consumer == watchConsumer || strings.HasPrefix(consumer, watchConsumer+"-") {
+						watchers += count
+					}
+				}
+				_, _ = fmt.Fprintf(out, "watchers: %d\n", watchers)
 			}
 			return nil
 		},

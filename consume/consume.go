@@ -1,7 +1,8 @@
 // Package consume is the agent-side Server-Sent-Events client: it streams a
 // subject's event log from the daemon's HTTP plane, persists a per-consumer
-// cursor for at-least-once resume, and survives a daemon swap by re-resolving
-// the port through a refresh handshake.
+// cursor for at-least-once resume, warns without stopping when persistence
+// fails, and survives a daemon swap by re-resolving the port through a refresh
+// handshake.
 package consume
 
 import (
@@ -12,11 +13,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/shirou/gopsutil/v4/process"
 	"github.com/yasyf/cc-interact/event"
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -49,6 +53,9 @@ type StreamSource struct {
 	// Paths locates the per-consumer cursor file via
 	// Paths.ConsumerCursorPath(SubjectID, Consumer).
 	Paths paths.Paths
+	// Warn is invoked when persisting the resume cursor fails; the zero value
+	// logs to stderr.
+	Warn func(error)
 	// WindowAlive reports whether the owning window (ClaudePID) still lives.
 	// When set alongside a non-zero ClaudePID, the consumer exits once the window
 	// dies instead of leaking and draining events from a freshly-attached session;
@@ -63,9 +70,11 @@ type StreamSource struct {
 // first, so the stream survives a daemon upgrade — and returns when handle
 // signals stop or ctx is cancelled. The cursor advances only after handle
 // returns, so a crash mid-delivery re-delivers rather than skips (at-least-once).
+// Cursor persistence failures invoke src.Warn and streaming continues; a later
+// restart may therefore re-deliver already handled events.
 func ConsumeEvents(ctx context.Context, src StreamSource, handle EventHandler) error {
 	if err := src.Paths.EnsureSubjectDir(src.SubjectID); err != nil {
-		return err // the cursor lives under the subject dir; without it writeCursor can't persist
+		return fmt.Errorf("ensure cursor directory for %s: %w", src.SubjectID, err)
 	}
 	cursorPath := src.Paths.ConsumerCursorPath(src.SubjectID, src.Consumer)
 	cursor, err := readCursor(cursorPath)
@@ -88,11 +97,11 @@ func ConsumeEvents(ctx context.Context, src StreamSource, handle EventHandler) e
 		if watched {
 			go watchLiveness(connCtx, src.ClaudePID, src.WindowAlive, cancel)
 		}
-		stop, next, fatal := readStream(connCtx, streamURL(src), cursor, cursorPath, handle)
+		stop, next, fatal := readStream(connCtx, streamURL(src), cursor, cursorPath, src.Warn, handle)
 		cancel()
 		cursor = next
 		if stop || ctx.Err() != nil {
-			return nil
+			return fatal
 		}
 		// A liveness cancel and a transient drop both surface as fatal==nil, so
 		// the re-check — not the error — decides exit vs. reconnect.
@@ -153,7 +162,7 @@ func streamURL(src StreamSource) string {
 // readStream consumes one SSE connection. A nil fatal means a transient drop
 // (reconnect); a non-nil fatal is a permanent failure (unknown subject, or an
 // event frame larger than the buffer) the caller should surface and stop on.
-func readStream(ctx context.Context, base string, cursor int64, cursorPath string, handle EventHandler) (stop bool, next int64, fatal error) {
+func readStream(ctx context.Context, base string, cursor int64, cursorPath string, warn func(error), handle EventHandler) (stop bool, next int64, fatal error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base, nil)
 	if err != nil {
 		return false, cursor, err
@@ -192,10 +201,7 @@ func readStream(ctx context.Context, base string, cursor int64, cursorPath strin
 			}
 			cursor = id
 			if err := writeCursor(cursorPath, cursor); err != nil {
-				// The event was delivered (handle succeeded); we just can't persist
-				// the cursor. Stop loud rather than silently replay it on the next
-				// connection — a vanished subject dir is a real fault, not transient.
-				return s, cursor, err
+				warnError(warn, err)
 			}
 			if s {
 				return true, cursor, nil
@@ -219,6 +225,87 @@ func readStream(ctx context.Context, base string, cursor int64, cursorPath strin
 	return false, cursor, nil
 }
 
+// SeedCursor seeds self from the furthest resume cursor for base, then removes
+// cursor files belonging to dead sibling processes. The legacy base cursor is
+// a seed source only and is never removed.
+func SeedCursor(p paths.Paths, subjectID, base, self string) error {
+	return seedCursor(p, subjectID, base, self, nil)
+}
+
+func seedCursor(p paths.Paths, subjectID, base, self string, warn func(error)) error {
+	if err := p.EnsureSubjectDir(subjectID); err != nil {
+		return fmt.Errorf("ensure cursor directory for %s: %w", subjectID, err)
+	}
+	selfPath := p.ConsumerCursorPath(subjectID, self)
+	seed, err := readCursor(selfPath)
+	if err != nil {
+		return err
+	}
+	legacyPath := p.ConsumerCursorPath(subjectID, base)
+	legacy, err := readCursor(legacyPath)
+	if err != nil {
+		return err
+	}
+	if legacy > seed {
+		seed = legacy
+	}
+
+	entries, err := os.ReadDir(p.SubjectDir(subjectID))
+	if err != nil {
+		return fmt.Errorf("scan cursor directory %s: %w", p.SubjectDir(subjectID), err)
+	}
+	prefix, suffix := base+"-", ".cursor"
+	type sibling struct {
+		path string
+		pid  int32
+	}
+	var siblings []sibling
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		pid, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix), 10, 32)
+		if err != nil || pid <= 0 {
+			continue
+		}
+		path := filepath.Join(p.SubjectDir(subjectID), name)
+		siblings = append(siblings, sibling{path: path, pid: int32(pid)})
+		if path == selfPath {
+			continue
+		}
+		cursor, err := readCursor(path)
+		if err != nil {
+			var parseErr *strconv.NumError
+			if errors.As(err, &parseErr) {
+				warnError(warn, err)
+				continue
+			}
+			return err
+		}
+		if cursor > seed {
+			seed = cursor
+		}
+	}
+
+	for _, sibling := range siblings {
+		exists, err := process.PidExists(sibling.pid)
+		if err != nil {
+			return fmt.Errorf("check cursor process %d: %w", sibling.pid, err)
+		}
+		if exists {
+			continue
+		}
+		if err := os.Remove(sibling.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove dead cursor %s: %w", sibling.path, err)
+		}
+	}
+	if seed == 0 {
+		return nil
+	}
+	return writeCursor(selfPath, seed)
+}
+
 // readCursor returns the persisted cursor, 0 when absent, and an error on a
 // corrupt file (so a torn write replays the backlog loudly, not silently).
 func readCursor(path string) (int64, error) {
@@ -236,17 +323,19 @@ func readCursor(path string) (int64, error) {
 	return n, nil
 }
 
-// writeCursor persists the cursor atomically (temp + rename) so a crash can't
-// leave a torn value that resets the consumer to 0. A write failure is surfaced,
-// not swallowed: a silently-unpersisted cursor replays the whole backlog on the
-// next connection.
+// writeCursor persists the cursor atomically and durably through a uniquely
+// named temporary file so concurrent writers never share rename state.
 func writeCursor(path string, cursor int64) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(cursor, 10)), 0o600); err != nil {
-		return fmt.Errorf("write cursor %s: %w", path, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename cursor %s: %w", path, err)
+	if err := dkdaemon.WriteFileDurable(path, []byte(strconv.FormatInt(cursor, 10)), 0o600); err != nil {
+		return fmt.Errorf("persist cursor %s: %w", path, err)
 	}
 	return nil
+}
+
+func warnError(warn func(error), err error) {
+	if warn != nil {
+		warn(err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "cc-interact: %v\n", err)
 }
