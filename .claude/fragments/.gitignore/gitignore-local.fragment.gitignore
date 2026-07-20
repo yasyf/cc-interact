@@ -1,0 +1,6 @@
+# Go
+*.prof
+
+# Web (opt-in npm package)
+web/node_modules/
+web/dist/
