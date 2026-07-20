@@ -18,6 +18,7 @@ func (s *Server) Append(ctx context.Context, e *event.Event) (int64, error) {
 		return 0, fmt.Errorf("append %s event: %w", e.Type, err)
 	}
 	s.bus.Publish(e.SubjectID)
+	s.teeToSubscribers(ctx, e)
 	return seq, nil
 }
 

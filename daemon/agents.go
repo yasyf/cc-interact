@@ -245,6 +245,17 @@ func (s *Server) Direct(ctx context.Context, subjectID, agentID, origin, text st
 	return directive, nil
 }
 
+// drainMailbox drains the agent's pending directives and stamps its presence, so
+// the channel mute outlives the gap between a delivering await and the next park.
+func (s *Server) drainMailbox(ctx context.Context, subjectID, agentID string, now time.Time) ([]agent.Directive, error) {
+	drained, err := s.store.DrainDirectives(ctx, subjectID, agentID, now)
+	if err != nil {
+		return nil, err
+	}
+	s.parks.noteDrain(subjectID, agentID)
+	return drained, nil
+}
+
 // reconcileDirectives re-announces directives stranded on stopped agents: for
 // every done agent still holding an undelivered directive it appends agent.relay
 // (OriginSystem) so the subject's watchers see it. A non-destructive peek run
@@ -298,6 +309,9 @@ func (s *Server) handleAgentStart(hc HandlerCtx) Reply {
 	created, err := s.store.RegisterAgent(hc.Ctx, info)
 	if err != nil {
 		return errReply(err.Error())
+	}
+	if s.subscribe != nil {
+		s.subscriptions.set(sub.ID, b.AgentID, s.subscribe(sub, info))
 	}
 	if _, err := s.Append(hc.Ctx, startedEvent(info)); err != nil {
 		return errReply(err.Error())
@@ -366,6 +380,7 @@ func (s *Server) handleAgentStop(hc HandlerCtx) Reply {
 		return errReply(err.Error())
 	}
 	if closed {
+		s.subscriptions.remove(sub.ID, b.AgentID)
 		if _, err := s.Append(hc.Ctx, stoppedEvent(sub.ID, b)); err != nil {
 			return errReply(err.Error())
 		}
@@ -399,7 +414,7 @@ func (s *Server) handleAgentInject(hc HandlerCtx) Reply {
 	if err := json.Unmarshal(hc.Env.Body, &b); err != nil {
 		return errReply(fmt.Errorf("agent-inject body: %w", err).Error())
 	}
-	drained, err := s.store.DrainDirectives(hc.Ctx, sub.ID, b.AgentID, time.Now())
+	drained, err := s.drainMailbox(hc.Ctx, sub.ID, b.AgentID, time.Now())
 	if err != nil {
 		return errReply(err.Error())
 	}
@@ -496,7 +511,7 @@ func (s *Server) handleAgentAwait(w http.ResponseWriter, r *http.Request) {
 	release := s.parks.wait(subjectID, agentID)
 	defer s.parks.done(subjectID, agentID, release)
 
-	drained, err := s.store.DrainDirectives(r.Context(), subjectID, agentID, time.Now())
+	drained, err := s.drainMailbox(r.Context(), subjectID, agentID, time.Now())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -512,7 +527,7 @@ func (s *Server) handleAgentAwait(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(timeout):
 		// A Direct may have landed rows and signalled release in the sliver where the
 		// timeout case won the select; one final re-drain returns them, else 204.
-		late, err := s.store.DrainDirectives(r.Context(), subjectID, agentID, time.Now())
+		late, err := s.drainMailbox(r.Context(), subjectID, agentID, time.Now())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -523,7 +538,7 @@ func (s *Server) handleAgentAwait(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case <-release:
-		redrained, err := s.store.DrainDirectives(r.Context(), subjectID, agentID, time.Now())
+		redrained, err := s.drainMailbox(r.Context(), subjectID, agentID, time.Now())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

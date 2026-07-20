@@ -85,6 +85,12 @@ type Config struct {
 	// Admit registers a new stream as in-flight for as long as it is open (release
 	// ends it); a non-nil error refuses the stream as draining. nil admits every stream.
 	Admit func() (release func(), err error)
+
+	// MuteFrame, when set, withholds an event from the named consumer while
+	// returning true. Like the presence filter, a muted frame's cursor still
+	// advances, so a later un-mute delivers only new events, never the backlog.
+	// nil mutes nothing.
+	MuteFrame func(subjectID, consumer string, e event.Event) bool
 }
 
 // Server is the HTTP handler tree. It owns the mux and always mounts GET
@@ -221,7 +227,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer unsub()
 
 	ctx := r.Context()
-	cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer != "")
+	cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer)
 	io.WriteString(w, ": connected\n\n") // prove liveness + flush proxies
 	// Replay done (from-zero load or Last-Event-ID resume): mark the live-tail
 	// boundary once. seq is the high-water flushed, or the resume cursor when nothing
@@ -239,7 +245,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, ": keepalive\n\n")
 			flusher.Flush()
 		case <-signal:
-			cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer != "")
+			cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer)
 		case p := <-inject:
 			// No id: the frame is outside the log, so the consumer's cursor must not
 			// advance past real events it has not seen.
@@ -255,7 +261,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // not wake it — but the cursor advances past skipped rows too, so a wake never
 // re-queries the filtered tail. One query per wake; no DB handle is held across
 // the select.
-func (s *Server) flushSince(ctx context.Context, w io.Writer, fl http.Flusher, subjectID string, cursor int64, excludeOrigin string, named bool) int64 {
+func (s *Server) flushSince(ctx context.Context, w io.Writer, fl http.Flusher, subjectID string, cursor int64, excludeOrigin, consumer string) int64 {
+	named := consumer != ""
 	evs, err := s.backend.EventsSince(ctx, subjectID, cursor, excludeOrigin)
 	if err != nil {
 		return cursor
@@ -266,6 +273,9 @@ func (s *Server) flushSince(ctx context.Context, w io.Writer, fl http.Flusher, s
 			cursor = e.Seq
 		}
 		if named && s.cfg.PresenceEventType != "" && e.Type == s.cfg.PresenceEventType {
+			continue
+		}
+		if named && s.cfg.MuteFrame != nil && s.cfg.MuteFrame(subjectID, consumer, e) {
 			continue
 		}
 		// No `event:` field: native EventSource delivers only default-type frames

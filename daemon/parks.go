@@ -1,15 +1,19 @@
 package daemon
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
-// parkRegistry maps a (subject, agent) to the release channel of the one await
-// long-poll parked on it, mirroring Activity: an in-memory structure the daemon
-// drops on restart by design. Direct signals a park; the parked await re-drains
-// on release. A restart loses every park — the child's next await drains the
-// persisted pending rows first, so nothing is lost.
+// parkRegistry tracks agent await-presence: the release channel of the one await
+// long-poll parked on each (subject, agent), plus when that agent last drained.
+// In-memory and dropped on restart by design — the child's next await re-drains
+// the persisted pending rows, so nothing is lost.
 type parkRegistry struct {
 	mu      sync.Mutex
 	waiters map[parkKey]chan struct{}
+	drains  map[parkKey]time.Time
+	now     func() time.Time
 }
 
 type parkKey struct {
@@ -19,7 +23,11 @@ type parkKey struct {
 
 // newParkRegistry returns an empty registry.
 func newParkRegistry() *parkRegistry {
-	return &parkRegistry{waiters: make(map[parkKey]chan struct{})}
+	return &parkRegistry{
+		waiters: make(map[parkKey]chan struct{}),
+		drains:  make(map[parkKey]time.Time),
+		now:     time.Now,
+	}
 }
 
 // wait registers a park for (subjectID, agentID) and returns its release channel,
@@ -72,4 +80,26 @@ func (p *parkRegistry) waiting(subjectID, agentID string) bool {
 	defer p.mu.Unlock()
 	_, ok := p.waiters[parkKey{subjectID, agentID}]
 	return ok
+}
+
+// noteDrain records that the agent just drained its mailbox, extending its
+// presence across the gap between a delivering await and the next park.
+func (p *parkRegistry) noteDrain(subjectID, agentID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.drains[parkKey{subjectID, agentID}] = p.now()
+}
+
+// present reports whether the agent holds live presence: a currently-parked await
+// or a mailbox drain within window. A kill-9'd child holds neither once window
+// lapses, so presence never wedges on registration alone.
+func (p *parkRegistry) present(subjectID, agentID string, window time.Duration) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	k := parkKey{subjectID, agentID}
+	if _, ok := p.waiters[k]; ok {
+		return true
+	}
+	last, ok := p.drains[k]
+	return ok && p.now().Sub(last) <= window
 }

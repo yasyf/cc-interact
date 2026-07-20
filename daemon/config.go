@@ -40,6 +40,12 @@ type AgentGateFunc func(ctx context.Context, s subject.Subject, info agent.Info)
 // directive, enqueued as its first instruction. Empty enqueues nothing; nil is off.
 type AgentGreetingFunc func(info agent.Info) string
 
+// SubscribeFunc returns the event types teed into an agent's mailbox as
+// directives (see Config.Subscribe). Evaluated at registration and re-derived
+// from the agents table at boot, so it must be pure; the returned types must
+// exclude the agent.* lifecycle types, or a teed directive would re-tee itself.
+type SubscribeFunc func(s subject.Subject, info agent.Info) []string
+
 // Config builds a Server. The zero value is not runnable; AppName, Paths,
 // Version, and ActiveStatuses are the load-bearing inputs.
 type Config struct {
@@ -78,6 +84,18 @@ type Config struct {
 	AgentGate AgentGateFunc
 	// AgentGreeting supplies a newly registered agent's first directive. nil is off.
 	AgentGreeting AgentGreetingFunc
+
+	// Subscribe returns the event types teed into an agent's mailbox: each subject
+	// event of a subscribed type is enqueued as an OriginEvent directive through
+	// Direct (agent-origin events are never teed, to break the handler's self-echo).
+	// nil disables the tee and, with it, MuteConsumer muting.
+	Subscribe SubscribeFunc
+	// MuteConsumer names the stream consumer whose subscribed-type frames are
+	// withheld while a subscriber holds presence (a live await park or a mailbox
+	// drain within the presence window), so a live handler and its parent do not
+	// both surface the same event. Empty mutes nothing; other consumers are never
+	// muted, and every event still lands in the log.
+	MuteConsumer string
 
 	// OnPresenceChange fires when a named consumer's connectivity to a subject
 	// flips. It receives the live Server so it can Append a domain presence event

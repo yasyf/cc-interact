@@ -353,6 +353,84 @@ func TestPresenceFilteredFromNamedConsumers(t *testing.T) {
 	})
 }
 
+// TestMuteFrameWithheldFromNamedConsumer proves a MuteFrame hook withholds a frame
+// from only the targeted consumer, advancing the cursor past it so a resume from
+// the last delivered id never replays the muted tail.
+func TestMuteFrameWithheldFromNamedConsumer(t *testing.T) {
+	seed := func(b *fakeBackend, id string) (keepSeq, mutedSeq int64) {
+		b.seed(id,
+			event.Event{Origin: event.OriginSystem, Type: presenceType, Payload: []byte(`{"type":"presence.changed"}`)},
+			event.Event{Origin: event.OriginHuman, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"1"}`)},
+		)
+		return 1, 2
+	}
+	get := func(t *testing.T, url string) []sseFrame {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return readFramesUntilLive(t, resp.Body)
+	}
+
+	// otherType is muted, but only for the "channel" consumer.
+	cfg := Config{PresenceDebounce: 20 * time.Millisecond, MuteFrame: func(_, consumer string, e event.Event) bool {
+		return consumer == "channel" && e.Type == otherType
+	}}
+
+	cases := []struct {
+		name   string
+		params string
+		want   []string
+	}{
+		{"channel consumer loses the muted type", "&consumer=channel&claude_pid=4242", []string{presenceType}},
+		{"watch consumer keeps everything", "&consumer=watch", []string{presenceType, otherType}},
+		{"browser keeps everything", "", []string{presenceType, otherType}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newFakeBackend()
+			b.addSubject("s1id")
+			srv := startServer(t, b, cfg)
+			keepSeq, mutedSeq := seed(b, "s1id")
+			seqs := map[string]int64{presenceType: keepSeq, otherType: mutedSeq}
+
+			frames := get(t, srv.URL+"/events?session=s1id"+tc.params)
+			if len(frames) != len(tc.want) {
+				t.Fatalf("got %d frames %+v, want types %v", len(frames), frames, tc.want)
+			}
+			for i, typ := range tc.want {
+				if frames[i].id != seqs[typ] || !strings.Contains(frames[i].data, typ) {
+					t.Fatalf("frame %d = %+v, want id %d carrying %q", i, frames[i], seqs[typ], typ)
+				}
+			}
+		})
+	}
+
+	t.Run("reconnect from the last delivered id does not replay the muted tail", func(t *testing.T) {
+		b := newFakeBackend()
+		b.addSubject("s1id")
+		srv := startServer(t, b, cfg)
+		keepSeq, _ := seed(b, "s1id")
+
+		url := srv.URL + "/events?session=s1id&consumer=channel&claude_pid=4242"
+		frames := get(t, url)
+		if len(frames) != 1 || frames[0].id != keepSeq {
+			t.Fatalf("first connect frames = %+v, want only the kept event at seq %d", frames, keepSeq)
+		}
+		// The tail past the kept event holds only the muted type: resuming from the
+		// last delivered id must replay nothing.
+		b.seed("s1id", event.Event{Origin: event.OriginHuman, Type: otherType, Payload: []byte(`{"type":"thing.created","id":"2"}`)})
+		if frames := get(t, url+"&last_event_id="+strconv.FormatInt(keepSeq, 10)); len(frames) != 0 {
+			t.Fatalf("muted tail was redelivered: %+v", frames)
+		}
+	})
+}
+
 // readUntilCaughtUp collects replay frames up to the caught-up marker and returns
 // them plus the seq the marker carries. The caught-up frame is a named SSE event
 // with a seq payload and no id.

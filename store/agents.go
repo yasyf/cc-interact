@@ -182,6 +182,31 @@ func (s *Store) ListPendingDirectiveAgents(ctx context.Context) ([]agent.Info, e
 	return agents, nil
 }
 
+// ListRunningAgents returns every live agent across all subjects, ordered by
+// subject then agent, so a boot can re-derive in-memory subscriptions from the
+// persisted registry.
+func (s *Store) ListRunningAgents(ctx context.Context) ([]agent.Info, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+agentCols+` FROM agents WHERE status=? ORDER BY subject_id ASC, agent_id ASC`,
+		agent.StatusRunning)
+	if err != nil {
+		return nil, fmt.Errorf("list running agents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var agents []agent.Info
+	for rows.Next() {
+		info, err := scanAgent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list running agents: %w", err)
+		}
+		agents = append(agents, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list running agents: %w", err)
+	}
+	return agents, nil
+}
+
 // ListAgents returns a subject's agents ordered by start time.
 func (s *Store) ListAgents(ctx context.Context, subjectID string) ([]agent.Info, error) {
 	rows, err := s.db.QueryContext(ctx,

@@ -16,6 +16,9 @@ const (
 	OriginAgent  Origin = "agent"
 	OriginHuman  Origin = "human"
 	OriginSystem Origin = "system"
+	// OriginEvent marks a directive teed from a subject event into an agent's
+	// mailbox (an event subscription), distinguishing it from operator guidance.
+	OriginEvent Origin = "event"
 )
 
 // Event is one entry in a subject's append-only log, fanned out to every consumer.

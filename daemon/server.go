@@ -41,6 +41,11 @@ const maxFrameBytes = 64 << 20
 // for it to still report as connected in status.
 const attachGrace = 10 * time.Second
 
+// subscriberPresenceWindow is how long after a subscriber's last mailbox drain it
+// still counts as present for muting, bridging the gap between a delivering await
+// and the next park so a live handler's events stay muted from the channel.
+const subscriberPresenceWindow = 90 * time.Second
+
 // Server is the running daemon: the control-plane unix-socket server plus the
 // realtime HTTP/SSE plane it boots. It implements sse.Backend.
 type Server struct {
@@ -61,6 +66,9 @@ type Server struct {
 
 	agentGate     AgentGateFunc
 	agentGreeting AgentGreetingFunc
+	subscribe     SubscribeFunc
+	subscriptions *subscriptionRegistry
+	muteConsumer  string
 	parks         *parkRegistry
 	gateBlocks    *gateBlockCounter
 
@@ -136,6 +144,9 @@ func New(cfg Config) (*Server, error) {
 		bootReconcile:   cfg.BootReconcile,
 		agentGate:       cfg.AgentGate,
 		agentGreeting:   cfg.AgentGreeting,
+		subscribe:       cfg.Subscribe,
+		subscriptions:   newSubscriptionRegistry(),
+		muteConsumer:    cfg.MuteConsumer,
 		parks:           newParkRegistry(),
 		gateBlocks:      newGateBlockCounter(),
 		paths:           cfg.Paths,
@@ -175,11 +186,16 @@ func New(cfg Config) (*Server, error) {
 			onPresence(ctx, s, subjectID, connected)
 		}
 	}
+	var muteFrame func(subjectID, consumer string, e event.Event) bool
+	if cfg.Subscribe != nil && cfg.MuteConsumer != "" {
+		muteFrame = s.muteFrame
+	}
 	s.sse = sse.NewServer(s, sse.Config{
 		OnPresenceChange:  ssePresence,
 		PresenceEventType: cfg.PresenceEventType,
 		PresenceDebounce:  cfg.PresenceDebounce,
 		Admit:             s.httpIntake.Admit,
+		MuteFrame:         muteFrame,
 	})
 	// Core ops ride the same registry as domain ops. A scope with no canonical
 	// form reaches them as the resolver's fallback value, which matches no
@@ -551,6 +567,9 @@ func (s *sessionServer) Serve(
 		}
 	}
 	if err := s.owner.reconcileDirectives(workerCtx); err != nil {
+		return err
+	}
+	if err := s.owner.reconcileSubscriptions(workerCtx); err != nil {
 		return err
 	}
 	if err := s.owner.startHTTP(workerCtx); err != nil {
