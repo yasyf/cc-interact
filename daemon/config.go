@@ -12,6 +12,7 @@ import (
 	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -47,7 +48,7 @@ type AgentGreetingFunc func(info agent.Info) string
 type SubscribeFunc func(s subject.Subject, info agent.Info) []string
 
 // Config builds a Server. The zero value is not runnable; AppName, Paths,
-// Version, and ActiveStatuses are the load-bearing inputs.
+// Version, DaemonRole, and ActiveStatuses are the load-bearing inputs.
 type Config struct {
 	// AppName labels logs and user-facing daemon messages (cc-review: "cc-review").
 	AppName string
@@ -55,6 +56,9 @@ type Config struct {
 	Paths paths.Paths
 	// Version is this binary's exact daemon build identity.
 	Version string
+	// DaemonRole is the exact service label and stable executable alias shared
+	// with Launcher. Lifecycle takeover follows this role across package upgrades.
+	DaemonRole daemonrole.Classifier
 	// MaxFrameBytes overrides the control server's request-frame limit. Zero uses
 	// the 64 MiB default.
 	MaxFrameBytes int
@@ -129,9 +133,8 @@ type Config struct {
 	// browser EventSource needs). Loopback requests always bypass it.
 	HTTPToken string
 	// OnHTTPStart fires once the HTTP plane is bound and its handshake published;
-	// consumers hook mDNS advertising here. Like Background, the ctx is cancelled
-	// at shutdown and Serve waits for the hook to return, so cleanup on ctx.Done()
-	// (mDNS goodbye packets) completes before the process exits.
+	// consumers hook mDNS advertising here. The hook must finish cleanup when ctx
+	// is cancelled; daemonkit's shutdown deadline bounds worker settlement.
 	OnHTTPStart func(ctx context.Context, port int)
 	// ExtraHTTPListeners are called once at HTTP start; each listener serves the
 	// same auth-guarded handler as the primary bind (e.g. a TLS listener with

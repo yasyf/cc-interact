@@ -9,17 +9,36 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/yasyf/cc-interact/sse"
+	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/wire"
 )
 
 func testPaths() paths.Paths { return paths.Paths{App: ".cc-interact-test"} }
+
+func testDaemonRole(t *testing.T) daemonrole.Classifier {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rolePath := filepath.Join(t.TempDir(), "cc-interact-test")
+	if err := os.Symlink(target, rolePath); err != nil {
+		t.Fatal(err)
+	}
+	return daemonrole.Classifier{RoleID: "com.yasyf.cc-interact.test", RolePath: rolePath}
+}
 
 // isolateStateDir points the test state dir at a fresh temp HOME so each case
 // starts without an http.json handshake.
@@ -36,6 +55,16 @@ func boundPort(t *testing.T, ln net.Listener) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+func settleTestWorkers(t *testing.T, s *Server) {
+	t.Helper()
+	s.workers.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.workers.Wait(ctx); err != nil {
+		t.Errorf("settle workers: %v", err)
+	}
+}
+
 // shortHome points HOME at a short-prefix temp dir so the daemon's unix socket
 // path stays under the sun_path length limit.
 func shortHome(t *testing.T) {
@@ -48,12 +77,108 @@ func shortHome(t *testing.T) {
 	t.Setenv("HOME", dir)
 }
 
+func TestNewRequiresDaemonRole(t *testing.T) {
+	if _, err := New(Config{}); err == nil {
+		t.Fatal("New accepted a missing daemon role")
+	}
+}
+
+func TestLauncherRequiresDaemonRole(t *testing.T) {
+	if _, err := (Launcher{}).NewClient(context.Background()); err == nil {
+		t.Fatal("Launcher.NewClient accepted a missing daemon role")
+	}
+}
+
+func TestLauncherAndServerShareStableDaemonRole(t *testing.T) {
+	shortHome(t)
+	role := testDaemonRole(t)
+	launcher := Launcher{Paths: testPaths(), Version: "0.0.1", DaemonRole: role}
+	if got := launcher.spawn(launcher.peer(), time.Second).ExecPath; got != role.RolePath {
+		t.Fatalf("spawn executable = %q, want role path %q", got, role.RolePath)
+	}
+	s, err := New(Config{
+		AppName: "cc-interact-test", Paths: testPaths(), Version: "0.0.1",
+		DaemonRole: role, ActiveStatuses: []string{"open"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	wireServer, _, err := s.runtime()
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	got, ok := wireServer.ProtectedSessionClassifier.(daemonrole.Classifier)
+	if !ok || got != role {
+		t.Fatalf("protected classifier = %#v, want %#v", wireServer.ProtectedSessionClassifier, role)
+	}
+}
+
+func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
+	shortHome(t)
+	var migrations atomic.Int32
+	s, err := New(Config{
+		AppName:        "cc-interact-test",
+		Paths:          testPaths(),
+		Version:        "0.0.1",
+		DaemonRole:     testDaemonRole(t),
+		ActiveStatuses: []string{"open"},
+		Migrate: func(context.Context, *sql.DB) error {
+			migrations.Add(1)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.DB() != nil || migrations.Load() != 0 {
+		t.Fatalf("state activated before Serve: db=%v migrations=%d", s.DB(), migrations.Load())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- s.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-served:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return")
+		}
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		client, connectErr := NewClient(probeCtx, ClientConfig{Socket: testPaths().SocketPath(), Build: "0.0.1"})
+		if connectErr == nil {
+			closeErr := client.Close()
+			probeCancel()
+			if closeErr != nil {
+				t.Fatalf("close readiness client: %v", closeErr)
+			}
+			break
+		}
+		probeCancel()
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon did not become ready: %v", connectErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.DB() == nil || migrations.Load() != 1 {
+		t.Fatalf("state after readiness: db=%v migrations=%d", s.DB(), migrations.Load())
+	}
+}
+
 func TestBackgroundWaitedBeforeServeReturns(t *testing.T) {
 	shortHome(t)
 	s, err := New(Config{
 		AppName:        "cc-interact-test",
 		Paths:          testPaths(),
 		Version:        "0.0.1",
+		DaemonRole:     testDaemonRole(t),
 		ActiveStatuses: []string{"open"},
 	})
 	if err != nil {
@@ -126,6 +251,7 @@ func TestServeDrainsBackgroundBeforeStoreCloseOnHTTPStartupFailure(t *testing.T)
 		AppName:        "cc-interact-test",
 		Paths:          testPaths(),
 		Version:        "0.0.1",
+		DaemonRole:     testDaemonRole(t),
 		ActiveStatuses: []string{"open"},
 		FixedPort:      boundPort(t, holder),
 		Migrate: func(ctx context.Context, db *sql.DB) error {
@@ -309,13 +435,13 @@ func TestListenHTTPPortReuse(t *testing.T) {
 }
 
 func TestNewRefusesUnauthenticatedBind(t *testing.T) {
-	if _, err := New(Config{BindAddr: "0.0.0.0"}); !errors.Is(err, ErrUnauthenticatedBind) {
+	if _, err := New(Config{BindAddr: "0.0.0.0", DaemonRole: testDaemonRole(t)}); !errors.Is(err, ErrUnauthenticatedBind) {
 		t.Fatalf("New err = %v, want ErrUnauthenticatedBind", err)
 	}
 }
 
 func TestNewRefusesUnauthenticatedExtraListeners(t *testing.T) {
-	cfg := Config{ExtraHTTPListeners: []func(context.Context) (net.Listener, error){
+	cfg := Config{DaemonRole: testDaemonRole(t), ExtraHTTPListeners: []func(context.Context) (net.Listener, error){
 		func(context.Context) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
 	}}
 	if _, err := New(cfg); !errors.Is(err, ErrUnauthenticatedBind) {
@@ -341,6 +467,7 @@ func TestAddHTTPListener(t *testing.T) {
 			paths:     testPaths(),
 			log:       log.New(io.Discard, "", 0),
 			httpToken: token,
+			workers:   newWorkerGroup(),
 		}
 		s.sse = sse.NewServer(s, sse.Config{})
 		s.Mux().HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
@@ -351,7 +478,7 @@ func TestAddHTTPListener(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			cancel()
-			s.wg.Wait()
+			settleTestWorkers(t, s)
 		})
 
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -406,8 +533,9 @@ func TestAddHTTPListener(t *testing.T) {
 		isolateStateDir(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		s := &Server{
-			paths: testPaths(),
-			log:   log.New(io.Discard, "", 0),
+			paths:   testPaths(),
+			log:     log.New(io.Discard, "", 0),
+			workers: newWorkerGroup(),
 		}
 		s.sse = sse.NewServer(s, sse.Config{})
 		if err := s.startHTTP(ctx); err != nil {
@@ -415,7 +543,7 @@ func TestAddHTTPListener(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			cancel()
-			s.wg.Wait()
+			settleTestWorkers(t, s)
 		})
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -488,6 +616,7 @@ func TestStartHTTPExtraListeners(t *testing.T) {
 				log:            log.New(io.Discard, "", 0),
 				httpToken:      token,
 				extraListeners: []func(context.Context) (net.Listener, error){factory},
+				workers:        newWorkerGroup(),
 			}
 			s.sse = sse.NewServer(s, sse.Config{})
 			s.Mux().HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
@@ -499,7 +628,7 @@ func TestStartHTTPExtraListeners(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				cancel()
-				s.wg.Wait()
+				settleTestWorkers(t, s)
 			})
 
 			if got := s.readHTTPInfo().ExtraAddrs; len(got) != 1 || got[0] != extraAddr {
@@ -588,6 +717,7 @@ func TestStartHTTPShutdownClosesExtraListeners(t *testing.T) {
 		log:            log.New(io.Discard, "", 0),
 		httpToken:      "s3cret-token",
 		extraListeners: []func(context.Context) (net.Listener, error){factory},
+		workers:        newWorkerGroup(),
 	}
 	s.sse = sse.NewServer(s, sse.Config{})
 
@@ -595,7 +725,7 @@ func TestStartHTTPShutdownClosesExtraListeners(t *testing.T) {
 		t.Fatalf("startHTTP: %v", err)
 	}
 	cancel()
-	s.wg.Wait()
+	settleTestWorkers(t, s)
 
 	_ = extra.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := extra.Accept(); !errors.Is(err, net.ErrClosed) {
@@ -613,6 +743,7 @@ func TestStartHTTPFiresOnHTTPStart(t *testing.T) {
 		paths:       testPaths(),
 		log:         log.New(io.Discard, "", 0),
 		onHTTPStart: func(_ context.Context, port int) { got <- port },
+		workers:     newWorkerGroup(),
 	}
 	s.sse = sse.NewServer(s, sse.Config{})
 
@@ -621,7 +752,7 @@ func TestStartHTTPFiresOnHTTPStart(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		cancel()
-		s.wg.Wait()
+		settleTestWorkers(t, s)
 	})
 
 	if got := s.readHTTPInfo().Bind; got != "127.0.0.1" {
@@ -641,7 +772,7 @@ func TestStartHTTPFiresOnHTTPStart(t *testing.T) {
 	}
 }
 
-// TestStartHTTPWaitsForOnHTTPStartCleanup proves wg.Wait blocks until a hook's
+// TestStartHTTPWaitsForOnHTTPStartCleanup proves worker settlement blocks until a hook's
 // ctx.Done cleanup finishes — the contract mDNS goodbye packets rely on to flush
 // before the process exits.
 func TestStartHTTPWaitsForOnHTTPStartCleanup(t *testing.T) {
@@ -651,8 +782,9 @@ func TestStartHTTPWaitsForOnHTTPStartCleanup(t *testing.T) {
 	release := make(chan struct{})
 	var cleaned atomic.Bool
 	s := &Server{
-		paths: testPaths(),
-		log:   log.New(io.Discard, "", 0),
+		paths:   testPaths(),
+		log:     log.New(io.Discard, "", 0),
+		workers: newWorkerGroup(),
 		onHTTPStart: func(hookCtx context.Context, _ int) {
 			<-hookCtx.Done()
 			<-release
@@ -668,15 +800,16 @@ func TestStartHTTPWaitsForOnHTTPStartCleanup(t *testing.T) {
 	cancel()
 	waited := make(chan struct{})
 	go func() {
-		s.wg.Wait()
+		s.workers.Close()
+		_ = s.workers.Wait(context.Background())
 		close(waited)
 	}()
 
-	// The hook has unblocked from ctx.Done but is parked on release; wg.Wait must
+	// The hook has unblocked from ctx.Done but is parked on release; settlement must
 	// not return until it completes.
 	select {
 	case <-waited:
-		t.Fatal("wg.Wait returned before the onHTTPStart hook finished cleanup")
+		t.Fatal("worker settlement returned before the onHTTPStart hook finished cleanup")
 	case <-time.After(200 * time.Millisecond):
 	}
 

@@ -20,6 +20,7 @@ import (
 
 	"github.com/yasyf/cc-interact/daemon"
 	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/drain"
 	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/wire"
@@ -76,7 +77,7 @@ func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (string,
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- server.Serve(ctx, ln, intake.Admit, intake.AdmitLifecycle)
+		done <- server.Serve(ctx, ln, func() error { return nil }, intake.Admit, intake.AdmitLifecycle)
 	}()
 	t.Cleanup(func() {
 		intake.Close()
@@ -130,10 +131,23 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 	t.Setenv("HOME", home)
 
 	p := paths.Paths{App: ".cc-interact-test"}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve executable: %v", err)
+	}
+	target, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatalf("resolve executable target: %v", err)
+	}
+	rolePath := filepath.Join(home, "cc-interact-cmd-test")
+	if err := os.Symlink(target, rolePath); err != nil {
+		t.Fatalf("create daemon role: %v", err)
+	}
 	s, err := daemon.New(daemon.Config{
 		AppName:        "cc-interact-test",
 		Paths:          p,
 		Version:        "9.9.9",
+		DaemonRole:     daemonrole.Classifier{RoleID: "com.yasyf.cc-interact.cmd-test", RolePath: rolePath},
 		ActiveStatuses: []string{"open"},
 		MaxFrameBytes:  maxFrameBytes,
 	})

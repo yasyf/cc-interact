@@ -12,11 +12,12 @@ import (
 
 	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/wire"
-	"github.com/yasyf/daemonkit/wire/lifeproto"
 )
 
 // ErrClientClosed means the persistent client has been permanently closed.
 var ErrClientClosed = errors.New("daemon: client closed")
+
+var errSessionRetired = errors.New("daemon: session retired after a non-delivered operation")
 
 // CallError preserves the transport's proof about one failed operation.
 type CallError struct {
@@ -55,22 +56,38 @@ type clientSession struct {
 	stale      bool
 }
 
-// Client maintains one generation-aware persistent daemon session. A failed
-// operation is never replayed; the next operation establishes a fresh session.
+type closingClientSession struct {
+	session *clientSession
+	stale   bool
+}
+
+// Client maintains a generation-aware business session and daemonkit's exact
+// lifecycle peer. A failed business operation is never replayed; the next
+// operation establishes a fresh session.
 type Client struct {
 	cfg ClientConfig
 
 	mu         sync.Mutex
 	current    *clientSession
 	sessions   map[*clientSession]struct{}
+	lifecycle  *wire.LifecyclePeer
 	dialing    chan struct{}
 	generation uint64
+	operations sync.WaitGroup
+	closing    bool
 	closed     bool
+	closeDone  chan struct{}
+	closeErr   error
 }
 
 // NewClient connects and completes the exact v4 build handshake.
 func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
-	c := &Client{cfg: cfg, sessions: make(map[*clientSession]struct{})}
+	c := &Client{
+		cfg:       cfg,
+		sessions:  make(map[*clientSession]struct{}),
+		lifecycle: &wire.LifecyclePeer{Config: clientWireConfig(cfg)},
+		closeDone: make(chan struct{}),
+	}
 	session, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
@@ -83,52 +100,81 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 }
 
 func (c *Client) dial(ctx context.Context) (*clientSession, error) {
-	maxFrame := c.cfg.MaxFrameBytes
-	if maxFrame == 0 {
-		maxFrame = maxFrameBytes
-	}
-	client, err := wire.NewClient(ctx, wire.ClientConfig{
-		Dial:     wire.UnixDialer(c.cfg.Socket),
-		Build:    c.cfg.Build,
-		MaxFrame: maxFrame,
-	})
+	client, err := wire.NewClient(ctx, clientWireConfig(c.cfg))
 	if err != nil {
 		return nil, fmt.Errorf("daemon: connect: %w", err)
 	}
 	return &clientSession{wire: client}, nil
 }
 
-// Close permanently closes every current or retiring session.
+func clientWireConfig(cfg ClientConfig) wire.ClientConfig {
+	maxFrame := cfg.MaxFrameBytes
+	if maxFrame == 0 {
+		maxFrame = maxFrameBytes
+	}
+	return wire.ClientConfig{
+		Dial:     wire.UnixDialer(cfg.Socket),
+		Build:    cfg.Build,
+		MaxFrame: maxFrame,
+	}
+}
+
+// Close permanently closes every business and lifecycle session.
 func (c *Client) Close() error {
 	c.mu.Lock()
-	if c.closed {
+	if c.closing || c.closed {
+		done := c.closeDone
 		c.mu.Unlock()
-		return nil
+		<-done
+		c.mu.Lock()
+		err := c.closeErr
+		c.mu.Unlock()
+		return err
 	}
+	c.closing = true
+	c.mu.Unlock()
+
+	c.operations.Wait()
+
+	c.mu.Lock()
 	c.closed = true
-	sessions := make([]*clientSession, 0, len(c.sessions))
+	sessions := make([]closingClientSession, 0, len(c.sessions))
 	for session := range c.sessions {
-		sessions = append(sessions, session)
+		sessions = append(sessions, closingClientSession{session: session, stale: session.stale})
 	}
 	c.current = nil
 	clear(c.sessions)
+	lifecycle := c.lifecycle
 	c.mu.Unlock()
 	var errs []error
-	for _, session := range sessions {
-		if err := session.wire.Close(); err != nil {
+	for _, closing := range sessions {
+		if closing.stale {
+			_ = closing.session.wire.Abort(errSessionRetired)
+			continue
+		}
+		if err := closing.session.wire.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	if err := lifecycle.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	err := errors.Join(errs...)
+	c.mu.Lock()
+	c.closeErr = err
+	close(c.closeDone)
+	c.mu.Unlock()
+	return err
 }
 
 // Do dispatches one business operation without replaying it across sessions.
 func (c *Client) Do(ctx context.Context, env Envelope) (Reply, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, handleTimeout+time.Second)
-		defer cancel()
+	if err := c.beginOperation(); err != nil {
+		return Reply{}, err
 	}
+	defer c.operations.Done()
+	ctx, cancel := operationContext(ctx)
+	defer cancel()
 	payload, err := json.Marshal(env)
 	if err != nil {
 		return Reply{}, fmt.Errorf("daemon: encode %s: %w", env.Op, err)
@@ -149,43 +195,46 @@ func (c *Client) Do(ctx context.Context, env Envelope) (Reply, error) {
 
 // Health returns the connected daemon's exact lifecycle state.
 func (c *Client) Health(ctx context.Context) (dkdaemon.Health, error) {
-	var response lifeproto.HealthResponse
-	if err := c.lifecycle(ctx, wire.Op(lifeproto.OpHealth), lifeproto.NewHealthRequest(), &response); err != nil {
-		return dkdaemon.Health{}, err
+	if err := c.beginOperation(); err != nil {
+		return dkdaemon.Health{}, ErrClientClosed
 	}
-	return dkdaemon.Health{
-		Build: response.Build, Protocol: response.Protocol, PID: response.PID,
-		State: dkdaemon.State(response.State), Draining: response.Draining, Busy: response.Busy,
-	}, nil
+	defer c.operations.Done()
+	ctx, cancel := operationContext(ctx)
+	defer cancel()
+	c.mu.Lock()
+	lifecycle := c.lifecycle
+	c.mu.Unlock()
+	return lifecycle.Health(ctx)
 }
 
 // Shutdown requests orderly daemon shutdown.
 func (c *Client) Shutdown(ctx context.Context) error {
-	var response lifeproto.ShutdownResponse
-	if err := c.lifecycle(ctx, wire.Op(lifeproto.OpShutdown), lifeproto.NewShutdownRequest(), &response); err != nil {
-		return err
+	if err := c.beginOperation(); err != nil {
+		return ErrClientClosed
 	}
-	if !response.OK {
-		return errors.New("daemon: shutdown not acknowledged")
-	}
-	return nil
+	defer c.operations.Done()
+	ctx, cancel := operationContext(ctx)
+	defer cancel()
+	c.mu.Lock()
+	lifecycle := c.lifecycle
+	c.mu.Unlock()
+	return lifecycle.Shutdown(ctx)
 }
 
-func (c *Client) lifecycle(ctx context.Context, op wire.Op, message, response any) error {
-	payload, err := lifeproto.Encode(message)
-	if err != nil {
-		return err
+func operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
 	}
-	result, err := c.call(ctx, op, payload)
-	if err != nil {
-		return err
+	return context.WithTimeout(ctx, handleTimeout+time.Second)
+}
+
+func (c *Client) beginOperation() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing || c.closed {
+		return ErrClientClosed
 	}
-	if result.Response.Err != "" {
-		return errors.New(result.Response.Err)
-	}
-	if err := decodeStrict(result.Response.Payload, response); err != nil {
-		return fmt.Errorf("daemon: decode lifecycle %s: %w", op, err)
-	}
+	c.operations.Add(1)
 	return nil
 }
 
@@ -281,7 +330,7 @@ func (c *Client) release(session *clientSession) {
 	}
 	c.mu.Unlock()
 	if closeSession {
-		_ = session.wire.Close()
+		_ = session.wire.Abort(errSessionRetired)
 	}
 }
 

@@ -12,8 +12,41 @@ import (
 	"testing"
 	"time"
 
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/wire"
 )
+
+type allowProtectedClientTestSession struct{}
+
+func (allowProtectedClientTestSession) Validate() error { return nil }
+func (allowProtectedClientTestSession) Classify(context.Context, wire.Peer) (bool, error) {
+	return true, nil
+}
+func (allowProtectedClientTestSession) AuthorizeBuild(string, string) bool { return true }
+
+type blockingClientTestLifecycle struct {
+	method  string
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (l blockingClientTestLifecycle) Health(context.Context) (dkdaemon.Health, error) {
+	if l.method == "health" {
+		close(l.entered)
+		<-l.release
+	}
+	return dkdaemon.Health{Build: "client-test", Protocol: int(wire.ProtocolVersion)}, nil
+}
+
+func (l blockingClientTestLifecycle) Shutdown(context.Context) error {
+	if l.method == "shutdown" {
+		close(l.entered)
+		<-l.release
+	}
+	return nil
+}
+
+func (blockingClientTestLifecycle) Handoff(context.Context) error { return nil }
 
 type clientTestServer struct {
 	server   *wire.Server
@@ -38,6 +71,16 @@ func startClientTestServer(
 	handler wire.Handler,
 	admit func() (func(), error),
 ) *clientTestServer {
+	return startClientTestServerWithSetup(t, path, handler, admit, nil)
+}
+
+func startClientTestServerWithSetup(
+	t *testing.T,
+	path string,
+	handler wire.Handler,
+	admit func() (func(), error),
+	setup func(*wire.Server),
+) *clientTestServer {
 	t.Helper()
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("remove stale socket: %v", err)
@@ -48,12 +91,15 @@ func startClientTestServer(
 	}
 	server := &wire.Server{Build: "client-test"}
 	server.RegisterControl("test", handler)
+	if setup != nil {
+		setup(server)
+	}
 	if admit == nil {
 		admit = func() (func(), error) { return func() {}, nil }
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- server.Serve(ctx, listener, admit, admit) }()
+	go func() { done <- server.Serve(ctx, listener, func() error { return nil }, admit, admit) }()
 	running := &clientTestServer{server: server, cancel: cancel, done: done}
 	t.Cleanup(func() { running.stop(t) })
 	return running
@@ -159,6 +205,9 @@ func TestClientRejectedOperationIsNotReplayed(t *testing.T) {
 	if calls.Load() != 1 || admissions.Load() != 1 {
 		t.Fatalf("calls=%d rejected admissions=%d, want 1 and 1", calls.Load(), admissions.Load())
 	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 }
 
 func TestClientPostSendFailureReconnectsNextOperationWithoutReplay(t *testing.T) {
@@ -212,6 +261,152 @@ func TestClientPostSendFailureReconnectsNextOperationWithoutReplay(t *testing.T)
 	}
 	if client.generation != 2 {
 		t.Fatalf("session generation = %d, want 2", client.generation)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestClientCloseReplaysStrictTerminal(t *testing.T) {
+	path := newClientTestSocket(t)
+	server := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
+		return Reply{OK: true}, nil
+	}, nil)
+	client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	server.stop(t)
+	first := client.Close()
+	if first == nil {
+		t.Fatal("Close after peer exit succeeded")
+	}
+	second := client.Close()
+	if second == nil || second.Error() != first.Error() {
+		t.Fatalf("second Close = %v, want replay of %v", second, first)
+	}
+}
+
+func TestClientCloseIsTerminalBarrierForLifecycleOperations(t *testing.T) {
+	for _, method := range []string{"health", "shutdown"} {
+		t.Run(method, func(t *testing.T) {
+			path := newClientTestSocket(t)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			lifecycle := blockingClientTestLifecycle{method: method, entered: entered, release: release}
+			startClientTestServerWithSetup(
+				t,
+				path,
+				func(context.Context, wire.Request) (any, error) { return Reply{OK: true}, nil },
+				nil,
+				func(server *wire.Server) {
+					server.ReservedProtectedSessions = 1
+					server.ProtectedSessionClassifier = allowProtectedClientTestSession{}
+					server.RegisterLifecycle(lifecycle)
+				},
+			)
+			client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test"})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			opDone := make(chan error, 1)
+			go func() {
+				if method == "health" {
+					_, err := client.Health(context.Background())
+					opDone <- err
+					return
+				}
+				opDone <- client.Shutdown(context.Background())
+			}()
+			select {
+			case <-entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("lifecycle operation did not enter")
+			}
+			closeDone := make(chan error, 1)
+			go func() { closeDone <- client.Close() }()
+			select {
+			case err := <-closeDone:
+				t.Fatalf("Close returned before lifecycle settlement: %v", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			close(release)
+			if err := <-opDone; err != nil {
+				t.Fatalf("lifecycle operation: %v", err)
+			}
+			if err := <-closeDone; err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if _, err := client.Health(context.Background()); !errors.Is(err, ErrClientClosed) {
+				t.Fatalf("post-close Health err = %v, want ErrClientClosed", err)
+			}
+			if err := client.Shutdown(context.Background()); !errors.Is(err, ErrClientClosed) {
+				t.Fatalf("post-close Shutdown err = %v, want ErrClientClosed", err)
+			}
+		})
+	}
+}
+
+func TestClientCloseWaitsForInFlightRedial(t *testing.T) {
+	path := newClientTestSocket(t)
+	server := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
+		return Reply{OK: true}, nil
+	}, nil)
+	client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	server.stop(t)
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), time.Second)
+	_, _ = client.Do(probeCtx, Envelope{Op: "test"})
+	probeCancel()
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove stale socket: %v", err)
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen for blocked redial: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		close(accepted)
+		<-release
+		_ = connection.Close()
+	}()
+	dialCtx, dialCancel := context.WithCancel(context.Background())
+	dialDone := make(chan error, 1)
+	go func() {
+		_, err := client.Do(dialCtx, Envelope{Op: "test"})
+		dialDone <- err
+	}()
+	select {
+	case <-accepted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("redial did not reach replacement listener")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before redial settlement: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	dialCancel()
+	close(release)
+	if err := <-dialDone; err == nil {
+		t.Fatal("cancelled redial succeeded")
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := client.Do(context.Background(), Envelope{Op: "test"}); !errors.Is(err, ErrClientClosed) {
+		t.Fatalf("post-close Do err = %v, want ErrClientClosed", err)
 	}
 }
 

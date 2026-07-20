@@ -3,25 +3,75 @@ package channel
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/store"
+	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
 )
 
 func newDaemon(t *testing.T) *daemon.Server {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	home, err := os.MkdirTemp("/tmp", "cc-interact-channel-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rolePath := filepath.Join(home, "cc-interact-channel-test")
+	if err := os.Symlink(target, rolePath); err != nil {
+		t.Fatal(err)
+	}
 	s, err := daemon.New(daemon.Config{
 		AppName:        "cc-test",
 		Paths:          paths.Paths{App: ".cc-interact-test"},
 		Version:        "v1.0.0",
+		DaemonRole:     daemonrole.Classifier{RoleID: "com.yasyf.cc-interact.channel-test", RolePath: rolePath},
 		ActiveStatuses: []string{"open"},
 	})
 	if err != nil {
 		t.Fatalf("daemon.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("daemon Serve: %v", err)
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		client, connectErr := daemon.NewClient(probeCtx, daemon.ClientConfig{
+			Socket: paths.Paths{App: ".cc-interact-test"}.SocketPath(),
+			Build:  "v1.0.0",
+		})
+		if connectErr == nil {
+			_ = client.Close()
+			probeCancel()
+			break
+		}
+		probeCancel()
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("daemon did not become ready: %v", connectErr)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return s
 }

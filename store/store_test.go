@@ -13,7 +13,7 @@ import (
 
 func openTestStore(t *testing.T) (*Store, subject.Store) {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"), nil)
+	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "test.db"), nil)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestOpenRunsMigrate(t *testing.T) {
 		_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS widgets (id TEXT PRIMARY KEY)`)
 		return err
 	}
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"), migrate)
+	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "test.db"), migrate)
 	if err != nil {
 		t.Fatalf("open with migrate: %v", err)
 	}

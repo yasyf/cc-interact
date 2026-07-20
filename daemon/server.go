@@ -23,6 +23,7 @@ import (
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
 	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/drain"
 	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/wire"
@@ -49,20 +50,23 @@ const subscriberPresenceWindow = 90 * time.Second
 // Server is the running daemon: the control-plane unix-socket server plus the
 // realtime HTTP/SSE plane it boots. It implements sse.Backend.
 type Server struct {
-	appName  string
-	version  string
-	store    *store.Store
-	db       *sql.DB
-	bus      *event.Bus
-	activity *Activity
-	subjects subject.Resolver
-	sse      *sse.Server
+	appName    string
+	version    string
+	daemonRole daemonrole.Classifier
+	store      *store.Store
+	db         *sql.DB
+	bus        *event.Bus
+	activity   *Activity
+	subjects   subject.Resolver
+	sse        *sse.Server
 
 	scopeResolve    func(ctx context.Context, raw string) string
 	gate            GateFunc
 	gateErrorReason string
 	gateObserve     func(ctx context.Context, s subject.Subject, tool ToolCall, allow bool, reason string)
 	bootReconcile   func(ctx context.Context, s *Server) error
+	migrate         func(ctx context.Context, db *sql.DB) error
+	activeStatuses  []string
 
 	agentGate     AgentGateFunc
 	agentGreeting AgentGreetingFunc
@@ -101,25 +105,21 @@ type Server struct {
 	wireIntake *drain.Intake
 	httpIntake *drain.Intake
 
-	serveCtxMu    sync.Mutex
-	serveCtx      context.Context
-	serveCancel   context.CancelFunc
-	workersClosed bool
-	wg            sync.WaitGroup
+	serveCtxMu      sync.Mutex
+	serveCtx        context.Context
+	serveCancel     context.CancelFunc
+	workersCanceled bool
+	workers         *workerGroup
 }
 
-// New opens the store, builds the bus, resolver, presence registry, and SSE
-// plane, and returns a Server ready for the consumer to Register domain ops and
-// mount routes on Mux before calling Serve.
+// New builds the daemon composition without acquiring generation-owned state.
+// Consumers may register domain ops and mount routes before Serve; the store is
+// opened only after the runtime owns the listener.
 func New(cfg Config) (*Server, error) {
+	if err := cfg.DaemonRole.Validate(); err != nil {
+		return nil, fmt.Errorf("daemon: validate role: %w", err)
+	}
 	if err := validateBindAuth(bindHostOrDefault(cfg.BindAddr), cfg.HTTPToken, len(cfg.ExtraHTTPListeners) > 0, cfg.TrustedPeer != nil); err != nil {
-		return nil, err
-	}
-	if err := cfg.Paths.EnsureStateDir(); err != nil {
-		return nil, err
-	}
-	st, err := store.Open(cfg.Paths.DBPath(), cfg.Migrate)
-	if err != nil {
 		return nil, err
 	}
 	scopeResolve := cfg.ScopeResolve
@@ -133,8 +133,7 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{
 		appName:         cfg.AppName,
 		version:         cfg.Version,
-		store:           st,
-		db:              st.DB(),
+		daemonRole:      cfg.DaemonRole,
 		bus:             event.NewBus(),
 		activity:        NewActivity(),
 		scopeResolve:    scopeResolve,
@@ -142,6 +141,8 @@ func New(cfg Config) (*Server, error) {
 		gateErrorReason: cfg.GateErrorReason,
 		gateObserve:     cfg.GateObserve,
 		bootReconcile:   cfg.BootReconcile,
+		migrate:         cfg.Migrate,
+		activeStatuses:  slices.Clone(cfg.ActiveStatuses),
 		agentGate:       cfg.AgentGate,
 		agentGreeting:   cfg.AgentGreeting,
 		subscribe:       cfg.Subscribe,
@@ -165,19 +166,7 @@ func New(cfg Config) (*Server, error) {
 		repoLocks:       make(map[string]*sync.Mutex),
 		wireIntake:      &drain.Intake{},
 		httpIntake:      &drain.Intake{},
-	}
-	s.subjects = subject.Resolver{
-		Store: store.NewSubjectStore(s.db),
-		Policy: subject.Policy{
-			Active: func(sub subject.Subject) bool {
-				for _, st := range cfg.ActiveStatuses {
-					if sub.Status == st {
-						return true
-					}
-				}
-				return false
-			},
-		},
+		workers:         newWorkerGroup(),
 	}
 	var ssePresence func(ctx context.Context, subjectID string, connected bool)
 	if cfg.OnPresenceChange != nil {
@@ -224,39 +213,31 @@ func New(cfg Config) (*Server, error) {
 // and the opt-in static handler before Serve. GET /events is already mounted.
 func (s *Server) Mux() *http.ServeMux { return s.sse.Mux() }
 
-// DB exposes the underlying connection so a lifecycle hook or domain handler can
-// query the consumer's own tables.
+// DB exposes the activated runtime's underlying connection.
 func (s *Server) DB() *sql.DB { return s.db }
 
-// Background runs fn as daemon-lifecycle work: fn receives the serve context
-// (cancelled at shutdown) and Serve waits for it to return before closing the
-// store, so consumer fan-out never outlives the daemon or writes to a closed
-// DB. Call it from a handler — before Serve there is no serve context.
+// Background runs fn as daemon-lifecycle work. fn must return when its context
+// is cancelled; daemonkit's shutdown deadline bounds settlement before state
+// closure. Call it from a handler — before Serve there is no serve context.
 func (s *Server) Background(fn func(context.Context)) {
 	s.serveCtxMu.Lock()
 	ctx := s.serveCtx
-	closed := s.workersClosed
 	if ctx == nil {
 		s.serveCtxMu.Unlock()
 		panic("daemon: Background called before Serve")
 	}
-	if closed {
-		s.serveCtxMu.Unlock()
+	started := s.workers.Start(func() { fn(ctx) })
+	s.serveCtxMu.Unlock()
+	if !started {
 		panic("daemon: Background called while draining")
 	}
-	s.wg.Add(1)
-	s.serveCtxMu.Unlock()
-	go func() {
-		defer s.wg.Done()
-		fn(ctx)
-	}()
 }
 
 // Serve runs the exact daemonkit lifecycle and persistent control session.
 func (s *Server) Serve(parent context.Context) error {
 	wireServer, runtime, err := s.runtime()
 	if err != nil {
-		_ = s.store.Close()
+		_ = s.closeState()
 		return err
 	}
 	wireServer.RegisterLifecycle(runtime)
@@ -265,6 +246,29 @@ func (s *Server) Serve(parent context.Context) error {
 		return nil
 	}
 	return err
+}
+
+func (s *Server) activate(activation dkdaemon.Activation) error {
+	st, err := store.Open(activation.Startup, s.paths.DBPath(), s.migrate)
+	if err != nil {
+		return err
+	}
+	s.store = st
+	s.db = st.DB()
+	s.subjects = subject.Resolver{
+		Store: store.NewSubjectStore(s.db),
+		Policy: subject.Policy{Active: func(sub subject.Subject) bool {
+			return slices.Contains(s.activeStatuses, sub.Status)
+		}},
+	}
+	return nil
+}
+
+func (s *Server) closeState() error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.Close()
 }
 
 // bindHost is the address the HTTP plane binds, defaulting to loopback-only
@@ -344,30 +348,32 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		return writeErr
 	}
 	if s.onHTTPStart != nil {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.onHTTPStart(ctx, s.httpPort)
-		}()
+		if !s.workers.Start(func() { s.onHTTPStart(ctx, s.httpPort) }) {
+			closeAll()
+			return errors.New("daemon: HTTP startup while draining")
+		}
 	}
 	for _, l := range listeners {
-		s.wg.Add(1)
-		go s.serveOn(l)
+		listener := l
+		if !s.workers.Start(func() { s.serveOn(listener) }) {
+			closeAll()
+			return errors.New("daemon: HTTP listener startup while draining")
+		}
 	}
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	if !s.workers.Start(func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sctx)
-	}()
+	}) {
+		closeAll()
+		return errors.New("daemon: HTTP shutdown worker startup while draining")
+	}
 	return nil
 }
 
 // serveOn runs the shared HTTP server on ln until a graceful Shutdown closes it.
 func (s *Server) serveOn(ln net.Listener) {
-	defer s.wg.Done()
 	if err := s.httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		s.log.Printf("http serve %s: %v", ln.Addr(), err)
 	}
@@ -395,22 +401,18 @@ func (s *Server) AddHTTPListener(ln net.Listener) error {
 		_ = ln.Close()
 		return errors.New("daemon: AddHTTPListener before HTTP start")
 	}
-	s.serveCtxMu.Lock()
-	if s.workersClosed {
-		s.serveCtxMu.Unlock()
-		_ = ln.Close()
-		return errors.New("daemon: AddHTTPListener while draining")
-	}
-	s.wg.Add(1)
-	s.serveCtxMu.Unlock()
 	s.extraAddrs = append(s.extraAddrs, ln.Addr().String())
 	if err := s.writeHTTPInfo(s.httpInfoLocked()); err != nil {
 		s.extraAddrs = s.extraAddrs[:len(s.extraAddrs)-1]
-		s.wg.Done()
 		_ = ln.Close()
 		return err
 	}
-	go s.serveOn(ln)
+	if !s.workers.Start(func() { s.serveOn(ln) }) {
+		s.extraAddrs = s.extraAddrs[:len(s.extraAddrs)-1]
+		_ = s.writeHTTPInfo(s.httpInfoLocked())
+		_ = ln.Close()
+		return errors.New("daemon: AddHTTPListener while draining")
+	}
 	return nil
 }
 
@@ -484,12 +486,8 @@ func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
 	}
 	wireServer := &wire.Server{
 		Build: s.version, MaxFrame: s.maxFrameBytes, Ladder: ladder,
-		Trust: func(peer wire.Peer) error {
-			if peer.UID != os.Geteuid() {
-				return fmt.Errorf("%w: peer uid %d, daemon uid %d", wire.ErrUntrustedPeer, peer.UID, os.Geteuid())
-			}
-			return nil
-		},
+		ReservedProtectedSessions:  1,
+		ProtectedSessionClassifier: s.daemonRole,
 	}
 	for op := range handlers {
 		op := op
@@ -509,11 +507,11 @@ func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
 		Socket: s.socket, Build: s.version, Protocol: int(wire.ProtocolVersion),
 		Peer: peer, Contract: dkdaemon.RequestDaemon, WaitMode: dkdaemon.PIDExit,
 		Admission: s.wireIntake, Server: &sessionServer{owner: s, wire: wireServer},
-		Workers: &serverWorkers{owner: s}, State: s.store, Resources: lifecycleResource{peer},
+		Workers: &serverWorkers{owner: s}, State: serverState{owner: s}, Resources: lifecycleResource{peer},
+		Activate: s.activate,
 	})
 	if err != nil {
-		_ = peer.Close()
-		return nil, nil, err
+		return nil, nil, errors.Join(err, peer.Close())
 	}
 	return wireServer, runtime, nil
 }
@@ -554,13 +552,19 @@ type sessionServer struct {
 func (s *sessionServer) Serve(
 	ctx context.Context,
 	listener net.Listener,
+	ready func() error,
 	admit, admitLifecycle func() (func(), error),
 ) error {
 	workerCtx, cancel := context.WithCancel(ctx)
 	s.owner.serveCtxMu.Lock()
 	s.owner.serveCtx = workerCtx
 	s.owner.serveCancel = cancel
+	canceled := s.owner.workersCanceled
 	s.owner.serveCtxMu.Unlock()
+	if canceled {
+		cancel()
+		return workerCtx.Err()
+	}
 	if s.owner.bootReconcile != nil {
 		if err := s.owner.bootReconcile(workerCtx, s.owner); err != nil {
 			return err
@@ -576,7 +580,7 @@ func (s *sessionServer) Serve(
 		return err
 	}
 	s.owner.log.Printf("daemon %s started; socket=%s http=%s", s.owner.version, s.owner.socket, net.JoinHostPort(s.owner.bindHost(), strconv.Itoa(s.owner.httpPort)))
-	err := s.wire.Serve(ctx, listener, admit, admitLifecycle)
+	err := s.wire.Serve(ctx, listener, ready, admit, admitLifecycle)
 	s.owner.log.Printf("daemon stopped")
 	return err
 }
@@ -586,14 +590,13 @@ func (s *sessionServer) CloseIntake() error { return s.wire.CloseIntake() }
 type serverWorkers struct{ owner *Server }
 
 func (w *serverWorkers) Close() {
-	w.owner.serveCtxMu.Lock()
-	w.owner.workersClosed = true
-	w.owner.serveCtxMu.Unlock()
+	w.owner.workers.Close()
 	w.owner.httpIntake.Close()
 }
 
 func (w *serverWorkers) Cancel() {
 	w.owner.serveCtxMu.Lock()
+	w.owner.workersCanceled = true
 	cancel := w.owner.serveCancel
 	w.owner.serveCtxMu.Unlock()
 	if cancel != nil {
@@ -603,20 +606,14 @@ func (w *serverWorkers) Cancel() {
 
 func (w *serverWorkers) Wait(ctx context.Context) error {
 	settleErr := w.owner.httpIntake.Settle(ctx)
-	if settleErr != nil {
-		if err := w.owner.httpIntake.Settle(context.WithoutCancel(ctx)); err != nil {
-			settleErr = errors.Join(settleErr, err)
-		}
-	}
-	done := make(chan struct{})
-	go func() {
-		w.owner.wg.Wait()
-		close(done)
-	}()
-	<-done
-	return settleErr
+	workerErr := w.owner.workers.Wait(ctx)
+	return errors.Join(settleErr, workerErr)
 }
 
 type lifecycleResource struct{ peer *wire.LifecyclePeer }
 
 func (r lifecycleResource) Close() error { return r.peer.Close() }
+
+type serverState struct{ owner *Server }
+
+func (s serverState) Close() error { return s.owner.closeState() }

@@ -20,7 +20,7 @@ Driving with an agent? Paste this:
 
 ```text
 Run `go get github.com/yasyf/cc-interact` in my Go project.
-Study https://github.com/yasyf/cc-interact/tree/main/examples/echo — a complete headless consumer in 381 lines — then stand up a human-in-the-loop surface for my domain: start/reply handlers, a REST mount, and one MCP channel tool.
+Study https://github.com/yasyf/cc-interact/tree/main/examples/echo — a complete headless consumer — then stand up a human-in-the-loop surface for my domain: start/reply handlers, a REST mount, and one MCP channel tool.
 Verify the round trip: POST an item to the daemon's REST plane and confirm the agent's reply streams back over /events.
 ```
 
@@ -49,7 +49,9 @@ The `guard-edit` hook routes every edit the Claude session attempts through this
 A socket for the UI plus polling for the agent gives you two realtime paths that drift, drop events, and disagree after a reconnect. Here both roles read one log:
 
 ```bash
-go run ./examples/echo watch
+mkdir -p "$HOME/.cc-echo/bin"
+go build -o "$HOME/.cc-echo/bin/echo" ./examples/echo
+"$HOME/.cc-echo/bin/echo" watch
 ```
 
 `watch` streams the same append-only log as the browser's `/events`, one JSON event per line, with `exclude_origin=agent` so the agent never reacts to its own echo. Delivery is at-least-once with a persisted per-consumer cursor, so a dropped connection resumes where it left off, and the consumer survives a daemon swap.

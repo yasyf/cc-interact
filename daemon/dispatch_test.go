@@ -10,6 +10,7 @@ import (
 
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -26,11 +27,20 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 	if cfg.ActiveStatuses == nil {
 		cfg.ActiveStatuses = []string{"open"}
 	}
+	if cfg.DaemonRole.RoleID == "" {
+		cfg.DaemonRole = testDaemonRole(t)
+	}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { s.store.Close() })
+	if err := s.paths.EnsureStateDir(); err != nil {
+		t.Fatalf("ensure state dir: %v", err)
+	}
+	if err := s.activate(dkdaemon.Activation{Startup: context.Background(), Lifetime: context.Background()}); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	t.Cleanup(func() { _ = s.closeState() })
 	return s
 }
 

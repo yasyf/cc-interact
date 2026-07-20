@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -29,6 +30,7 @@ import (
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -78,10 +80,18 @@ type itemBody struct {
 
 func appPaths() paths.Paths { return paths.Paths{App: appDir} }
 
+func appDaemonRole() daemonrole.Classifier {
+	return daemonrole.Classifier{
+		RoleID: "com.yasyf.cc-interact.echo", RolePath: filepath.Join(appPaths().StateDir(), "bin", appName),
+	}
+}
+
 func newClient(ctx context.Context) (*daemon.Client, error) { return launcher().NewClient(ctx) }
 
 func launcher() daemon.Launcher {
-	return daemon.Launcher{Paths: appPaths(), Version: appVersion, Args: []string{"daemon"}}
+	return daemon.Launcher{
+		Paths: appPaths(), Version: appVersion, Args: []string{"daemon"}, DaemonRole: appDaemonRole(),
+	}
 }
 
 // cwdOr resolves the scope: the explicit flag, else the process working directory.
@@ -165,6 +175,7 @@ func buildServer() (*daemon.Server, error) {
 		AppName:        appName,
 		Paths:          appPaths(),
 		Version:        appVersion,
+		DaemonRole:     appDaemonRole(),
 		ActiveStatuses: []string{statusOpen},
 		// c.Type() (not c.EventType) so the SSE plane filters the same presence
 		// type the hooks emit — correct even for the Connectivity zero value.

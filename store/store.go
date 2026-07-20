@@ -77,13 +77,12 @@ CREATE INDEX IF NOT EXISTS idx_directives_pending
 // with WAL avoids "database is locked" across the fan-out, REST, and the event
 // bus. There are no migrations beyond migrate: on a core schema change, wipe the
 // local state dir.
-func Open(dbPath string, migrate func(ctx context.Context, db *sql.DB) error) (*Store, error) {
+func Open(ctx context.Context, dbPath string, migrate func(ctx context.Context, db *sql.DB) error) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
