@@ -1,5 +1,0 @@
-[pack]
-name = "{{PLUGIN_NAME}}"
-version = "0.1.0"
-description = "{{DISPLAY_NAME}} agent hooks"
-hooks = "."

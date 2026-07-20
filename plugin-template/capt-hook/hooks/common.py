@@ -7,7 +7,7 @@ from captain_hook import BaseHookEvent
 
 __capt_hook_skip__ = True
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 BIN = PLUGIN_ROOT / "bin" / "{{BINARY_NAME}}"
 
 

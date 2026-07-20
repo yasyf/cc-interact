@@ -4,7 +4,7 @@ from captain_hook import BaseHookEvent, Event, install_binary, on
 
 from . import common
 
-install_binary("../scripts/install-binary.sh")
+install_binary("../../scripts/install-binary.sh")
 
 
 @on(Event.SessionStart, async_=True)

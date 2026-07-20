@@ -1,0 +1,11 @@
+# capt-hook v11 pack descriptor. Identity, version, and description derive from
+# .claude-plugin/plugin.json — the descriptor holds only what cannot be derived.
+#
+# This pack needs neither, so the file is intentionally empty. Add sections only
+# when a hook requires them:
+#
+#   resources = ["spacy:en_core_web_sm", "wordnet:oewn:2025"]  # NLP resources to provision
+#
+#   [tools.my_mcp_edit_tool]        # teach gates that an MCP tool behaves like a builtin
+#   behaves_like = "Edit"
+#   span_edit = { path = "file_path", content = "new_text" }

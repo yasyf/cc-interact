@@ -45,12 +45,8 @@ jobs:
             PLUGIN_NAME=echo-demo DISPLAY_NAME=EchoDemo BINARY_NAME=echo-demo \
             RELEASE_REPO=yasyf/echo-demo MCP_SUBCOMMAND=channel SKILL_NAME=start
 
-      - name: Test inline hooks
-        run: |
-          CLAUDE_CONFIG_DIR="$RUNNER_TEMP/pack-smoke/.claude-test" \
-            uvx --isolated --from 'capt-hook>=11.0.0' capt-hook \
-              --root "$RUNNER_TEMP/pack-smoke" \
-              --hooks "$RUNNER_TEMP/pack-smoke/hooks" test
+      - name: Validate and test hook pack
+        run: uvx --isolated --from 'capt-hook>=11.0.0' capt-hook pack test "$RUNNER_TEMP/pack-smoke"
 
       - name: Test hook contracts
-        run: uv run "$RUNNER_TEMP/pack-smoke/hooks/tests/test_pack.py"
+        run: uv run "$RUNNER_TEMP/pack-smoke/capt-hook/hooks/tests/test_pack.py"

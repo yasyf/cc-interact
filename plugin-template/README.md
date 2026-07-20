@@ -12,14 +12,15 @@ The binary installer is the one piece this template consumes rather than owns: e
 plugin-template/
 ├── .claude-plugin/plugin.json   # manifest: name, mcpServers (channel) key, channels, captain-hook dependency
 ├── scripts/mcp-channel.sh       # MCP stdio entrypoint → `<binary> <mcp-subcommand>`
-├── hooks/                       # capt-hook pack — discovered from the enabled plugin; no hooks.json
-│   ├── capt-hook.toml           # [pack] manifest, named {{PLUGIN_NAME}}
-│   ├── common.py                # plugin root + bin path + fail-open call_bin forwarding
-│   ├── session.py               # SUBSTRATE — install_binary provisioning + session-record
-│   ├── guard_edit.py            # SUBSTRATE — block edits until the human responds
-│   ├── agent_plane.py           # OPTIONAL — parent↔child steering, 4 hooks (delete if unused)
-│   ├── turn_hooks.py            # OPTIONAL — turn-start/turn-end (need binary handlers)
-│   └── tests/test_pack.py       # standalone stub-binary contract tests (uv run)
+├── capt-hook/                   # capt-hook v11 pack — discovered from the enabled plugin; no hooks.json
+│   ├── pack.toml                # pack descriptor (empty — identity derives from plugin.json)
+│   └── hooks/
+│       ├── common.py            # plugin root + bin path + fail-open call_bin forwarding
+│       ├── session.py           # SUBSTRATE — install_binary provisioning + session-record
+│       ├── guard_edit.py        # SUBSTRATE — block edits until the human responds
+│       ├── agent_plane.py       # OPTIONAL — parent↔child steering, 4 hooks (delete if unused)
+│       ├── turn_hooks.py        # OPTIONAL — turn-start/turn-end (need binary handlers)
+│       └── tests/test_pack.py   # standalone stub-binary contract tests (uv run)
 ├── skills/start/SKILL.md        # the /<plugin>:start skill — generic session skeleton
 ├── agents/example-agent.md      # PLACEHOLDER background agent + MCP tool-name pattern
 ├── render.sh                    # substitute {{VAR}}s into an output dir
@@ -42,9 +43,9 @@ plugin-template/
 
 ### Where each is used
 
-- `{{PLUGIN_NAME}}` — `plugin.json` `name`; `hooks/capt-hook.toml` (the `[pack]` name); `agents/example-agent.md` (`subagent_type`, the `mcp__plugin_<PLUGIN_NAME>_…` tool prefix); `SKILL.md` (`--channels plugin:<PLUGIN_NAME>@<PLUGIN_NAME>`); the installer's default data-dir path.
+- `{{PLUGIN_NAME}}` — `plugin.json` `name` (the pack's identity derives from it — the v11 descriptor carries no name); `agents/example-agent.md` (`subagent_type`, the `mcp__plugin_<PLUGIN_NAME>_…` tool prefix); `SKILL.md` (`--channels plugin:<PLUGIN_NAME>@<PLUGIN_NAME>`); the installer's default data-dir path.
 - `{{DISPLAY_NAME}}` — `plugin.json` `description` + channel `displayName`; `SKILL.md` (description + prose); `agents/example-agent.md`.
-- `{{BINARY_NAME}}` — `scripts/mcp-channel.sh`, `hooks/common.py` (the `bin/` path every pack hook calls), `SKILL.md` (every `${CLAUDE_PLUGIN_ROOT}/bin/<BINARY_NAME>` invocation).
+- `{{BINARY_NAME}}` — `scripts/mcp-channel.sh`, `capt-hook/hooks/common.py` (the `bin/` path every pack hook calls), `SKILL.md` (every `${CLAUDE_PLUGIN_ROOT}/bin/<BINARY_NAME>` invocation).
 - `{{RELEASE_REPO}}` — `plugin.json` `homepage`.
 - `{{MCP_SUBCOMMAND}}` — `scripts/mcp-channel.sh` (`exec "$BIN" <MCP_SUBCOMMAND>`); `agents/example-agent.md` (prose).
 - `{{SKILL_NAME}}` — `SKILL.md` (heading + "later rounds" prose); `agents/example-agent.md` (which skill dispatches it).
@@ -52,26 +53,31 @@ plugin-template/
 
 ## How to fill
 
-1. **Pick your values** and render the tree (see `render.sh` below). The substrate (`hooks/session.py`, `hooks/guard_edit.py`, the channel wiring) works as-is once the vars are set.
+1. **Pick your values** and render the tree (see `render.sh` below). The substrate (`capt-hook/hooks/session.py`, `capt-hook/hooks/guard_edit.py`, the channel wiring) works as-is once the vars are set.
 2. **Edit the plain metadata** the template left as placeholders, not vars: `plugin.json` `version` (start at `0.1.0`; the pinned installer resolves the release tag `v<version>` from it), `author`, and `license`.
 3. **Wire the subcommands.** cc-interact's `cmd` layer provides `session-record`, `guard-edit`, `watch`, `channel-ack`, `setup-channels` (`cmd.SetupChannelsCmd`), and the channel server (`cmd.ChannelCmd` — set its `Use` to `{{MCP_SUBCOMMAND}}` when that isn't `channel`, keeping `channel` as an alias); implement the domain commands — `start`, `feedback`, `reply` — in your binary. The pack hooks and skill call all of these by name.
-4. **Decide on the optional hooks.** `hooks/turn_hooks.py` needs `turn-start`/`turn-end` handlers in your binary, and `hooks/agent_plane.py` needs the agent plane (see `SKILL.md` §6); each is one file — keep it or delete it.
+4. **Decide on the optional hooks.** `capt-hook/hooks/turn_hooks.py` needs `turn-start`/`turn-end` handlers in your binary, and `capt-hook/hooks/agent_plane.py` needs the agent plane (see `SKILL.md` §6); each is one file — keep it or delete it.
 5. **Fill the domain markers** in `SKILL.md` (the `<domain ...>` placeholders: your event types, reply kinds, and any background agent) and replace `agents/example-agent.md` with your real agent (or delete it if you dispatch none).
 6. **Add reference docs** under `skills/start/reference/` if you want them — they are domain-specific (event schema, CLI cheatsheet, channel notes) and intentionally not templated here.
 
 ## The capt-hook pack
 
 The hooks ship as a [capt-hook](https://github.com/yasyf/captain-hook) pack, not raw hook
-scripts. `hooks/capt-hook.toml` marks the directory as a pack, and the captain-hook
-dispatcher discovers it from the enabled plugin on every event — the plugin wires no
-`hooks.json` at all. Session-start provisioning, the last job that needed one, runs
-through the `install_binary` primitive in `hooks/session.py`.
+scripts. The fixed `capt-hook/` layout — `pack.toml` plus a `hooks/` dir — marks the
+plugin as shipping a pack, and the captain-hook dispatcher discovers it from the enabled
+plugin on every event; the plugin wires no `hooks.json` at all. Session-start
+provisioning, the last job that needed one, runs through the `install_binary` primitive in
+`capt-hook/hooks/session.py`.
 
-Three artifacts make the contract, and `capt-hook pack lint` enforces all three:
+`capt-hook/pack.toml` is the v11 pack descriptor. It carries no name, version, or
+description — those derive from `plugin.json` — so it stays empty unless a hook needs
+`resources` (NLP models to provision) or a `[tools.*]` table (MCP-tool gate semantics).
 
-1. `hooks/capt-hook.toml` — the pack manifest, named `{{PLUGIN_NAME}}`.
+Three things make the contract, and `capt-hook pack test` enforces the first two:
+
+1. The `capt-hook/{pack.toml, hooks/}` layout under the plugin root.
 2. The `plugin.json` dependency:
-   `{ "name": "captain-hook", "marketplace": "captain-hook", "version": ">=10.5.0" }`.
+   `{ "name": "captain-hook", "marketplace": "captain-hook", "version": ">=11.0.0" }`.
 3. Your marketplace's `marketplace.json` allowlist:
    `"allowCrossMarketplaceDependenciesOn": ["captain-hook"]`. This line is load-bearing —
    without it Claude Code skips the cross-marketplace dependency at install with no error,
@@ -87,17 +93,17 @@ claude plugin marketplace add yasyf/captain-hook
 Every hook fails open. A missing binary, a downed daemon, garbage output, or a timeout is
 an allow, never an error surfaced to the agent; `uvx capt-hook logs` is the diagnosis
 surface, and the installer's output lands there too (replacing the old
-`install-binary.log`). Lint and test a rendered plugin directly:
+`install-binary.log`). Validate and test a rendered plugin directly:
 
 ```bash
-uvx capt-hook pack lint .
-uvx capt-hook --hooks hooks test
-uv run hooks/tests/test_pack.py
+uvx --isolated capt-hook pack test .        # layout + dependency floor + inline tests
+uv run capt-hook/hooks/tests/test_pack.py   # stub-binary contract tests
 ```
 
-The inline `tests={}` shapes inside the hook files run under `uvx capt-hook test` in
-every repo the plugin is enabled in, which is why they are non-firing shapes only — the
-firing coverage, against a stub binary, lives in `hooks/tests/test_pack.py`.
+`pack test` validates the layout and the dependency floor, then runs the inline `tests={}`
+shapes inside the hook files. Those same shapes run under `uvx capt-hook test` in every
+repo the plugin is enabled in, which is why they are non-firing shapes only — the firing
+coverage, against a stub binary, lives in `capt-hook/hooks/tests/test_pack.py`.
 
 ## render.sh
 

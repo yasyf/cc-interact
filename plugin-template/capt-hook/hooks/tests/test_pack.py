@@ -1,5 +1,5 @@
 # /// script
-# dependencies = ["capt-hook>=10.5.0"]
+# dependencies = ["capt-hook>=11.0.0"]
 # ///
 
 from __future__ import annotations
@@ -16,13 +16,14 @@ from captain_hook.packs.manager import pack_module_name
 from captain_hook.testing.helpers import mock_event
 
 HOOKS = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 
 
 class PackTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         app.reset()
-        name = _pack_name()
+        name = PLUGIN_ROOT.name
         discover_pack(name, HOOKS)
         cls.package = f"captain_hook._packs.{pack_module_name(name)}"
         cls.common = sys.modules[f"{cls.package}.common"]
@@ -191,13 +192,6 @@ class PackTest(unittest.TestCase):
             with self.subTest(hook=hook.__name__):
                 self.stub(stdout_bytes=b"\xff")
                 self.assertIsNone(hook(evt))
-
-
-def _pack_name() -> str:
-    for line in (HOOKS / "capt-hook.toml").read_text().splitlines():
-        if line.startswith("name = "):
-            return line.split('"', 2)[1]
-    raise AssertionError("pack manifest has no name")
 
 
 if __name__ == "__main__":
