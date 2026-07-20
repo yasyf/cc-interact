@@ -22,7 +22,7 @@ func (allowProtectedClientTestSession) Validate() error { return nil }
 func (allowProtectedClientTestSession) Classify(context.Context, wire.Peer) (bool, error) {
 	return true, nil
 }
-func (allowProtectedClientTestSession) AuthorizeBuild(string, string) bool { return true }
+func (allowProtectedClientTestSession) AuthorizeLifecycleBuild(string, string) bool { return true }
 
 type blockingClientTestLifecycle struct {
 	method  string
@@ -89,7 +89,7 @@ func startClientTestServerWithSetup(
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	server := &wire.Server{Build: "client-test"}
+	server := &wire.Server{Build: "client-test", LifecycleBuild: "v1.0.0"}
 	server.RegisterControl("test", handler)
 	if setup != nil {
 		setup(server)
@@ -123,7 +123,7 @@ func (s *clientTestServer) stop(t *testing.T) {
 func newTestClient(t *testing.T, path string, maxFrame int) *Client {
 	t.Helper()
 	client, err := NewClient(context.Background(), ClientConfig{
-		Socket: path, Build: "client-test", MaxFrameBytes: maxFrame,
+		Socket: path, Build: "client-test", LifecycleBuild: "v1.0.0", MaxFrameBytes: maxFrame,
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -272,7 +272,7 @@ func TestClientCloseReplaysStrictTerminal(t *testing.T) {
 	server := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
 		return Reply{OK: true}, nil
 	}, nil)
-	client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test"})
+	client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test", LifecycleBuild: "v1.0.0"})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestClientCloseIsTerminalBarrierForLifecycleOperations(t *testing.T) {
 					server.RegisterLifecycle(lifecycle)
 				},
 			)
-			client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test"})
+			client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test", LifecycleBuild: "v1.0.0"})
 			if err != nil {
 				t.Fatalf("NewClient: %v", err)
 			}
@@ -352,7 +352,7 @@ func TestClientCloseWaitsForInFlightRedial(t *testing.T) {
 	server := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
 		return Reply{OK: true}, nil
 	}, nil)
-	client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test"})
+	client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test", LifecycleBuild: "v1.0.0"})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

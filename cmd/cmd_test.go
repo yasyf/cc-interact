@@ -111,7 +111,7 @@ func testDepsWithMaxFrame(socket string, maxFrameBytes int) Deps {
 		Version: "9.9.9",
 		NewClient: func(ctx context.Context) (*daemon.Client, error) {
 			return daemon.NewClient(ctx, daemon.ClientConfig{
-				Socket: socket, Build: "9.9.9", MaxFrameBytes: maxFrameBytes,
+				Socket: socket, Build: "9.9.9", LifecycleBuild: "9.9.9", MaxFrameBytes: maxFrameBytes,
 			})
 		},
 		EnsureCurrent:          func(context.Context) error { return nil },
@@ -147,6 +147,7 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 		AppName:        "cc-interact-test",
 		Paths:          p,
 		Version:        "9.9.9",
+		LifecycleBuild: "9.9.9",
 		DaemonRole:     daemonrole.Classifier{RoleID: "com.yasyf.cc-interact.cmd-test", RolePath: rolePath},
 		ActiveStatuses: []string{"open"},
 		MaxFrameBytes:  maxFrameBytes,
@@ -172,7 +173,7 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		client, err := daemon.NewClient(probeCtx, daemon.ClientConfig{Socket: p.SocketPath(), Build: "9.9.9"})
+		client, err := daemon.NewClient(probeCtx, daemon.ClientConfig{Socket: p.SocketPath(), Build: "9.9.9", LifecycleBuild: "9.9.9"})
 		if err == nil {
 			health, healthErr := client.Health(probeCtx)
 			_ = client.Close()

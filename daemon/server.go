@@ -50,15 +50,16 @@ const subscriberPresenceWindow = 90 * time.Second
 // Server is the running daemon: the control-plane unix-socket server plus the
 // realtime HTTP/SSE plane it boots. It implements sse.Backend.
 type Server struct {
-	appName    string
-	version    string
-	daemonRole daemonrole.Classifier
-	store      *store.Store
-	db         *sql.DB
-	bus        *event.Bus
-	activity   *Activity
-	subjects   subject.Resolver
-	sse        *sse.Server
+	appName        string
+	version        string
+	lifecycleBuild string
+	daemonRole     daemonrole.Classifier
+	store          *store.Store
+	db             *sql.DB
+	bus            *event.Bus
+	activity       *Activity
+	subjects       subject.Resolver
+	sse            *sse.Server
 
 	scopeResolve    func(ctx context.Context, raw string) string
 	gate            GateFunc
@@ -116,6 +117,12 @@ type Server struct {
 // Consumers may register domain ops and mount routes before Serve; the store is
 // opened only after the runtime owns the listener.
 func New(cfg Config) (*Server, error) {
+	if cfg.Version == "" {
+		return nil, errors.New("daemon: business build is required")
+	}
+	if cfg.LifecycleBuild == "" {
+		return nil, errors.New("daemon: lifecycle build is required")
+	}
 	if err := cfg.DaemonRole.Validate(); err != nil {
 		return nil, fmt.Errorf("daemon: validate role: %w", err)
 	}
@@ -133,6 +140,7 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{
 		appName:         cfg.AppName,
 		version:         cfg.Version,
+		lifecycleBuild:  cfg.LifecycleBuild,
 		daemonRole:      cfg.DaemonRole,
 		bus:             event.NewBus(),
 		activity:        NewActivity(),
@@ -485,7 +493,7 @@ func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
 		return nil, nil, err
 	}
 	wireServer := &wire.Server{
-		Build: s.version, MaxFrame: s.maxFrameBytes, Ladder: ladder,
+		Build: s.version, LifecycleBuild: s.lifecycleBuild, MaxFrame: s.maxFrameBytes, Ladder: ladder,
 		ReservedProtectedSessions:  1,
 		ProtectedSessionClassifier: s.daemonRole,
 	}
@@ -501,10 +509,10 @@ func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
 		})
 	}
 	peer := &wire.LifecyclePeer{Config: wire.ClientConfig{
-		Dial: wire.UnixDialer(s.socket), Build: s.version, MaxFrame: s.maxFrameBytes,
+		Dial: wire.UnixDialer(s.socket), Build: s.version, LifecycleBuild: s.lifecycleBuild, MaxFrame: s.maxFrameBytes,
 	}}
 	runtime, err := dkdaemon.NewRuntime(dkdaemon.RuntimeConfig{
-		Socket: s.socket, Build: s.version, Protocol: int(wire.ProtocolVersion),
+		Socket: s.socket, Build: s.lifecycleBuild, Protocol: int(wire.ProtocolVersion),
 		Peer: peer, Contract: dkdaemon.RequestDaemon, WaitMode: dkdaemon.PIDExit,
 		Admission: s.wireIntake, Server: &sessionServer{owner: s, wire: wireServer},
 		Workers: &serverWorkers{owner: s}, State: serverState{owner: s}, Resources: lifecycleResource{peer},

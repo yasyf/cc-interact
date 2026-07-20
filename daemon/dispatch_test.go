@@ -24,6 +24,9 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 	if cfg.Version == "" {
 		cfg.Version = "v1.0.0"
 	}
+	if cfg.LifecycleBuild == "" {
+		cfg.LifecycleBuild = "v1.0.0"
+	}
 	if cfg.ActiveStatuses == nil {
 		cfg.ActiveStatuses = []string{"open"}
 	}

@@ -44,9 +44,10 @@ func (e *CallError) Unwrap() error { return e.Err }
 
 // ClientConfig identifies one exact daemon build and persistent control socket.
 type ClientConfig struct {
-	Socket        string
-	Build         string
-	MaxFrameBytes int
+	Socket         string
+	Build          string
+	LifecycleBuild string
+	MaxFrameBytes  int
 }
 
 type clientSession struct {
@@ -82,10 +83,13 @@ type Client struct {
 
 // NewClient connects and completes the exact v4 build handshake.
 func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
+	if cfg.LifecycleBuild == "" {
+		return nil, errors.New("daemon: lifecycle build is required")
+	}
 	c := &Client{
 		cfg:       cfg,
 		sessions:  make(map[*clientSession]struct{}),
-		lifecycle: &wire.LifecyclePeer{Config: clientWireConfig(cfg)},
+		lifecycle: &wire.LifecyclePeer{Config: lifecycleWireConfig(cfg)},
 		closeDone: make(chan struct{}),
 	}
 	session, err := c.dial(ctx)
@@ -100,23 +104,27 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 }
 
 func (c *Client) dial(ctx context.Context) (*clientSession, error) {
-	client, err := wire.NewClient(ctx, clientWireConfig(c.cfg))
+	client, err := wire.NewClient(ctx, businessWireConfig(c.cfg))
 	if err != nil {
 		return nil, fmt.Errorf("daemon: connect: %w", err)
 	}
 	return &clientSession{wire: client}, nil
 }
 
-func clientWireConfig(cfg ClientConfig) wire.ClientConfig {
+func businessWireConfig(cfg ClientConfig) wire.ClientConfig {
 	maxFrame := cfg.MaxFrameBytes
 	if maxFrame == 0 {
 		maxFrame = maxFrameBytes
 	}
 	return wire.ClientConfig{
-		Dial:     wire.UnixDialer(cfg.Socket),
-		Build:    cfg.Build,
-		MaxFrame: maxFrame,
+		Dial: wire.UnixDialer(cfg.Socket), Build: cfg.Build, MaxFrame: maxFrame,
 	}
+}
+
+func lifecycleWireConfig(cfg ClientConfig) wire.ClientConfig {
+	wireCfg := businessWireConfig(cfg)
+	wireCfg.LifecycleBuild = cfg.LifecycleBuild
+	return wireCfg
 }
 
 // Close permanently closes every business and lifecycle session.

@@ -39,6 +39,7 @@ func newDaemon(t *testing.T) *daemon.Server {
 		AppName:        "cc-test",
 		Paths:          paths.Paths{App: ".cc-interact-test"},
 		Version:        "v1.0.0",
+		LifecycleBuild: "v1.0.0",
 		DaemonRole:     daemonrole.Classifier{RoleID: "com.yasyf.cc-interact.channel-test", RolePath: rolePath},
 		ActiveStatuses: []string{"open"},
 	})
@@ -59,7 +60,7 @@ func newDaemon(t *testing.T) *daemon.Server {
 		probeCtx, probeCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		client, connectErr := daemon.NewClient(probeCtx, daemon.ClientConfig{
 			Socket: paths.Paths{App: ".cc-interact-test"}.SocketPath(),
-			Build:  "v1.0.0",
+			Build:  "v1.0.0", LifecycleBuild: "v1.0.0",
 		})
 		if connectErr == nil {
 			_ = client.Close()

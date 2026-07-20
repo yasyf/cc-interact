@@ -90,7 +90,8 @@ func newClient(ctx context.Context) (*daemon.Client, error) { return launcher().
 
 func launcher() daemon.Launcher {
 	return daemon.Launcher{
-		Paths: appPaths(), Version: appVersion, Args: []string{"daemon"}, DaemonRole: appDaemonRole(),
+		Paths: appPaths(), Version: appVersion, LifecycleBuild: appVersion,
+		Args: []string{"daemon"}, DaemonRole: appDaemonRole(),
 	}
 }
 
@@ -175,6 +176,7 @@ func buildServer() (*daemon.Server, error) {
 		AppName:        appName,
 		Paths:          appPaths(),
 		Version:        appVersion,
+		LifecycleBuild: appVersion,
 		DaemonRole:     appDaemonRole(),
 		ActiveStatuses: []string{statusOpen},
 		// c.Type() (not c.EventType) so the SSE plane filters the same presence

@@ -48,14 +48,16 @@ type AgentGreetingFunc func(info agent.Info) string
 type SubscribeFunc func(s subject.Subject, info agent.Info) []string
 
 // Config builds a Server. The zero value is not runnable; AppName, Paths,
-// Version, DaemonRole, and ActiveStatuses are the load-bearing inputs.
+// Version, LifecycleBuild, DaemonRole, and ActiveStatuses are the load-bearing inputs.
 type Config struct {
 	// AppName labels logs and user-facing daemon messages (cc-review: "cc-review").
 	AppName string
 	// Paths is the state-directory layout (socket, db, http handshake, locks).
 	Paths paths.Paths
-	// Version is this binary's exact daemon build identity.
+	// Version is the exact business-protocol build identity.
 	Version string
+	// LifecycleBuild is the daemon release identity used for takeover authorization.
+	LifecycleBuild string
 	// DaemonRole is the exact service label and stable executable alias shared
 	// with Launcher. Lifecycle takeover follows this role across package upgrades.
 	DaemonRole daemonrole.Classifier
