@@ -6,7 +6,7 @@ require (
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/shirou/gopsutil/v4 v4.26.5
 	github.com/spf13/cobra v1.10.2
-	github.com/yasyf/daemonkit v0.1.1-0.20260720040605-4061206d9866
+	github.com/yasyf/daemonkit v0.1.1-0.20260720220814-cf025ceb05e4
 	modernc.org/sqlite v1.52.0
 )
 
@@ -21,11 +21,12 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	go.etcd.io/bbolt v1.5.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
