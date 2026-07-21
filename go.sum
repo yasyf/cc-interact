@@ -53,6 +53,8 @@ github.com/yasyf/daemonkit v0.1.1-0.20260720040605-4061206d9866 h1:NZ2gXkuRaAUms
 github.com/yasyf/daemonkit v0.1.1-0.20260720040605-4061206d9866/go.mod h1:615tFTdsseJNwpHtb6xMfQcvJFZj62xPZaCm21psoiY=
 github.com/yasyf/daemonkit v0.1.1-0.20260720220814-cf025ceb05e4 h1:fe00nwM1rYcvgRJSB3eR00Ep0olGvPfT66yAAKXYqKA=
 github.com/yasyf/daemonkit v0.1.1-0.20260720220814-cf025ceb05e4/go.mod h1:nJvh9FlJ3XPTuDkUb3PMcW0ZupIXsJJCkTGzfE40r/I=
+github.com/yasyf/daemonkit v0.1.1-0.20260721013056-c39154cdbd0a h1:7VR17Wh0qR5/yJ0Pus0zvtNnH3opiJDgZtCViDnsCHQ=
+github.com/yasyf/daemonkit v0.1.1-0.20260721013056-c39154cdbd0a/go.mod h1:nJvh9FlJ3XPTuDkUb3PMcW0ZupIXsJJCkTGzfE40r/I=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 go.etcd.io/bbolt v1.5.0 h1:S7GAl7Fxv12yohbwFfIbQCGDWbQbtDGPET4P/bD4lxU=

@@ -6,7 +6,7 @@ require (
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/shirou/gopsutil/v4 v4.26.5
 	github.com/spf13/cobra v1.10.2
-	github.com/yasyf/daemonkit v0.1.1-0.20260720220814-cf025ceb05e4
+	github.com/yasyf/daemonkit v0.1.1-0.20260721013056-c39154cdbd0a
 	modernc.org/sqlite v1.52.0
 )
 
