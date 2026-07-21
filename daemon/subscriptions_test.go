@@ -52,7 +52,7 @@ func mustAppend(t *testing.T, s *Server, subjectID, origin, typ, payload string)
 
 func pending(t *testing.T, s *Server, subjectID, agentID string) bool {
 	t.Helper()
-	got, err := s.store.HasPendingDirectives(context.Background(), subjectID, agentID)
+	got, err := s.store.HasPendingDirectives(context.Background(), subjectID, agentID, "")
 	if err != nil {
 		t.Fatalf("has pending %s: %v", agentID, err)
 	}

@@ -49,7 +49,7 @@ func TestListPendingDirectiveAgents(t *testing.T) {
 	mk(subjectA.ID, "a-running-pending", false, 1, 0) // running, pending → excluded
 	mk(subjectB.ID, "b-done-pending", true, 1, 0)     // second subject → cross-subject ordering
 
-	got, err := s.ListPendingDirectiveAgents(ctx)
+	got, err := s.ListPendingDirectiveAgents(ctx, "")
 	if err != nil {
 		t.Fatalf("list pending directive agents: %v", err)
 	}

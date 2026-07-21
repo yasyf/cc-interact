@@ -102,6 +102,12 @@ type Config struct {
 	// both surface the same event. Empty mutes nothing; other consumers are never
 	// muted, and every event still lands in the log.
 	MuteConsumer string
+	// SingletonSubscriber enforces at most one live subscriber per (subject,
+	// agent_type): a newly subscribed agent supersedes every other running
+	// same-type subscriber — dropped from the registry and closed with a terminal
+	// directive that wakes a parked await so it exits. Last dispatch wins; the
+	// registration is never refused, and a restart rebuild keeps the most recent.
+	SingletonSubscriber bool
 	// OnPresenceChange fires when a named consumer's connectivity to a subject
 	// flips. It receives the live Server so it can Append a domain presence event
 	// (cc-review: channel.changed). nil disables emission; Attach still runs.

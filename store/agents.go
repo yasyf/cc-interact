@@ -153,17 +153,22 @@ func (s *Store) GetAgent(ctx context.Context, subjectID, agentID string) (agent.
 
 // ListPendingDirectiveAgents returns every done agent that still holds at least
 // one undelivered directive, across all subjects, ordered by subject then agent.
-// It is a non-destructive peek — delivered_at is never touched — so a reconcile
-// sweep can re-announce stranded directives without consuming them.
-func (s *Store) ListPendingDirectiveAgents(ctx context.Context) ([]agent.Info, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+agentCols+` FROM agents a
+// It is a non-destructive peek — delivered_at is never touched. excludeOrigin drops
+// directives of that origin from the EXISTS test; "" considers every origin.
+func (s *Store) ListPendingDirectiveAgents(ctx context.Context, excludeOrigin string) ([]agent.Info, error) {
+	q := `SELECT ` + agentCols + ` FROM agents a
 		 WHERE a.status=? AND EXISTS (
 		   SELECT 1 FROM directives d
-		   WHERE d.subject_id=a.subject_id AND d.agent_id=a.agent_id AND d.delivered_at IS NULL
+		   WHERE d.subject_id=a.subject_id AND d.agent_id=a.agent_id AND d.delivered_at IS NULL`
+	args := []any{agent.StatusDone}
+	if excludeOrigin != "" {
+		q += ` AND d.origin<>?`
+		args = append(args, excludeOrigin)
+	}
+	q += `
 		 )
-		 ORDER BY a.subject_id ASC, a.agent_id ASC`,
-		agent.StatusDone)
+		 ORDER BY a.subject_id ASC, a.agent_id ASC`
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list pending directive agents: %w", err)
 	}
@@ -183,11 +188,11 @@ func (s *Store) ListPendingDirectiveAgents(ctx context.Context) ([]agent.Info, e
 }
 
 // ListRunningAgents returns every live agent across all subjects, ordered by
-// subject then agent, so a boot can re-derive in-memory subscriptions from the
-// persisted registry.
+// rowid (registration order), so a boot can re-derive in-memory subscriptions from
+// the persisted registry with the last-registered agent of each group last.
 func (s *Store) ListRunningAgents(ctx context.Context) ([]agent.Info, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+agentCols+` FROM agents WHERE status=? ORDER BY subject_id ASC, agent_id ASC`,
+		`SELECT `+agentCols+` FROM agents WHERE status=? ORDER BY rowid ASC`,
 		agent.StatusRunning)
 	if err != nil {
 		return nil, fmt.Errorf("list running agents: %w", err)
@@ -203,6 +208,32 @@ func (s *Store) ListRunningAgents(ctx context.Context) ([]agent.Info, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list running agents: %w", err)
+	}
+	return agents, nil
+}
+
+// ListRunningAgentsByType returns every running agent of one type on a subject,
+// ordered by rowid (registration order), so a singleton-subscriber sweep can find
+// every live same-type registration from authoritative state — the agents table,
+// not the in-memory registry — regardless of whether it ever entered that registry.
+func (s *Store) ListRunningAgentsByType(ctx context.Context, subjectID, agentType string) ([]agent.Info, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+agentCols+` FROM agents WHERE subject_id=? AND agent_type=? AND status=? ORDER BY rowid ASC`,
+		subjectID, agentType, agent.StatusRunning)
+	if err != nil {
+		return nil, fmt.Errorf("list running agents by type: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var agents []agent.Info
+	for rows.Next() {
+		info, err := scanAgent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list running agents by type: %w", err)
+		}
+		agents = append(agents, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list running agents by type: %w", err)
 	}
 	return agents, nil
 }

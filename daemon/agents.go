@@ -13,6 +13,7 @@ import (
 
 	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/subject"
 )
 
 // agentGateBlockBudget is how many consecutive stop-gate blocks an agent may
@@ -258,14 +259,13 @@ func (s *Server) drainMailbox(ctx context.Context, subjectID, agentID string, no
 
 // reconcileDirectives re-announces directives stranded on stopped agents: for
 // every done agent still holding an undelivered directive it appends agent.relay
-// (OriginSystem) so the subject's watchers see it. A non-destructive peek run
-// once at boot and reachable on demand; a later drain stops the re-emission, and
-// there is no ticker.
+// (OriginSystem), excluding supersede signals a restart must not relay forever. A
+// non-destructive boot-time peek, reachable on demand; a later drain stops it.
 //
 // Top-level agents (agent_id "") have no agents row, so reconcile never sees
 // them — their pending rows deliver via inject/await.
 func (s *Server) reconcileDirectives(ctx context.Context) error {
-	agents, err := s.store.ListPendingDirectiveAgents(ctx)
+	agents, err := s.store.ListPendingDirectiveAgents(ctx, event.OriginSupersede)
 	if err != nil {
 		return fmt.Errorf("reconcile directives: %w", err)
 	}
@@ -275,6 +275,35 @@ func (s *Server) reconcileDirectives(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// registerAndSupersede runs the registration critical section under registerMu:
+// insert the agent, append its agent.started, set its subscription, and
+// (singleton on) supersede every other running same-type agent. One lock makes
+// last-registration-wins hold and orders each agent.started ahead of any
+// agent.stopped a later sweep records for it. Returns whether the row was newly
+// created.
+func (s *Server) registerAndSupersede(ctx context.Context, sub subject.Subject, info agent.Info) (bool, error) {
+	s.registerMu.Lock()
+	defer s.registerMu.Unlock()
+	created, err := s.store.RegisterAgent(ctx, info)
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.Append(ctx, startedEvent(info)); err != nil {
+		return created, err
+	}
+	if s.subscribe == nil {
+		return created, nil
+	}
+	types := s.subscribe(sub, info)
+	s.subscriptions.set(info.SubjectID, info.AgentID, types)
+	if s.singletonSubscriber && len(types) > 0 {
+		if err := s.supersedeSubscribers(ctx, info.SubjectID, info); err != nil {
+			return created, err
+		}
+	}
+	return created, nil
 }
 
 // handleAgentStart registers a child participant and records its start, resolving
@@ -306,14 +335,8 @@ func (s *Server) handleAgentStart(hc HandlerCtx) Reply {
 		Status:         agent.StatusRunning,
 		StartedAt:      time.Now(),
 	}
-	created, err := s.store.RegisterAgent(hc.Ctx, info)
+	created, err := s.registerAndSupersede(hc.Ctx, sub, info)
 	if err != nil {
-		return errReply(err.Error())
-	}
-	if s.subscribe != nil {
-		s.subscriptions.set(sub.ID, b.AgentID, s.subscribe(sub, info))
-	}
-	if _, err := s.Append(hc.Ctx, startedEvent(info)); err != nil {
 		return errReply(err.Error())
 	}
 	if created && s.agentGreeting != nil {
@@ -381,22 +404,32 @@ func (s *Server) handleAgentStop(hc HandlerCtx) Reply {
 	}
 	if closed {
 		s.subscriptions.remove(sub.ID, b.AgentID)
-		if _, err := s.Append(hc.Ctx, stoppedEvent(sub.ID, b)); err != nil {
+		if err := s.recordAgentStopped(hc.Ctx, sub.ID, b.AgentID, stoppedEvent(sub.ID, b)); err != nil {
 			return errReply(err.Error())
-		}
-		// A directive enqueued in the drain→close gap observed the agent running (no
-		// relay from Direct) and is now stranded; peek and relay so the parent sees it.
-		stranded, err := s.store.HasPendingDirectives(hc.Ctx, sub.ID, b.AgentID)
-		if err != nil {
-			return errReply(err.Error())
-		}
-		if stranded {
-			if _, err := s.Append(hc.Ctx, relayEvent(sub.ID, b.AgentID)); err != nil {
-				return errReply(err.Error())
-			}
 		}
 	}
 	return Reply{OK: true, Allow: true}
+}
+
+// recordAgentStopped appends agent.stopped for a just-closed agent, then relays a
+// directive stranded in the drain→close gap so the subject's watchers see both the
+// stop and any directive left undelivered on the now-done agent. A supersede
+// directive is an internal control signal, moot once the loser is dead, so it is
+// excluded from the stranded peek and never triggers a relay.
+func (s *Server) recordAgentStopped(ctx context.Context, subjectID, agentID string, stopped *event.Event) error {
+	if _, err := s.Append(ctx, stopped); err != nil {
+		return err
+	}
+	stranded, err := s.store.HasPendingDirectives(ctx, subjectID, agentID, event.OriginSupersede)
+	if err != nil {
+		return err
+	}
+	if stranded {
+		if _, err := s.Append(ctx, relayEvent(subjectID, agentID)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // handleAgentInject drains an agent's pending directives and returns them in one

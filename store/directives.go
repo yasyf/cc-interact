@@ -85,12 +85,18 @@ func (s *Store) EnqueueDirective(
 }
 
 // HasPendingDirectives reports whether the agent holds at least one undelivered
-// directive, without delivering any — a non-destructive EXISTS peek.
-func (s *Store) HasPendingDirectives(ctx context.Context, subjectID, agentID string) (bool, error) {
+// directive, without delivering any — a non-destructive EXISTS peek. excludeOrigin
+// drops directives of that origin from the count; "" counts every origin.
+func (s *Store) HasPendingDirectives(ctx context.Context, subjectID, agentID, excludeOrigin string) (bool, error) {
+	q := `SELECT EXISTS(SELECT 1 FROM directives WHERE subject_id=? AND agent_id=? AND delivered_at IS NULL`
+	args := []any{subjectID, agentID}
+	if excludeOrigin != "" {
+		q += ` AND origin<>?`
+		args = append(args, excludeOrigin)
+	}
+	q += `)`
 	var pending int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM directives WHERE subject_id=? AND agent_id=? AND delivered_at IS NULL)`,
-		subjectID, agentID).Scan(&pending); err != nil {
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&pending); err != nil {
 		return false, fmt.Errorf("has pending directives: %w", err)
 	}
 	return pending == 1, nil

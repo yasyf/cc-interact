@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/event"
 )
 
@@ -87,9 +89,58 @@ func (s *Server) teeToSubscribers(ctx context.Context, e *event.Event) {
 	}
 }
 
+// supersededDirective is the terminal directive text delivered to a superseded
+// subscriber; its event.OriginSupersede origin marks it a supersede, not guidance.
+const supersededDirective = "A newer handler superseded this one on the subject; stop and exit."
+
+// supersedeSubscribers closes every other running same-type agent on keep's
+// subject. Candidates are authoritative: every StatusRunning same-(subject,
+// agent_type) row, registry membership irrelevant, so a zombie or reconcile
+// loser absent from the registry is swept too. Each loser leaves the registry,
+// gets a terminal OriginSupersede directive that wakes its park, and is closed.
+//
+// Supersede does not migrate the loser's undrained mailbox; consumers reconcile
+// from authoritative state on start.
+func (s *Server) supersedeSubscribers(ctx context.Context, subjectID string, keep agent.Info) error {
+	others, err := s.store.ListRunningAgentsByType(ctx, subjectID, keep.AgentType)
+	if err != nil {
+		return fmt.Errorf("supersede %s: %w", subjectID, err)
+	}
+	for _, other := range others {
+		if other.AgentID == keep.AgentID {
+			continue
+		}
+		s.subscriptions.remove(subjectID, other.AgentID)
+		if _, err := s.Direct(ctx, subjectID, other.AgentID, event.OriginSupersede, supersededDirective); err != nil {
+			return fmt.Errorf("supersede %s/%s: %w", subjectID, other.AgentID, err)
+		}
+		closed, err := s.store.CloseAgent(ctx, subjectID, other.AgentID, time.Now())
+		if err != nil {
+			return fmt.Errorf("supersede %s/%s: %w", subjectID, other.AgentID, err)
+		}
+		if closed {
+			if err := s.recordAgentStopped(ctx, subjectID, other.AgentID, stoppedEvent(subjectID, agentStopBody{AgentID: other.AgentID})); err != nil {
+				return fmt.Errorf("supersede %s/%s: %w", subjectID, other.AgentID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// singletonKey groups running subscribers by subject and agent type for the
+// singleton-subscriber rebuild.
+type singletonKey struct {
+	subjectID string
+	agentType string
+}
+
 // reconcileSubscriptions re-derives every live agent's subscription from the
-// persisted agents table, so a daemon restart rebuilds the in-memory registry
-// without a table of its own.
+// persisted agents table, rebuilding the in-memory registry after a restart. The
+// invariant, at most one live agent per subscribed (subject, agent_type), is
+// enforced at each registration; this rebuild only prunes the registry to each
+// group's last-registered winner, leaving stale rows for the next one to sweep.
+//
+// Insertion order (rowid, the ListRunningAgents order) defines recency.
 func (s *Server) reconcileSubscriptions(ctx context.Context) error {
 	if s.subscribe == nil {
 		return nil
@@ -98,12 +149,22 @@ func (s *Server) reconcileSubscriptions(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reconcile subscriptions: %w", err)
 	}
+	winners := make(map[singletonKey]agent.Info)
 	for _, info := range agents {
 		sub, err := s.subjects.Store.Get(ctx, info.SubjectID)
 		if err != nil {
 			return fmt.Errorf("reconcile subscriptions %s: %w", info.SubjectID, err)
 		}
-		s.subscriptions.set(info.SubjectID, info.AgentID, s.subscribe(sub, info))
+		types := s.subscribe(sub, info)
+		s.subscriptions.set(info.SubjectID, info.AgentID, types)
+		if !s.singletonSubscriber || len(types) == 0 {
+			continue
+		}
+		k := singletonKey{info.SubjectID, info.AgentType}
+		if held, ok := winners[k]; ok {
+			s.subscriptions.remove(held.SubjectID, held.AgentID)
+		}
+		winners[k] = info
 	}
 	return nil
 }

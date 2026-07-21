@@ -19,6 +19,9 @@ const (
 	// OriginEvent marks a directive teed from a subject event into an agent's
 	// mailbox (an event subscription), distinguishing it from operator guidance.
 	OriginEvent Origin = "event"
+	// OriginSupersede marks the terminal directive delivered to a subscriber that a
+	// newer same-type registration superseded, telling it to finish and exit.
+	OriginSupersede Origin = "supersede"
 )
 
 // Event is one entry in a subject's append-only log, fanned out to every consumer.

@@ -69,13 +69,15 @@ type Server struct {
 	storeSchema     store.Schema
 	activeStatuses  []string
 
-	agentGate     AgentGateFunc
-	agentGreeting AgentGreetingFunc
-	subscribe     SubscribeFunc
-	subscriptions *subscriptionRegistry
-	muteConsumer  string
-	parks         *parkRegistry
-	gateBlocks    *gateBlockCounter
+	agentGate           AgentGateFunc
+	agentGreeting       AgentGreetingFunc
+	subscribe           SubscribeFunc
+	subscriptions       *subscriptionRegistry
+	muteConsumer        string
+	singletonSubscriber bool
+	registerMu          sync.Mutex
+	parks               *parkRegistry
+	gateBlocks          *gateBlockCounter
 
 	paths         paths.Paths
 	socket        string
@@ -141,43 +143,44 @@ func New(cfg Config) (*Server, error) {
 		frameBytes = maxFrameBytes
 	}
 	s := &Server{
-		appName:         cfg.AppName,
-		version:         cfg.Version,
-		lifecycleBuild:  cfg.LifecycleBuild,
-		daemonRole:      cfg.DaemonRole,
-		bus:             event.NewBus(),
-		activity:        NewActivity(),
-		scopeResolve:    scopeResolve,
-		gate:            cfg.Gate,
-		gateErrorReason: cfg.GateErrorReason,
-		gateObserve:     cfg.GateObserve,
-		bootReconcile:   cfg.BootReconcile,
-		storeSchema:     cfg.StoreSchema,
-		activeStatuses:  slices.Clone(cfg.ActiveStatuses),
-		agentGate:       cfg.AgentGate,
-		agentGreeting:   cfg.AgentGreeting,
-		subscribe:       cfg.Subscribe,
-		subscriptions:   newSubscriptionRegistry(),
-		muteConsumer:    cfg.MuteConsumer,
-		parks:           newParkRegistry(),
-		gateBlocks:      newGateBlockCounter(),
-		paths:           cfg.Paths,
-		socket:          cfg.Paths.SocketPath(),
-		maxFrameBytes:   frameBytes,
-		log:             log.New(os.Stderr, "["+cfg.AppName+"] ", log.LstdFlags),
-		handlers:        make(map[Op]HandlerFunc),
-		fixedPort:       cfg.FixedPort,
-		bindAddr:        cfg.BindAddr,
-		httpToken:       cfg.HTTPToken,
-		trustedPeer:     cfg.TrustedPeer,
-		trustedOrigin:   cfg.TrustedOrigin,
-		onHTTPStart:     cfg.OnHTTPStart,
-		extraListeners:  cfg.ExtraHTTPListeners,
-		publicHandler:   cfg.PublicHandler,
-		repoLocks:       make(map[string]*sync.Mutex),
-		wireIntake:      &drain.Intake{},
-		httpIntake:      &drain.Intake{},
-		workers:         newWorkerGroup(),
+		appName:             cfg.AppName,
+		version:             cfg.Version,
+		lifecycleBuild:      cfg.LifecycleBuild,
+		daemonRole:          cfg.DaemonRole,
+		bus:                 event.NewBus(),
+		activity:            NewActivity(),
+		scopeResolve:        scopeResolve,
+		gate:                cfg.Gate,
+		gateErrorReason:     cfg.GateErrorReason,
+		gateObserve:         cfg.GateObserve,
+		bootReconcile:       cfg.BootReconcile,
+		storeSchema:         cfg.StoreSchema,
+		activeStatuses:      slices.Clone(cfg.ActiveStatuses),
+		agentGate:           cfg.AgentGate,
+		agentGreeting:       cfg.AgentGreeting,
+		subscribe:           cfg.Subscribe,
+		subscriptions:       newSubscriptionRegistry(),
+		muteConsumer:        cfg.MuteConsumer,
+		singletonSubscriber: cfg.SingletonSubscriber,
+		parks:               newParkRegistry(),
+		gateBlocks:          newGateBlockCounter(),
+		paths:               cfg.Paths,
+		socket:              cfg.Paths.SocketPath(),
+		maxFrameBytes:       frameBytes,
+		log:                 log.New(os.Stderr, "["+cfg.AppName+"] ", log.LstdFlags),
+		handlers:            make(map[Op]HandlerFunc),
+		fixedPort:           cfg.FixedPort,
+		bindAddr:            cfg.BindAddr,
+		httpToken:           cfg.HTTPToken,
+		trustedPeer:         cfg.TrustedPeer,
+		trustedOrigin:       cfg.TrustedOrigin,
+		onHTTPStart:         cfg.OnHTTPStart,
+		extraListeners:      cfg.ExtraHTTPListeners,
+		publicHandler:       cfg.PublicHandler,
+		repoLocks:           make(map[string]*sync.Mutex),
+		wireIntake:          &drain.Intake{},
+		httpIntake:          &drain.Intake{},
+		workers:             newWorkerGroup(),
 	}
 	var ssePresence func(ctx context.Context, subjectID string, connected bool)
 	if cfg.OnPresenceChange != nil {
