@@ -81,7 +81,7 @@ type Client struct {
 	closeErr   error
 }
 
-// NewClient connects and completes the exact v4 build handshake.
+// NewClient connects and completes the exact v1 build handshake.
 func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if cfg.LifecycleBuild == "" {
 		return nil, errors.New("daemon: lifecycle build is required")

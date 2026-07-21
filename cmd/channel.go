@@ -39,8 +39,16 @@ func ChannelCmd(d Deps) *cobra.Command {
 				return err
 			}
 			srv := channel.NewServer(channel.ServerInfo{Name: cmd.Root().Name(), Version: d.Version, Instructions: instructions}, tools)
-			go streamToChannel(ctx, d, srv, session, scope, notifyMethod)
-			return srv.Serve(ctx, cmd.InOrStdin(), cmd.OutOrStdout())
+			streamCtx, cancelStream := context.WithCancel(ctx)
+			streamDone := make(chan struct{})
+			go func() {
+				defer close(streamDone)
+				streamToChannel(streamCtx, d, srv, session, scope, notifyMethod)
+			}()
+			err = srv.Serve(ctx, cmd.InOrStdin(), cmd.OutOrStdout())
+			cancelStream()
+			<-streamDone
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&session, "session", "", "Claude session id (defaults to $CLAUDE_CODE_SESSION_ID)")

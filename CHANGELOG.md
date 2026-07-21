@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Derived SQLite and cursor state now lives only under the exact
+  `cc-interact-v1` namespace; pre-v1 state is ignored.
+- The store requires `user_version = 1` and the exact core-plus-consumer schema
+  fingerprint. Consumers declare exact schema DDL through `StoreSchema`; the
+  migration callback and compatibility DDL are removed.
+- Process cursor seeding no longer reads the unscoped base cursor.
+
 ## [0.14.0] - 2026-07-20
 
 ### Added

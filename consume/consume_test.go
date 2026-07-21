@@ -18,6 +18,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/internal/statepath"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -78,7 +79,7 @@ func TestStreamURLExcludeOrigin(t *testing.T) {
 func TestConsumeEventsSkipsCaughtUpMarker(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := paths.Paths{App: ".cc-interact-test"}
-	if err := p.EnsureSubjectDir("caught-up"); err != nil {
+	if err := statepath.EnsureSubjectDir(p, "caught-up"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,7 +104,7 @@ func TestConsumeEventsSkipsCaughtUpMarker(t *testing.T) {
 	if len(got) != 2 || got[0] != "comment.created" || got[1] != "submit" {
 		t.Fatalf("delivered %v, want [comment.created submit] (caught-up must be transparent)", got)
 	}
-	cursor, err := readCursor(p.ConsumerCursorPath("caught-up", "watch"))
+	cursor, err := readCursor(statepath.Cursor(p, "caught-up", "watch"))
 	if err != nil {
 		t.Fatalf("readCursor: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestConsumeEventsWarnsAndContinuesAfterCursorPersistFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := paths.Paths{App: ".cc-interact-test"}
 	const subjectID = "persist-warning"
-	dir := p.SubjectDir(subjectID)
+	dir := statepath.SubjectDir(p, subjectID)
 	prepared := make(chan error, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if err := os.RemoveAll(dir); err != nil {
@@ -229,7 +230,7 @@ func TestSeedCursor(t *testing.T) {
 				t.Setenv("HOME", t.TempDir())
 				p := paths.Paths{App: ".cc-interact-test"}
 				const subjectID = "seeded"
-				if err := p.EnsureSubjectDir(subjectID); err != nil {
+				if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
 					t.Fatal(err)
 				}
 				const deadPID = int32(1<<31 - 1)
@@ -246,22 +247,22 @@ func TestSeedCursor(t *testing.T) {
 				for consumer, cursor := range map[string]int64{
 					"watch": 5, liveSibling: 7, deadSibling: 9,
 				} {
-					if err := writeCursor(p.ConsumerCursorPath(subjectID, consumer), cursor); err != nil {
+					if err := writeCursor(statepath.Cursor(p, subjectID, consumer), cursor); err != nil {
 						t.Fatalf("write %s cursor: %v", consumer, err)
 					}
 				}
 				if err := SeedCursor(p, subjectID, "watch", self); err != nil {
 					t.Fatalf("SeedCursor: %v", err)
 				}
-				seeded, err := readCursor(p.ConsumerCursorPath(subjectID, self))
+				seeded, err := readCursor(statepath.Cursor(p, subjectID, self))
 				if err != nil || seeded != 9 {
 					t.Fatalf("own cursor = %d, %v; want 9, nil", seeded, err)
 				}
-				if _, err := os.Stat(p.ConsumerCursorPath(subjectID, deadSibling)); !os.IsNotExist(err) {
+				if _, err := os.Stat(statepath.Cursor(p, subjectID, deadSibling)); !os.IsNotExist(err) {
 					t.Fatalf("dead sibling still exists: %v", err)
 				}
 				for consumer, want := range map[string]int64{"watch": 5, liveSibling: 7} {
-					got, err := readCursor(p.ConsumerCursorPath(subjectID, consumer))
+					got, err := readCursor(statepath.Cursor(p, subjectID, consumer))
 					if err != nil || got != want {
 						t.Fatalf("kept %s cursor = %d, %v; want %d, nil", consumer, got, err, want)
 					}
@@ -278,8 +279,58 @@ func TestSeedCursor(t *testing.T) {
 				if err := SeedCursor(p, subjectID, "watch", self); err != nil {
 					t.Fatalf("SeedCursor: %v", err)
 				}
-				if _, err := os.Stat(p.ConsumerCursorPath(subjectID, self)); !os.IsNotExist(err) {
+				if _, err := os.Stat(statepath.Cursor(p, subjectID, self)); !os.IsNotExist(err) {
 					t.Fatalf("zero seed wrote an own cursor: %v", err)
+				}
+			},
+		},
+		{
+			name: "unscoped base cursor is ignored",
+			run: func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				p := paths.Paths{App: ".cc-interact-test"}
+				const subjectID = "base-ignored"
+				if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
+					t.Fatal(err)
+				}
+				basePath := statepath.Cursor(p, subjectID, "watch")
+				if err := writeCursor(basePath, 9); err != nil {
+					t.Fatal(err)
+				}
+				self := fmt.Sprintf("watch-%d", os.Getpid())
+				if err := SeedCursor(p, subjectID, "watch", self); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(statepath.Cursor(p, subjectID, self)); !os.IsNotExist(err) {
+					t.Fatalf("base cursor seeded process cursor: %v", err)
+				}
+				if got, err := readCursor(basePath); err != nil || got != 9 {
+					t.Fatalf("base cursor changed: %d, %v", got, err)
+				}
+			},
+		},
+		{
+			name: "pre-v1 cursor namespace is ignored",
+			run: func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				p := paths.Paths{App: ".cc-interact-test"}
+				const subjectID = "old-namespace"
+				if err := p.EnsureSubjectDir(subjectID); err != nil {
+					t.Fatal(err)
+				}
+				legacy := p.ConsumerCursorPath(subjectID, fmt.Sprintf("watch-%d", os.Getpid()))
+				if err := writeCursor(legacy, 11); err != nil {
+					t.Fatal(err)
+				}
+				self := fmt.Sprintf("watch-%d", os.Getppid())
+				if err := SeedCursor(p, subjectID, "watch", self); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(statepath.Cursor(p, subjectID, self)); !os.IsNotExist(err) {
+					t.Fatalf("pre-v1 cursor seeded v1 state: %v", err)
+				}
+				if got, err := readCursor(legacy); err != nil || got != 11 {
+					t.Fatalf("pre-v1 cursor changed: %d, %v", got, err)
 				}
 			},
 		},
@@ -289,16 +340,13 @@ func TestSeedCursor(t *testing.T) {
 				t.Setenv("HOME", t.TempDir())
 				p := paths.Paths{App: ".cc-interact-test"}
 				const subjectID = "corrupt-own"
-				if err := p.EnsureSubjectDir(subjectID); err != nil {
+				if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
 					t.Fatal(err)
 				}
 				self := fmt.Sprintf("watch-%d", os.Getpid())
-				selfPath := p.ConsumerCursorPath(subjectID, self)
+				selfPath := statepath.Cursor(p, subjectID, self)
 				if err := os.WriteFile(selfPath, []byte("torn"), 0o600); err != nil {
 					t.Fatalf("write corrupt own cursor: %v", err)
-				}
-				if err := writeCursor(p.ConsumerCursorPath(subjectID, "watch"), 9); err != nil {
-					t.Fatalf("write legacy cursor: %v", err)
 				}
 				err := SeedCursor(p, subjectID, "watch", self)
 				if err == nil || !strings.Contains(err.Error(), selfPath) {
@@ -319,15 +367,12 @@ func TestSeedCursorWarnsAndSkipsCorruptSibling(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := paths.Paths{App: ".cc-interact-test"}
 	const subjectID = "corrupt-sibling"
-	if err := p.EnsureSubjectDir(subjectID); err != nil {
+	if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
 		t.Fatal(err)
 	}
 	self := fmt.Sprintf("watch-%d", os.Getppid())
 	liveSibling := fmt.Sprintf("watch-%d", os.Getpid())
-	if err := writeCursor(p.ConsumerCursorPath(subjectID, "watch"), 5); err != nil {
-		t.Fatalf("write legacy cursor: %v", err)
-	}
-	if err := os.WriteFile(p.ConsumerCursorPath(subjectID, liveSibling), []byte("torn"), 0o600); err != nil {
+	if err := os.WriteFile(statepath.Cursor(p, subjectID, liveSibling), []byte("torn"), 0o600); err != nil {
 		t.Fatalf("write corrupt sibling: %v", err)
 	}
 	var warnings []error
@@ -339,11 +384,10 @@ func TestSeedCursorWarnsAndSkipsCorruptSibling(t *testing.T) {
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Error(), liveSibling) {
 		t.Fatalf("warnings = %v, want one corrupt-sibling warning", warnings)
 	}
-	seeded, err := readCursor(p.ConsumerCursorPath(subjectID, self))
-	if err != nil || seeded != 5 {
-		t.Fatalf("own cursor = %d, %v; want legacy seed 5, nil", seeded, err)
+	if _, err := os.Stat(statepath.Cursor(p, subjectID, self)); !os.IsNotExist(err) {
+		t.Fatalf("corrupt sibling wrote a zero process cursor: %v", err)
 	}
-	if _, err := os.Stat(p.ConsumerCursorPath(subjectID, liveSibling)); err != nil {
+	if _, err := os.Stat(statepath.Cursor(p, subjectID, liveSibling)); err != nil {
 		t.Fatalf("live corrupt sibling was removed: %v", err)
 	}
 }
@@ -355,7 +399,7 @@ func TestSeedCursorWarnsAndSkipsCorruptSibling(t *testing.T) {
 func TestConsumeEventsSendsConsumerParamAndRefreshes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := paths.Paths{App: ".cc-interact-test"}
-	if err := p.EnsureSubjectDir("stream-test"); err != nil {
+	if err := statepath.EnsureSubjectDir(p, "stream-test"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -400,7 +444,7 @@ func TestConsumeEventsSendsConsumerParamAndRefreshes(t *testing.T) {
 	if sawConsumerA.Load() != "watch" || sawConsumerB.Load() != "watch" {
 		t.Fatalf("consumer param missing: a=%v b=%v", sawConsumerA.Load(), sawConsumerB.Load())
 	}
-	cursor, err := readCursor(p.ConsumerCursorPath("stream-test", "watch"))
+	cursor, err := readCursor(statepath.Cursor(p, "stream-test", "watch"))
 	if err != nil {
 		t.Fatalf("readCursor: %v", err)
 	}

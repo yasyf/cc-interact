@@ -3,8 +3,8 @@
 // repository is colocated (both .jj and .git), jj wins.
 //
 // vcs is an optional layer of cc-interact: a consumer that wants working-tree
-// snapshots imports it, and one that wants the per-prompt turn ledger also runs
-// TurnsMigrate from its store.Open migrate hook.
+// snapshots imports it, and one that wants the per-prompt turn ledger composes
+// TurnsSchema into its daemon StoreSchema.
 package vcs
 
 import (

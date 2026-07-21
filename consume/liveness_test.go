@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-interact/internal/statepath"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -107,7 +108,7 @@ func TestConsumeEventsCreatesSubjectDir(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := paths.Paths{App: ".cc-interact-test"}
 
-	if _, err := os.Stat(p.SubjectDir("fresh")); !os.IsNotExist(err) {
+	if _, err := os.Stat(statepath.SubjectDir(p, "fresh")); !os.IsNotExist(err) {
 		t.Fatalf("subject dir must not exist before ConsumeEvents: %v", err)
 	}
 
@@ -125,7 +126,7 @@ func TestConsumeEventsCreatesSubjectDir(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ConsumeEvents: %v", err)
 	}
-	cursor, err := readCursor(p.ConsumerCursorPath("fresh", "watch"))
+	cursor, err := readCursor(statepath.Cursor(p, "fresh", "watch"))
 	if err != nil {
 		t.Fatalf("readCursor: %v", err)
 	}

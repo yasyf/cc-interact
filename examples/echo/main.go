@@ -3,8 +3,8 @@
 // human POSTs an item to the daemon's REST plane; the agent's watch and MCP
 // channel see it stream off the same /events plane a browser would read; the
 // agent replies through a channel tool; the reply streams back. Items and
-// replies live purely as events — there are no domain tables, so Config.Migrate
-// is nil.
+// replies live purely as events — there are no domain tables, so Config.StoreSchema
+// is zero.
 package main
 
 import (
@@ -187,7 +187,7 @@ func buildServer() (*daemon.Server, error) {
 		// AgentGreeting bootstraps each child's identity on the steering channel.
 		AgentGreeting: agentGreeting,
 		// ScopeResolve nil → identity; Gate/AgentGate nil → allow every edit and
-		// stop; Migrate nil → no domain tables.
+		// stop; zero StoreSchema → no domain tables.
 	})
 	if err != nil {
 		return nil, err

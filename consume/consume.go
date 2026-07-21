@@ -20,6 +20,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/internal/statepath"
 	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/paths"
 )
@@ -50,8 +51,7 @@ type StreamSource struct {
 	// to e.g. event.OriginAgent to suppress your own echo. The zero value observes
 	// all origins, so a browser or parent watcher sees every origin.
 	ExcludeOrigin event.Origin
-	// Paths locates the per-consumer cursor file via
-	// Paths.ConsumerCursorPath(SubjectID, Consumer).
+	// Paths locates cc-interact's exact v1 cursor namespace.
 	Paths paths.Paths
 	// Warn is invoked when persisting the resume cursor fails; the zero value
 	// logs to stderr.
@@ -73,10 +73,10 @@ type StreamSource struct {
 // Cursor persistence failures invoke src.Warn and streaming continues; a later
 // restart may therefore re-deliver already handled events.
 func ConsumeEvents(ctx context.Context, src StreamSource, handle EventHandler) error {
-	if err := src.Paths.EnsureSubjectDir(src.SubjectID); err != nil {
+	if err := statepath.EnsureSubjectDir(src.Paths, src.SubjectID); err != nil {
 		return fmt.Errorf("ensure cursor directory for %s: %w", src.SubjectID, err)
 	}
-	cursorPath := src.Paths.ConsumerCursorPath(src.SubjectID, src.Consumer)
+	cursorPath := statepath.Cursor(src.Paths, src.SubjectID, src.Consumer)
 	cursor, err := readCursor(cursorPath)
 	if err != nil {
 		return err // a corrupt cursor would silently replay the whole backlog; fail loud
@@ -225,34 +225,26 @@ func readStream(ctx context.Context, base string, cursor int64, cursorPath strin
 	return false, cursor, nil
 }
 
-// SeedCursor seeds self from the furthest resume cursor for base, then removes
-// cursor files belonging to dead sibling processes. The legacy base cursor is
-// a seed source only and is never removed.
+// SeedCursor seeds self from the furthest process-owned v1 cursor for base,
+// then removes cursor files belonging to dead sibling processes.
 func SeedCursor(p paths.Paths, subjectID, base, self string) error {
 	return seedCursor(p, subjectID, base, self, nil)
 }
 
 func seedCursor(p paths.Paths, subjectID, base, self string, warn func(error)) error {
-	if err := p.EnsureSubjectDir(subjectID); err != nil {
+	if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
 		return fmt.Errorf("ensure cursor directory for %s: %w", subjectID, err)
 	}
-	selfPath := p.ConsumerCursorPath(subjectID, self)
+	selfPath := statepath.Cursor(p, subjectID, self)
 	seed, err := readCursor(selfPath)
 	if err != nil {
 		return err
 	}
-	legacyPath := p.ConsumerCursorPath(subjectID, base)
-	legacy, err := readCursor(legacyPath)
-	if err != nil {
-		return err
-	}
-	if legacy > seed {
-		seed = legacy
-	}
 
-	entries, err := os.ReadDir(p.SubjectDir(subjectID))
+	subjectDir := statepath.SubjectDir(p, subjectID)
+	entries, err := os.ReadDir(subjectDir)
 	if err != nil {
-		return fmt.Errorf("scan cursor directory %s: %w", p.SubjectDir(subjectID), err)
+		return fmt.Errorf("scan cursor directory %s: %w", subjectDir, err)
 	}
 	prefix, suffix := base+"-", ".cursor"
 	type sibling struct {
@@ -269,7 +261,7 @@ func seedCursor(p paths.Paths, subjectID, base, self string, warn func(error)) e
 		if err != nil || pid <= 0 {
 			continue
 		}
-		path := filepath.Join(p.SubjectDir(subjectID), name)
+		path := filepath.Join(subjectDir, name)
 		siblings = append(siblings, sibling{path: path, pid: int32(pid)})
 		if path == selfPath {
 			continue

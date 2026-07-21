@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"io"
 	"log"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/sse"
+	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/wire"
@@ -127,24 +127,24 @@ func TestLauncherAndServerShareStableDaemonRole(t *testing.T) {
 
 func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 	shortHome(t)
-	var migrations atomic.Int32
+	p := testPaths()
 	s, err := New(Config{
 		AppName:        "cc-interact-test",
-		Paths:          testPaths(),
+		Paths:          p,
 		Version:        "0.0.1",
 		LifecycleBuild: "0.0.1",
 		DaemonRole:     testDaemonRole(t),
 		ActiveStatuses: []string{"open"},
-		Migrate: func(context.Context, *sql.DB) error {
-			migrations.Add(1)
-			return nil
-		},
+		StoreSchema:    store.Schema{DDL: `CREATE TABLE activation_probe (id TEXT PRIMARY KEY);`},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if s.DB() != nil || migrations.Load() != 0 {
-		t.Fatalf("state activated before Serve: db=%v migrations=%d", s.DB(), migrations.Load())
+	if s.DB() != nil {
+		t.Fatalf("state activated before Serve: db=%v", s.DB())
+	}
+	if _, err := os.Stat(store.Path(p)); !os.IsNotExist(err) {
+		t.Fatalf("v1 state exists before Serve: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,8 +180,11 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if s.DB() == nil || migrations.Load() != 1 {
-		t.Fatalf("state after readiness: db=%v migrations=%d", s.DB(), migrations.Load())
+	if s.DB() == nil {
+		t.Fatal("state was not activated before readiness")
+	}
+	if _, err := s.DB().Exec(`INSERT INTO activation_probe(id) VALUES('ready')`); err != nil {
+		t.Fatalf("exact consumer schema unavailable after readiness: %v", err)
 	}
 }
 
@@ -269,10 +272,7 @@ func TestServeDrainsBackgroundBeforeStoreCloseOnHTTPStartupFailure(t *testing.T)
 		DaemonRole:     testDaemonRole(t),
 		ActiveStatuses: []string{"open"},
 		FixedPort:      boundPort(t, holder),
-		Migrate: func(ctx context.Context, db *sql.DB) error {
-			_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS shutdown_probe(id TEXT PRIMARY KEY, hits INTEGER NOT NULL)`)
-			return err
-		},
+		StoreSchema:    store.Schema{DDL: `CREATE TABLE shutdown_probe(id TEXT PRIMARY KEY, hits INTEGER NOT NULL);`},
 		BootReconcile: func(_ context.Context, s *Server) error {
 			s.Background(func(ctx context.Context) {
 				if _, err := s.DB().ExecContext(context.Background(), shutdownWrite); err != nil {

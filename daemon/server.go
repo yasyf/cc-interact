@@ -66,7 +66,7 @@ type Server struct {
 	gateErrorReason string
 	gateObserve     func(ctx context.Context, s subject.Subject, tool ToolCall, allow bool, reason string)
 	bootReconcile   func(ctx context.Context, s *Server) error
-	migrate         func(ctx context.Context, db *sql.DB) error
+	storeSchema     store.Schema
 	activeStatuses  []string
 
 	agentGate     AgentGateFunc
@@ -126,6 +126,9 @@ func New(cfg Config) (*Server, error) {
 	if err := cfg.DaemonRole.Validate(); err != nil {
 		return nil, fmt.Errorf("daemon: validate role: %w", err)
 	}
+	if err := cfg.StoreSchema.Validate(); err != nil {
+		return nil, err
+	}
 	if err := validateBindAuth(bindHostOrDefault(cfg.BindAddr), cfg.HTTPToken, len(cfg.ExtraHTTPListeners) > 0, cfg.TrustedPeer != nil); err != nil {
 		return nil, err
 	}
@@ -149,7 +152,7 @@ func New(cfg Config) (*Server, error) {
 		gateErrorReason: cfg.GateErrorReason,
 		gateObserve:     cfg.GateObserve,
 		bootReconcile:   cfg.BootReconcile,
-		migrate:         cfg.Migrate,
+		storeSchema:     cfg.StoreSchema,
 		activeStatuses:  slices.Clone(cfg.ActiveStatuses),
 		agentGate:       cfg.AgentGate,
 		agentGreeting:   cfg.AgentGreeting,
@@ -257,7 +260,7 @@ func (s *Server) Serve(parent context.Context) error {
 }
 
 func (s *Server) activate(activation dkdaemon.Activation) error {
-	st, err := store.Open(activation.Startup, s.paths.DBPath(), s.migrate)
+	st, err := store.Open(activation.Startup, store.Path(s.paths), s.storeSchema)
 	if err != nil {
 		return err
 	}

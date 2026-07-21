@@ -392,9 +392,6 @@ func TestWatchStreamsUntilTerminal(t *testing.T) {
 		return daemon.Reply{OK: true, SubjectID: "sub-1", HTTPPort: ssePort}
 	})
 	d := testDeps(socket)
-	if err := d.Paths.EnsureSubjectDir("sub-1"); err != nil {
-		t.Fatalf("subject dir: %v", err)
-	}
 
 	cmd := WatchCmd(d)
 	var out bytes.Buffer
@@ -436,9 +433,6 @@ func TestWatchOnceExitsAfterFirstEvent(t *testing.T) {
 		return daemon.Reply{OK: true, SubjectID: "sub-1", HTTPPort: ssePort}
 	})
 	d := testDeps(socket)
-	if err := d.Paths.EnsureSubjectDir("sub-1"); err != nil {
-		t.Fatalf("subject dir: %v", err)
-	}
 
 	run := func() string {
 		t.Helper()

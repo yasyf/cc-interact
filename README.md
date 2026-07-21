@@ -75,7 +75,7 @@ One process model, shipped. A lazily spawned daemon owns a single-writer SQLite 
 | Package | Owns |
 |---|---|
 | `daemon` | lazy spawn, newest-wins eviction, peer-credential identity, the op registry, the edit gate |
-| `store` | pure-Go SQLite holding subjects plus the event log; your tables via a migrate hook |
+| `store` | exact v1 pure-Go SQLite holding subjects, the event log, and declarative consumer tables |
 | `event` | the log-entry type and the per-subject pub/sub wakeup |
 | `sse` | the HTTP `/events` plane, at-least-once SSE with `Last-Event-ID` resume |
 | `consume` | the agent-side SSE client with a persisted resume cursor |
@@ -97,7 +97,12 @@ Mount `sse.StaticHandler` on the daemon and the React package's stream and query
 
 ## State
 
-`state.db`, `daemon.sock`, `http.json`, and `daemon.log` all live under one `~/.<app>/` directory. There are no schema migrations. Your migrate hook adds domain tables idempotently, and a core schema change means wiping the directory. The echo example carries no domain tables, so its reset is `rm -rf ~/.cc-echo`.
+`daemon.sock`, `http.json`, and `daemon.log` live directly under `~/.<app>/`.
+The derived database and consumer cursors live under the exact
+`~/.<app>/cc-interact-v1/` namespace. A consumer supplies declarative
+`StoreSchema` DDL; the store creates it once and thereafter requires both
+`user_version = 1` and the exact core-plus-consumer fingerprint. There are no
+migrations, compatibility readers, or in-place schema changes.
 
 ---
 

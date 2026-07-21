@@ -2,27 +2,22 @@ package vcs
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/yasyf/cc-interact/store"
 )
 
 func openTestTurnStore(t *testing.T) *TurnStore {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	st, err := store.Open(t.Context(), dbPath, TurnsSchema())
 	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+		t.Fatalf("open exact turn store: %v", err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	if err := TurnsMigrate(context.Background(), db); err != nil {
-		t.Fatalf("migrate turns: %v", err)
-	}
-	return NewTurnStore(db)
+	t.Cleanup(func() { _ = st.Close() })
+	return NewTurnStore(st.DB())
 }
 
 func createTurn(t *testing.T, s *TurnStore, repoRoot string, claudePID int, treeStart string) Turn {

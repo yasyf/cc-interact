@@ -7,7 +7,7 @@ plane a browser would read is consumed here by the agent's `watch` and MCP
 `channel`, and by a raw `curl`.
 
 Items and replies live **purely as events** — there are no domain tables, so
-`daemon.Config.Migrate` is `nil`.
+`daemon.Config.StoreSchema` is zero.
 
 ## The round trip
 
@@ -45,7 +45,7 @@ demo has no stable window pid across separate CLI processes). Pass a consistent
 
 ```bash
 # 1. start the daemon (or let any command lazy-spawn it)
-go run . daemon &          # writes ~/.cc-echo/{state.db,daemon.sock,http.json,daemon.log}
+go run . daemon &          # store: ~/.cc-echo/cc-interact-v1/state.db; runtime files: ~/.cc-echo/
 
 # 2. create the subject; prints its id, slug, and HTTP port
 go run . start --cwd /tmp/echo-demo

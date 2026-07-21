@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
 	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
@@ -102,7 +102,6 @@ type Config struct {
 	// both surface the same event. Empty mutes nothing; other consumers are never
 	// muted, and every event still lands in the log.
 	MuteConsumer string
-
 	// OnPresenceChange fires when a named consumer's connectivity to a subject
 	// flips. It receives the live Server so it can Append a domain presence event
 	// (cc-review: channel.changed). nil disables emission; Attach still runs.
@@ -118,8 +117,8 @@ type Config struct {
 	// orphaned channel.changed state). nil is a no-op.
 	BootReconcile func(ctx context.Context, s *Server) error
 
-	// Migrate adds the consumer's own tables after the core schema is applied.
-	Migrate func(ctx context.Context, db *sql.DB) error
+	// StoreSchema is the consumer's exact declarative v1 schema extension.
+	StoreSchema store.Schema
 
 	// FixedPort pins the HTTP plane to a known port (the Vite dev proxy); 0 binds
 	// the last-published port if free, else an ephemeral one.

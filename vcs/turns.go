@@ -7,13 +7,15 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/yasyf/cc-interact/store"
 )
 
 // ErrTurnNotFound is returned when a turn lookup by id finds no row.
 var ErrTurnNotFound = errors.New("turn not found")
 
 const turnsSchema = `
-CREATE TABLE IF NOT EXISTS turns (
+CREATE TABLE turns (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_root         TEXT NOT NULL,
   backend           TEXT NOT NULL DEFAULT 'git',
@@ -26,8 +28,8 @@ CREATE TABLE IF NOT EXISTS turns (
   started_at        INTEGER NOT NULL,
   ended_at          INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_turns_repo ON turns(repo_root, id);
-CREATE INDEX IF NOT EXISTS idx_turns_repo_open ON turns(repo_root, claude_pid) WHERE status='open';
+CREATE INDEX idx_turns_repo ON turns(repo_root, id);
+CREATE INDEX idx_turns_repo_open ON turns(repo_root, claude_pid) WHERE status='open';
 `
 
 const turnCols = `id, repo_root, backend, session_id, claude_pid, prompt_excerpt, tree_start, tree_end, status, started_at, ended_at`
@@ -53,19 +55,12 @@ type TurnStore struct {
 	db *sql.DB
 }
 
-// NewTurnStore wraps db for turn CRUD. The turns table must already exist; run
-// TurnsMigrate (e.g. from store.Open's migrate hook) before the first call.
+// NewTurnStore wraps db for turn CRUD. The turns table must already be part of
+// the daemon's exact StoreSchema.
 func NewTurnStore(db *sql.DB) *TurnStore { return &TurnStore{db: db} }
 
-// TurnsMigrate creates the turns table and its indexes idempotently. vcs is an
-// optional layer, so this lives outside the core store schema: a consumer that
-// records turns wires it into store.Open's migrate callback.
-func TurnsMigrate(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, turnsSchema); err != nil {
-		return fmt.Errorf("migrate turns: %w", err)
-	}
-	return nil
-}
+// TurnsSchema returns the exact v1 turn-ledger schema extension.
+func TurnsSchema() store.Schema { return store.Schema{DDL: turnsSchema} }
 
 func scanTurn(row interface{ Scan(...any) error }) (Turn, error) {
 	var t Turn

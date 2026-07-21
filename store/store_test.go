@@ -3,17 +3,19 @@ package store
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit/paths"
 )
 
 func openTestStore(t *testing.T) (*Store, subject.Store) {
 	t.Helper()
-	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "test.db"), nil)
+	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "test.db"), Schema{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -42,19 +44,128 @@ func create(t *testing.T, st subject.Store, session, scope string, pid int) subj
 	return s
 }
 
-func TestOpenRunsMigrate(t *testing.T) {
-	migrate := func(ctx context.Context, db *sql.DB) error {
-		_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS widgets (id TEXT PRIMARY KEY)`)
-		return err
-	}
-	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "test.db"), migrate)
+func TestOpenCreatesAndVerifiesExactSchema(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "test.db")
+	extension := Schema{DDL: `CREATE TABLE widgets (id TEXT PRIMARY KEY);`}
+	s, err := Open(ctx, path, extension)
 	if err != nil {
-		t.Fatalf("open with migrate: %v", err)
+		t.Fatalf("open exact store: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
 
 	if _, err := s.DB().Exec(`INSERT INTO widgets(id) VALUES('w1')`); err != nil {
-		t.Fatalf("migrate did not create widgets table: %v", err)
+		t.Fatalf("consumer schema did not create widgets: %v", err)
+	}
+	var version int
+	if err := s.DB().QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
+		t.Fatalf("user_version = %d, %v; want %d, nil", version, err, schemaVersion)
+	}
+	wantFingerprint, err := extension.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fingerprint string
+	if err := s.DB().QueryRow(`SELECT fingerprint FROM cc_interact_schema_v1 WHERE id=1`).Scan(&fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint != wantFingerprint {
+		t.Fatalf("fingerprint = %q, want %q", fingerprint, wantFingerprint)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(ctx, path, extension)
+	if err != nil {
+		t.Fatalf("reopen exact store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+}
+
+func TestOpenRejectsSchemaDriftWithoutMutation(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "test.db")
+	created, err := Open(ctx, path, Schema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Open(ctx, path, Schema{DDL: `CREATE TABLE foreign_table (id TEXT PRIMARY KEY);`})
+	if err == nil || !strings.Contains(err.Error(), "schema fingerprint") {
+		t.Fatalf("drift error = %v, want schema fingerprint rejection", err)
+	}
+}
+
+func TestOpenRejectsForeignUserVersion(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "test.db")
+	created, err := Open(ctx, path, Schema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := created.DB().Exec(`PRAGMA user_version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Open(ctx, path, Schema{})
+	if err == nil || !strings.Contains(err.Error(), "want exactly 1") {
+		t.Fatalf("version error = %v, want exact v1 rejection", err)
+	}
+}
+
+func TestSchemaRejectsCompatibilityDDL(t *testing.T) {
+	_, err := (Schema{DDL: `CREATE TABLE IF NOT EXISTS widgets(id TEXT);`}).Fingerprint()
+	if err == nil || !strings.Contains(err.Error(), "IF NOT EXISTS") {
+		t.Fatalf("compatibility schema error = %v", err)
+	}
+}
+
+func TestComposePreservesExactSchemaOrder(t *testing.T) {
+	a := Schema{DDL: `CREATE TABLE a(id TEXT);`}
+	b := Schema{DDL: `CREATE TABLE b(id TEXT);`}
+	ab := Compose(a, b)
+	ba := Compose(b, a)
+	if ab.DDL != a.DDL+"\n"+b.DDL {
+		t.Fatalf("composed DDL = %q", ab.DDL)
+	}
+	abFingerprint, err := ab.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baFingerprint, err := ba.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if abFingerprint == baFingerprint {
+		t.Fatal("schema order did not affect the exact fingerprint")
+	}
+}
+
+func TestPathIgnoresLegacyStoreNamespace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := paths.Paths{App: ".cc-interact-test"}
+	if err := p.EnsureStateDir(); err != nil {
+		t.Fatal(err)
+	}
+	legacy := p.DBPath()
+	if err := os.WriteFile(legacy, []byte("legacy state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storePath := Path(p)
+	if storePath == legacy {
+		t.Fatal("v1 store reused the legacy path")
+	}
+	s, err := Open(t.Context(), storePath, Schema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	legacyBytes, err := os.ReadFile(legacy)
+	if err != nil || string(legacyBytes) != "legacy state" {
+		t.Fatalf("legacy store changed: %q, %v", legacyBytes, err)
 	}
 }
 

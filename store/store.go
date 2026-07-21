@@ -1,15 +1,19 @@
-// Package store is cc-interact's append-only state layer: a modernc.org/sqlite
-// (pure-Go) database holding subjects and the single per-subject event log that
-// drives the realtime fan-out. The core schema is domain-agnostic; a consumer
-// supplies its own tables through the migrate callback at Open. Rows are never
-// deleted; status flags carry state.
+// Package store is cc-interact's exact v1 append-only state layer.
 package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/yasyf/cc-interact/internal/statepath"
+	"github.com/yasyf/daemonkit/paths"
 
 	_ "modernc.org/sqlite"
 )
@@ -19,8 +23,14 @@ type Store struct {
 	db *sql.DB
 }
 
-const schema = `
-CREATE TABLE IF NOT EXISTS subjects (
+const schemaVersion = 1
+
+const coreSchema = `
+CREATE TABLE cc_interact_schema_v1 (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  fingerprint TEXT NOT NULL
+);
+CREATE TABLE subjects (
   id         TEXT PRIMARY KEY,
   slug       TEXT NOT NULL DEFAULT '',
   session_id TEXT,
@@ -30,12 +40,12 @@ CREATE TABLE IF NOT EXISTS subjects (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_session_scope
+CREATE UNIQUE INDEX idx_subjects_session_scope
   ON subjects(session_id, scope) WHERE session_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_subjects_scope ON subjects(scope);
-CREATE INDEX IF NOT EXISTS idx_subjects_pid_scope ON subjects(claude_pid, scope);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_slug ON subjects(slug) WHERE slug <> '';
-CREATE TABLE IF NOT EXISTS events (
+CREATE INDEX idx_subjects_scope ON subjects(scope);
+CREATE INDEX idx_subjects_pid_scope ON subjects(claude_pid, scope);
+CREATE UNIQUE INDEX idx_subjects_slug ON subjects(slug) WHERE slug <> '';
+CREATE TABLE events (
   subject_id TEXT NOT NULL REFERENCES subjects(id),
   seq        INTEGER NOT NULL,
   origin     TEXT NOT NULL,
@@ -45,8 +55,8 @@ CREATE TABLE IF NOT EXISTS events (
   dedup_key  TEXT,
   PRIMARY KEY (subject_id, seq)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup ON events(subject_id, dedup_key) WHERE dedup_key IS NOT NULL;
-CREATE TABLE IF NOT EXISTS agents (
+CREATE UNIQUE INDEX idx_events_dedup ON events(subject_id, dedup_key) WHERE dedup_key IS NOT NULL;
+CREATE TABLE agents (
   subject_id      TEXT NOT NULL REFERENCES subjects(id),
   agent_id        TEXT NOT NULL,
   parent_agent_id TEXT NOT NULL,
@@ -58,7 +68,7 @@ CREATE TABLE IF NOT EXISTS agents (
   ended_at        INTEGER,
   PRIMARY KEY (subject_id, agent_id)
 );
-CREATE TABLE IF NOT EXISTS directives (
+CREATE TABLE directives (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   subject_id   TEXT NOT NULL REFERENCES subjects(id),
   agent_id     TEXT NOT NULL,
@@ -67,33 +77,140 @@ CREATE TABLE IF NOT EXISTS directives (
   created_at   INTEGER NOT NULL,
   delivered_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_directives_pending
+CREATE INDEX idx_directives_pending
   ON directives(subject_id, agent_id) WHERE delivered_at IS NULL;
 `
 
-// Open opens (creating if needed) the database at dbPath, applies the core
-// schema, then runs migrate so the domain can add its own tables (idempotent
-// CREATE TABLE IF NOT EXISTS). A single serialized writer (SetMaxOpenConns(1))
-// with WAL avoids "database is locked" across the fan-out, REST, and the event
-// bus. There are no migrations beyond migrate: on a core schema change, wipe the
-// local state dir.
-func Open(ctx context.Context, dbPath string, migrate func(ctx context.Context, db *sql.DB) error) (*Store, error) {
+// Schema is a consumer's exact v1 DDL extension. It is applied only while a
+// fresh database is created and participates byte-for-byte in its fingerprint.
+type Schema struct {
+	DDL string
+}
+
+// Compose returns one exact schema extension from ordered component schemas.
+func Compose(schemas ...Schema) Schema {
+	var ddl strings.Builder
+	for _, schema := range schemas {
+		if strings.TrimSpace(schema.DDL) == "" {
+			continue
+		}
+		if ddl.Len() != 0 {
+			ddl.WriteByte('\n')
+		}
+		ddl.WriteString(schema.DDL)
+	}
+	return Schema{DDL: ddl.String()}
+}
+
+// Validate rejects compatibility DDL and ownership of the core epoch markers.
+func (s Schema) Validate() error {
+	normalized := strings.Join(strings.Fields(strings.ToUpper(s.DDL)), " ")
+	for _, forbidden := range []string{
+		"IF NOT EXISTS", "ALTER TABLE", "PRAGMA USER_VERSION", "CC_INTERACT_SCHEMA_V1",
+	} {
+		if strings.Contains(normalized, forbidden) {
+			return fmt.Errorf("store: exact schema contains forbidden %q", forbidden)
+		}
+	}
+	return nil
+}
+
+// Fingerprint returns the exact core-plus-consumer v1 schema fingerprint.
+func (s Schema) Fingerprint() (string, error) {
+	if err := s.Validate(); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte("cc-interact-store-v1\x00" + coreSchema + "\x00" + s.DDL))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// Path returns cc-interact's exact v1 store path under the consumer state dir.
+func Path(p paths.Paths) string { return statepath.DB(p) }
+
+// Open opens or creates an exact v1 store. Existing databases must match both
+// user_version and the compiled core-plus-consumer fingerprint; they are never
+// altered, migrated, or interpreted under a different schema.
+func Open(ctx context.Context, dbPath string, extension Schema) (*Store, error) {
+	fingerprint, err := extension.Fingerprint()
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(dbPath)
+	exists := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("inspect sqlite: %w", err)
+	}
+	if exists && !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("store: database path %q is not a regular file", dbPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create sqlite directory: %w", err)
+	}
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	if migrate != nil {
-		if err := migrate(ctx, db); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("migrate: %w", err)
+	if exists {
+		if err := verifySchema(ctx, db, fingerprint); err != nil {
+			_ = db.Close()
+			return nil, err
 		}
+		return &Store{db: db}, nil
+	}
+	if err := createSchema(ctx, db, extension, fingerprint); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := os.Chmod(dbPath, 0o600); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("secure sqlite: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func createSchema(ctx context.Context, db *sql.DB, extension Schema, fingerprint string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schema: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, coreSchema); err != nil {
+		return fmt.Errorf("create core schema: %w", err)
+	}
+	if strings.TrimSpace(extension.DDL) != "" {
+		if _, err := tx.ExecContext(ctx, extension.DDL); err != nil {
+			return fmt.Errorf("create consumer schema: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO cc_interact_schema_v1(id, fingerprint) VALUES(1, ?)`, fingerprint); err != nil {
+		return fmt.Errorf("record schema fingerprint: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		return fmt.Errorf("record schema version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema: %w", err)
+	}
+	return nil
+}
+
+func verifySchema(ctx context.Context, db *sql.DB, wantFingerprint string) error {
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version != schemaVersion {
+		return fmt.Errorf("store: schema version %d, want exactly %d", version, schemaVersion)
+	}
+	var fingerprint string
+	if err := db.QueryRowContext(ctx, `SELECT fingerprint FROM cc_interact_schema_v1 WHERE id=1`).Scan(&fingerprint); err != nil {
+		return fmt.Errorf("read schema fingerprint: %w", err)
+	}
+	if fingerprint != wantFingerprint {
+		return fmt.Errorf("store: schema fingerprint %q, want exactly %q", fingerprint, wantFingerprint)
+	}
+	return nil
 }
 
 // DB exposes the underlying connection so the domain can query its own tables.

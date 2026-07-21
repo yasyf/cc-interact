@@ -1,5 +1,5 @@
 // Package daemon is cc-interact's lazily-started local daemon. Daemonkit owns
-// its lifecycle, exact v4 persistent transport, peer identity, admission, and
+// its lifecycle, exact v1 persistent transport, peer identity, admission, and
 // takeover; this package owns only cc-interact operations and dispatch policy.
 package daemon
 
@@ -23,7 +23,7 @@ const (
 	OpAgentReconcile Op = "agent-reconcile"
 )
 
-// Envelope is one cc-interact operation payload. Op selects the v4 wire route
+// Envelope is one cc-interact operation payload. Op selects the v1 wire route
 // and is never duplicated inside the payload.
 type Envelope struct {
 	Op        Op              `json:"-"`
