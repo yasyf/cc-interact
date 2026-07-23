@@ -111,13 +111,7 @@ func TestLauncherStopDirectExecsRolePathWithExactArgs(t *testing.T) {
 		"CC_INTERACT_WIRE_BUILD="+WireBuild, "CC_INTERACT_RUNTIME_BUILD=1.0.0",
 		"CC_INTERACT_ROLE_ID="+role.RoleID, "CC_INTERACT_ROLE_PATH="+role.RolePath,
 	)
-	if err := command.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-	})
+	waitCommand := startReapedCommand(t, command)
 	p := paths.Paths{App: app}
 	waitForSocket(t, p.SocketPath())
 	l := Launcher{
@@ -127,6 +121,9 @@ func TestLauncherStopDirectExecsRolePathWithExactArgs(t *testing.T) {
 	}
 	if err := l.Stop(context.Background(), 5*time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
+	}
+	if err := waitCommand(); err != nil {
+		t.Fatalf("control helper exit: %v", err)
 	}
 	payload, err := os.ReadFile(argsPath)
 	if err != nil {
@@ -171,16 +168,7 @@ func TestEnsureCurrentStopsOlderGenerationBeforeSpawningCurrent(t *testing.T) {
 		"CC_INTERACT_WIRE_BUILD="+WireBuild, "CC_INTERACT_RUNTIME_BUILD=1.0.0",
 		"CC_INTERACT_ROLE_ID="+role.RoleID, "CC_INTERACT_ROLE_PATH="+role.RolePath,
 	)
-	if err := incumbent.Start(); err != nil {
-		t.Fatal(err)
-	}
-	incumbentWaited := false
-	t.Cleanup(func() {
-		if !incumbentWaited {
-			_ = incumbent.Process.Kill()
-			_ = incumbent.Wait()
-		}
-	})
+	waitIncumbent := startReapedCommand(t, incumbent)
 	p := paths.Paths{App: app}
 	waitForSocket(t, p.SocketPath())
 
@@ -201,10 +189,9 @@ func TestEnsureCurrentStopsOlderGenerationBeforeSpawningCurrent(t *testing.T) {
 	if err := launcher.EnsureCurrent(context.Background(), 10*time.Second); err != nil {
 		t.Fatalf("EnsureCurrent: %v", err)
 	}
-	if err := incumbent.Wait(); err != nil {
+	if err := waitIncumbent(); err != nil {
 		t.Fatalf("incumbent exit: %v", err)
 	}
-	incumbentWaited = true
 	health, err := launcher.runtimeHealth(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -470,16 +457,7 @@ func TestLauncherStopRequiresApprovedRoleExecutable(t *testing.T) {
 				"CC_INTERACT_WIRE_BUILD="+WireBuild, "CC_INTERACT_RUNTIME_BUILD=1.0.0",
 				"CC_INTERACT_ROLE_ID="+role.RoleID, "CC_INTERACT_ROLE_PATH="+role.RolePath,
 			)
-			if err := command.Start(); err != nil {
-				t.Fatal(err)
-			}
-			stopped := false
-			t.Cleanup(func() {
-				if !stopped {
-					_ = command.Process.Kill()
-					_ = command.Wait()
-				}
-			})
+			waitCommand := startReapedCommand(t, command)
 			p := paths.Paths{App: app}
 			waitForSocket(t, p.SocketPath())
 			launcher := Launcher{
@@ -496,11 +474,37 @@ func TestLauncherStopRequiresApprovedRoleExecutable(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
-			if err := command.Wait(); err != nil {
+			if err := waitCommand(); err != nil {
 				t.Fatalf("control helper exit: %v", err)
 			}
-			stopped = true
 		})
+	}
+}
+
+func startReapedCommand(t *testing.T, command *exec.Cmd) func() error {
+	t.Helper()
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Production proc.Spawn starts Wait concurrently. Preserve that invariant in
+	// tests so an exited child cannot remain visible as a Linux /proc zombie.
+	done := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = command.Wait()
+		close(done)
+	}()
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("command pid %d did not settle", command.Process.Pid)
+		}
+	})
+	return func() error {
+		<-done
+		return waitErr
 	}
 }
 

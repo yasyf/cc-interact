@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-07-23
+
+### Fixed
+
+- Stop-control integration fixtures now reap target processes concurrently,
+  matching production `proc.Spawn` ownership and preventing Linux `/proc`
+  zombies from deadlocking process-settlement assertions.
+
 ## [0.18.0] - 2026-07-23
 
 ### Added
@@ -400,7 +408,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/yasyf/cc-interact/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/yasyf/cc-interact/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/yasyf/cc-interact/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/yasyf/cc-interact/compare/v0.16.0...v0.16.1
