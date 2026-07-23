@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "com.yasyf.cc-interact.interaction/v1",
+  "title": "cc-interact shared interaction schema",
+  "$defs": {
+    "Envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session": {"type": "string"},
+        "claude_pid": {"type": "integer"},
+        "scope": {"type": "string"},
+        "consumer": {"type": "string"},
+        "body": {}
+      }
+    },
+    "Reply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": {"type": "boolean"},
+        "error": {"type": "string"},
+        "daemon_version": {"type": "string"},
+        "subject_id": {"type": "string"},
+        "status": {"type": "string"},
+        "http_port": {"type": "integer"},
+        "allow": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "body": {}
+      }
+    },
+    "RuntimeHealth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_build",
+        "runtime_protocol",
+        "pid",
+        "process_generation",
+        "ready",
+        "state",
+        "draining",
+        "busy"
+      ],
+      "properties": {
+        "runtime_build": {"type": "string", "minLength": 1},
+        "runtime_protocol": {"type": "integer", "minimum": 1},
+        "pid": {"type": "integer", "minimum": 2},
+        "process_generation": {"type": "string", "minLength": 1},
+        "ready": {"type": "boolean"},
+        "state": {"enum": ["starting", "healthy", "degraded", "failed"]},
+        "draining": {"type": "boolean"},
+        "busy": {"type": "boolean"}
+      }
+    }
+  },
+  "x-routes": {
+    "business": {
+      "operation": "*",
+      "request": {"$ref": "#/$defs/Envelope"},
+      "response": {"$ref": "#/$defs/Reply"}
+    },
+    "runtime_health": {
+      "operation": "cc-interact.runtime.health",
+      "response": {"$ref": "#/$defs/RuntimeHealth"}
+    }
+  }
+}

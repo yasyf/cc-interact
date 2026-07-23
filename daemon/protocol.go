@@ -1,9 +1,15 @@
 // Package daemon is cc-interact's lazily-started local daemon. Daemonkit owns
-// its lifecycle, exact v1 persistent transport, peer identity, admission, and
-// takeover; this package owns only cc-interact operations and dispatch policy.
+// exact v1 persistent transport, peer identity, process control, and admission;
+// this package owns only cc-interact operations and dispatch policy.
 package daemon
 
-import "encoding/json"
+//go:generate go run ./protocolgen
+
+import (
+	"encoding/json"
+
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
+)
 
 // Op is a cc-interact business operation.
 type Op string
@@ -15,6 +21,7 @@ const (
 	OpGuardEdit      Op = "guard-edit"
 	OpChannelAck     Op = "channel-ack"
 	OpStatus         Op = "status"
+	OpRuntimeHealth  Op = "cc-interact.runtime.health"
 	OpAgentStart     Op = "agent-start"
 	OpAgentStop      Op = "agent-stop"
 	OpAgentInject    Op = "agent-inject"
@@ -22,6 +29,21 @@ const (
 	OpAgentDirect    Op = "agent-direct"
 	OpAgentReconcile Op = "agent-reconcile"
 )
+
+// RuntimeHealth is the product-visible daemon runtime snapshot.
+type RuntimeHealth struct {
+	RuntimeBuild      string         `json:"runtime_build"`
+	RuntimeProtocol   int            `json:"runtime_protocol"`
+	PID               int            `json:"pid"`
+	ProcessGeneration string         `json:"process_generation"`
+	Ready             bool           `json:"ready"`
+	State             dkdaemon.State `json:"state"`
+	Draining          bool           `json:"draining"`
+	Busy              bool           `json:"busy"`
+}
+
+// RuntimeStateStarting means the product readiness fence is unpublished.
+const RuntimeStateStarting dkdaemon.State = "starting"
 
 // Envelope is one cc-interact operation payload. Op selects the v1 wire route
 // and is never duplicated inside the payload.

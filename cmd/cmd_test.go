@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/daemon"
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/drain"
 	"github.com/yasyf/daemonkit/paths"
@@ -56,7 +55,7 @@ func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (string,
 		t.Fatalf("listen: %v", err)
 	}
 	rec := &recorder{}
-	server := &wire.Server{Build: "9.9.9"}
+	server := &wire.Server{WireBuild: daemon.WireBuild}
 	for _, op := range []daemon.Op{
 		daemon.OpResolve, daemon.OpSessionRecord, daemon.OpGuardEdit, daemon.OpChannelAck, daemon.OpStatus,
 		daemon.OpAgentStart, daemon.OpAgentStop, daemon.OpAgentInject, daemon.OpAgentReport,
@@ -77,7 +76,7 @@ func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (string,
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- server.Serve(ctx, ln, func() error { return nil }, intake.Admit, intake.AdmitLifecycle)
+		done <- server.Serve(ctx, ln, func() error { return nil }, intake.Admit, intake.Admit)
 	}()
 	t.Cleanup(func() {
 		intake.Close()
@@ -111,11 +110,13 @@ func testDepsWithMaxFrame(socket string, maxFrameBytes int) Deps {
 		Version: "9.9.9",
 		NewClient: func(ctx context.Context) (*daemon.Client, error) {
 			return daemon.NewClient(ctx, daemon.ClientConfig{
-				Socket: socket, Build: "9.9.9", LifecycleBuild: "9.9.9", MaxFrameBytes: maxFrameBytes,
+				Socket: socket, WireBuild: daemon.WireBuild, MaxFrameBytes: maxFrameBytes,
 			})
 		},
 		EnsureCurrent:          func(context.Context) error { return nil },
 		EnsureCurrentIfRunning: func(context.Context) error { return nil },
+		Stop:                   func(context.Context) error { return nil },
+		RunStopControl:         func(context.Context) error { return nil },
 		ClaudePID:              func() int { return testClaudePID },
 		TerminalEvent:          func(t string) bool { return t == "submit" },
 	}
@@ -146,8 +147,8 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 	s, err := daemon.New(daemon.Config{
 		AppName:        "cc-interact-test",
 		Paths:          p,
-		Version:        "9.9.9",
-		LifecycleBuild: "9.9.9",
+		WireBuild:      daemon.WireBuild,
+		RuntimeBuild:   "9.9.9",
 		DaemonRole:     daemonrole.Classifier{RoleID: "com.yasyf.cc-interact.cmd-test", RolePath: rolePath},
 		ActiveStatuses: []string{"open"},
 		MaxFrameBytes:  maxFrameBytes,
@@ -173,12 +174,12 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		client, err := daemon.NewClient(probeCtx, daemon.ClientConfig{Socket: p.SocketPath(), Build: "9.9.9", LifecycleBuild: "9.9.9"})
+		client, err := daemon.NewClient(probeCtx, daemon.ClientConfig{Socket: p.SocketPath(), WireBuild: daemon.WireBuild})
 		if err == nil {
-			health, healthErr := client.Health(probeCtx)
+			health, healthErr := client.RuntimeHealth(probeCtx)
 			_ = client.Close()
 			probeCancel()
-			if healthErr == nil && health.Build == "9.9.9" && health.Protocol == int(wire.ProtocolVersion) {
+			if healthErr == nil && health.RuntimeBuild == "9.9.9" && health.RuntimeProtocol == int(wire.ProtocolVersion) {
 				return p.SocketPath()
 			}
 		} else {
@@ -358,7 +359,7 @@ func TestStatusReportsSubject(t *testing.T) {
 // TestStatusNotRunning proves a stopped daemon is reported, not spawned.
 func TestStatusNotRunning(t *testing.T) {
 	deps := testDeps(filepath.Join(t.TempDir(), "absent.sock"))
-	deps.EnsureCurrentIfRunning = func(context.Context) error { return dkdaemon.ErrNoPeer }
+	deps.EnsureCurrentIfRunning = func(context.Context) error { return daemon.ErrNoPeer }
 	cmd := StatusCmd(deps)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -368,6 +369,42 @@ func TestStatusNotRunning(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "daemon: not running") {
 		t.Fatalf("status output = %q", out.String())
+	}
+}
+
+func TestDaemonStopControlCommandIsHiddenAndReserved(t *testing.T) {
+	control := DaemonStopControlCmd(testDeps("unused.sock"))
+	if !control.Hidden || control.Use != daemon.StopControlCommand {
+		t.Fatalf("control command hidden=%t use=%q", control.Hidden, control.Use)
+	}
+}
+
+func TestStopUsesExactRoleController(t *testing.T) {
+	deps := testDeps("unused.sock")
+	called := 0
+	deps.Stop = func(context.Context) error { called++; return nil }
+	command := StopCmd(deps)
+	var out bytes.Buffer
+	command.SetOut(&out)
+	if err := command.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if called != 1 || out.String() != "daemon: stopped\n" {
+		t.Fatalf("stop calls=%d output=%q", called, out.String())
+	}
+}
+
+func TestStopReportsAbsentDaemon(t *testing.T) {
+	deps := testDeps("unused.sock")
+	deps.Stop = func(context.Context) error { return daemon.ErrNoPeer }
+	command := StopCmd(deps)
+	var out bytes.Buffer
+	command.SetOut(&out)
+	if err := command.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if out.String() != "daemon: not running\n" {
+		t.Fatalf("stop output=%q", out.String())
 	}
 }
 

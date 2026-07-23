@@ -6,47 +6,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/wire"
 )
-
-type allowProtectedClientTestSession struct{}
-
-func (allowProtectedClientTestSession) Validate() error { return nil }
-func (allowProtectedClientTestSession) Classify(context.Context, wire.Peer) (bool, error) {
-	return true, nil
-}
-func (allowProtectedClientTestSession) AuthorizeLifecycleBuild(string, string) bool { return true }
-
-type blockingClientTestLifecycle struct {
-	method  string
-	entered chan struct{}
-	release <-chan struct{}
-}
-
-func (l blockingClientTestLifecycle) Health(context.Context) (dkdaemon.Health, error) {
-	if l.method == "health" {
-		close(l.entered)
-		<-l.release
-	}
-	return dkdaemon.Health{Build: "client-test", Protocol: int(wire.ProtocolVersion)}, nil
-}
-
-func (l blockingClientTestLifecycle) Shutdown(context.Context) error {
-	if l.method == "shutdown" {
-		close(l.entered)
-		<-l.release
-	}
-	return nil
-}
-
-func (blockingClientTestLifecycle) Handoff(context.Context) error { return nil }
 
 type clientTestServer struct {
 	server   *wire.Server
@@ -71,16 +39,6 @@ func startClientTestServer(
 	handler wire.Handler,
 	admit func() (func(), error),
 ) *clientTestServer {
-	return startClientTestServerWithSetup(t, path, handler, admit, nil)
-}
-
-func startClientTestServerWithSetup(
-	t *testing.T,
-	path string,
-	handler wire.Handler,
-	admit func() (func(), error),
-	setup func(*wire.Server),
-) *clientTestServer {
 	t.Helper()
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("remove stale socket: %v", err)
@@ -89,11 +47,8 @@ func startClientTestServerWithSetup(
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	server := &wire.Server{Build: "client-test", LifecycleBuild: "v1.0.0"}
+	server := &wire.Server{WireBuild: WireBuild}
 	server.RegisterControl("test", handler)
-	if setup != nil {
-		setup(server)
-	}
 	if admit == nil {
 		admit = func() (func(), error) { return func() {}, nil }
 	}
@@ -123,7 +78,7 @@ func (s *clientTestServer) stop(t *testing.T) {
 func newTestClient(t *testing.T, path string, maxFrame int) *Client {
 	t.Helper()
 	client, err := NewClient(context.Background(), ClientConfig{
-		Socket: path, Build: "client-test", LifecycleBuild: "v1.0.0", MaxFrameBytes: maxFrame,
+		Socket: path, WireBuild: WireBuild, MaxFrameBytes: maxFrame,
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -272,7 +227,7 @@ func TestClientCloseReplaysStrictTerminal(t *testing.T) {
 	server := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
 		return Reply{OK: true}, nil
 	}, nil)
-	client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test", LifecycleBuild: "v1.0.0"})
+	client, err := NewClient(context.Background(), ClientConfig{Socket: path, WireBuild: WireBuild})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -287,63 +242,34 @@ func TestClientCloseReplaysStrictTerminal(t *testing.T) {
 	}
 }
 
-func TestClientCloseIsTerminalBarrierForLifecycleOperations(t *testing.T) {
-	for _, method := range []string{"health", "shutdown"} {
-		t.Run(method, func(t *testing.T) {
-			path := newClientTestSocket(t)
-			entered := make(chan struct{})
-			release := make(chan struct{})
-			lifecycle := blockingClientTestLifecycle{method: method, entered: entered, release: release}
-			startClientTestServerWithSetup(
-				t,
-				path,
-				func(context.Context, wire.Request) (any, error) { return Reply{OK: true}, nil },
-				nil,
-				func(server *wire.Server) {
-					server.ReservedProtectedSessions = 1
-					server.ProtectedSessionClassifier = allowProtectedClientTestSession{}
-					server.RegisterLifecycle(lifecycle)
-				},
-			)
-			client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test", LifecycleBuild: "v1.0.0"})
-			if err != nil {
-				t.Fatalf("NewClient: %v", err)
-			}
-			opDone := make(chan error, 1)
-			go func() {
-				if method == "health" {
-					_, err := client.Health(context.Background())
-					opDone <- err
-					return
-				}
-				opDone <- client.Shutdown(context.Background())
-			}()
-			select {
-			case <-entered:
-			case <-time.After(3 * time.Second):
-				t.Fatal("lifecycle operation did not enter")
-			}
-			closeDone := make(chan error, 1)
-			go func() { closeDone <- client.Close() }()
-			select {
-			case err := <-closeDone:
-				t.Fatalf("Close returned before lifecycle settlement: %v", err)
-			case <-time.After(50 * time.Millisecond):
-			}
-			close(release)
-			if err := <-opDone; err != nil {
-				t.Fatalf("lifecycle operation: %v", err)
-			}
-			if err := <-closeDone; err != nil {
-				t.Fatalf("Close: %v", err)
-			}
-			if _, err := client.Health(context.Background()); !errors.Is(err, ErrClientClosed) {
-				t.Fatalf("post-close Health err = %v, want ErrClientClosed", err)
-			}
-			if err := client.Shutdown(context.Background()); !errors.Is(err, ErrClientClosed) {
-				t.Fatalf("post-close Shutdown err = %v, want ErrClientClosed", err)
-			}
-		})
+func TestClientExposesBusinessOperationsOnly(t *testing.T) {
+	typeOf := reflect.TypeOf((*Client)(nil))
+	want := map[string]bool{"Close": true, "Do": true, "RuntimeHealth": true}
+	if typeOf.NumMethod() != len(want) {
+		t.Fatalf("Client exports %d methods, want %d", typeOf.NumMethod(), len(want))
+	}
+	for index := range typeOf.NumMethod() {
+		method := typeOf.Method(index).Name
+		if !want[method] {
+			t.Fatalf("Client exposes unexpected method %s", method)
+		}
+	}
+}
+
+func TestClientBusinessSessionIsNeverProtected(t *testing.T) {
+	path := newClientTestSocket(t)
+	request := make(chan wire.Request, 1)
+	startClientTestServer(t, path, func(_ context.Context, req wire.Request) (any, error) {
+		request <- req
+		return Reply{OK: true}, nil
+	}, nil)
+	client := newTestClient(t, path, 0)
+	if _, err := client.Do(context.Background(), Envelope{Op: "test"}); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	req := <-request
+	if req.WireBuild != WireBuild || req.Session == nil || req.Session.Protected() {
+		t.Fatalf("request wire build=%q session=%v", req.WireBuild, req.Session)
 	}
 }
 
@@ -352,7 +278,7 @@ func TestClientCloseWaitsForInFlightRedial(t *testing.T) {
 	server := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
 		return Reply{OK: true}, nil
 	}, nil)
-	client, err := NewClient(context.Background(), ClientConfig{Socket: path, Build: "client-test", LifecycleBuild: "v1.0.0"})
+	client, err := NewClient(context.Background(), ClientConfig{Socket: path, WireBuild: WireBuild})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

@@ -6,13 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-23
+
+### Added
+
+- `daemon.RuntimeHealth` exposes the exact `RuntimeBuild`, `RuntimeProtocol`,
+  PID, opaque `ProcessGeneration`, readiness, state, draining state, and busy
+  state through the namespaced `cc-interact.runtime.health` observation.
+- `daemon.WireBuild` is generated from the canonical shared interaction schema
+  and verified against its SHA-256 fingerprint.
+- `Launcher.Stop` delegates protected shutdown to a hidden exact-role control
+  child and succeeds only after the endpoint and captured process identity are
+  gone.
+
 ### Changed
+
+- Daemon composition now separates the generated `WireBuild` schema identity
+  from the release-specific `RuntimeBuild` used for readiness and convergence.
 - Derived SQLite and cursor state now lives only under the exact
   `cc-interact-v1` namespace; pre-v1 state is ignored.
 - The store requires `user_version = 1` and the exact core-plus-consumer schema
   fingerprint. Consumers declare exact schema DDL through `StoreSchema`; the
   migration callback and compatibility DDL are removed.
 - Process cursor seeding no longer reads the unscoped base cursor.
+
+### Removed
+
+- Ordinary clients no longer accept protected-runtime identity or expose
+  shutdown control methods; they carry business operations only.
+- Ambiguous `BusinessBuild`, `Build`, `Protocol`, and `RuntimeGeneration`
+  surfaces are removed in favor of exact wire, runtime, and process identities.
 
 ## [0.14.0] - 2026-07-20
 
@@ -377,7 +400,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/yasyf/cc-interact/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/yasyf/cc-interact/compare/v0.16.1...v0.17.0
+[0.16.1]: https://github.com/yasyf/cc-interact/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/yasyf/cc-interact/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/yasyf/cc-interact/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/yasyf/cc-interact/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/yasyf/cc-interact/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/yasyf/cc-interact/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/yasyf/cc-interact/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/yasyf/cc-interact/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yasyf/cc-interact/compare/v0.8.0...v0.9.0

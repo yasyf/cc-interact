@@ -90,8 +90,8 @@ func newClient(ctx context.Context) (*daemon.Client, error) { return launcher().
 
 func launcher() daemon.Launcher {
 	return daemon.Launcher{
-		Paths: appPaths(), Version: appVersion, LifecycleBuild: appVersion,
-		Args: []string{"daemon"}, DaemonRole: appDaemonRole(),
+		Paths: appPaths(), WireBuild: daemon.WireBuild, RuntimeBuild: appVersion,
+		Args: []string{"daemon"}, StopArgs: []string{daemon.StopControlCommand}, DaemonRole: appDaemonRole(),
 	}
 }
 
@@ -175,8 +175,8 @@ func buildServer() (*daemon.Server, error) {
 	s, err := daemon.New(daemon.Config{
 		AppName:        appName,
 		Paths:          appPaths(),
-		Version:        appVersion,
-		LifecycleBuild: appVersion,
+		WireBuild:      daemon.WireBuild,
+		RuntimeBuild:   appVersion,
 		DaemonRole:     appDaemonRole(),
 		ActiveStatuses: []string{statusOpen},
 		// c.Type() (not c.EventType) so the SSE plane filters the same presence
@@ -339,6 +339,8 @@ func deps() cmd.Deps {
 		NewClient:              newClient,
 		EnsureCurrent:          func(ctx context.Context) error { return launcher().EnsureCurrent(ctx, daemon.UpgradeTimeout) },
 		EnsureCurrentIfRunning: func(ctx context.Context) error { return launcher().EnsureCurrentIfRunning(ctx) },
+		Stop:                   func(ctx context.Context) error { return launcher().Stop(ctx, daemon.UpgradeTimeout) },
+		RunStopControl:         func(ctx context.Context) error { return launcher().RunStopControl(ctx) },
 		ClaudePID:              os.Getpid,
 		TerminalEvent:          func(t string) bool { return t == eventDone },
 		Serve:                  func(ctx context.Context) error { return serve(ctx) },
@@ -505,6 +507,7 @@ func root() *cobra.Command {
 	}
 	r.AddCommand(
 		cmd.DaemonCmd(d),
+		cmd.DaemonStopControlCmd(d),
 		withSessionDefault(cmd.WatchCmd(d)),
 		withSessionDefault(cmd.StatusCmd(d)),
 		cmd.StopCmd(d),

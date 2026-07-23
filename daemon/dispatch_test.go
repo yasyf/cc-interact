@@ -11,7 +11,6 @@ import (
 
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -22,11 +21,11 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 		cfg.AppName = "cc-test"
 	}
 	cfg.Paths = paths.Paths{App: ".cc-interact-test"}
-	if cfg.Version == "" {
-		cfg.Version = "v1.0.0"
+	if cfg.WireBuild == "" {
+		cfg.WireBuild = WireBuild
 	}
-	if cfg.LifecycleBuild == "" {
-		cfg.LifecycleBuild = "v1.0.0"
+	if cfg.RuntimeBuild == "" {
+		cfg.RuntimeBuild = "v1.0.0"
 	}
 	if cfg.ActiveStatuses == nil {
 		cfg.ActiveStatuses = []string{"open"}
@@ -41,7 +40,7 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 	if err := s.paths.EnsureStateDir(); err != nil {
 		t.Fatalf("ensure state dir: %v", err)
 	}
-	if err := s.activate(dkdaemon.Activation{Startup: context.Background(), Lifetime: context.Background()}); err != nil {
+	if err := s.activateState(context.Background()); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
 	t.Cleanup(func() { _ = s.closeState() })

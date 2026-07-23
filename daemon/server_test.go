@@ -16,8 +16,10 @@ import (
 
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/cc-interact/store"
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/proc"
 	"github.com/yasyf/daemonkit/wire"
 )
 
@@ -78,35 +80,44 @@ func shortHome(t *testing.T) {
 }
 
 func TestNewRequiresDaemonRole(t *testing.T) {
-	if _, err := New(Config{Version: "0.0.1", LifecycleBuild: "0.0.1"}); err == nil {
+	if _, err := New(Config{WireBuild: WireBuild, RuntimeBuild: "0.0.1"}); err == nil {
 		t.Fatal("New accepted a missing daemon role")
 	}
 }
 
 func TestLauncherRequiresDaemonRole(t *testing.T) {
-	if _, err := (Launcher{Version: "0.0.1", LifecycleBuild: "0.0.1"}).NewClient(context.Background()); err == nil {
+	if _, err := (Launcher{
+		WireBuild: WireBuild, RuntimeBuild: "0.0.1",
+		Args: []string{"daemon"}, StopArgs: []string{StopControlCommand},
+	}).NewClient(context.Background()); err == nil {
 		t.Fatal("Launcher.NewClient accepted a missing daemon role")
 	}
 }
 
-func TestLifecycleBuildIsRequired(t *testing.T) {
-	if _, err := New(Config{Version: "0.0.1", DaemonRole: testDaemonRole(t)}); err == nil {
-		t.Fatal("New accepted a missing lifecycle build")
+func TestRuntimeBuildIsRequired(t *testing.T) {
+	if _, err := New(Config{WireBuild: WireBuild, DaemonRole: testDaemonRole(t)}); err == nil {
+		t.Fatal("New accepted a missing runtime build")
 	}
-	if _, err := (Launcher{Version: "0.0.1", DaemonRole: testDaemonRole(t)}).NewClient(context.Background()); err == nil {
-		t.Fatal("Launcher.NewClient accepted a missing lifecycle build")
+	if _, err := (Launcher{
+		WireBuild: WireBuild, DaemonRole: testDaemonRole(t),
+		Args: []string{"daemon"}, StopArgs: []string{StopControlCommand},
+	}).NewClient(context.Background()); err == nil {
+		t.Fatal("Launcher.NewClient accepted a missing runtime build")
 	}
 }
 
 func TestLauncherAndServerShareStableDaemonRole(t *testing.T) {
 	shortHome(t)
 	role := testDaemonRole(t)
-	launcher := Launcher{Paths: testPaths(), Version: "business-v1", LifecycleBuild: "0.0.1", DaemonRole: role}
-	if got := launcher.spawn(launcher.peer(), time.Second).ExecPath; got != role.RolePath {
+	launcher := Launcher{
+		Paths: testPaths(), WireBuild: WireBuild, RuntimeBuild: "0.0.1",
+		Args: []string{"daemon"}, StopArgs: []string{StopControlCommand}, DaemonRole: role,
+	}
+	if got := launcher.spawn(time.Second).ExecPath; got != role.RolePath {
 		t.Fatalf("spawn executable = %q, want role path %q", got, role.RolePath)
 	}
 	s, err := New(Config{
-		AppName: "cc-interact-test", Paths: testPaths(), Version: "business-v1", LifecycleBuild: "0.0.1",
+		AppName: "cc-interact-test", Paths: testPaths(), WireBuild: WireBuild, RuntimeBuild: "0.0.1",
 		DaemonRole: role, ActiveStatuses: []string{"open"},
 	})
 	if err != nil {
@@ -116,12 +127,8 @@ func TestLauncherAndServerShareStableDaemonRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runtime: %v", err)
 	}
-	got, ok := wireServer.ProtectedSessionClassifier.(daemonrole.Classifier)
-	if !ok || got != role {
-		t.Fatalf("protected classifier = %#v, want %#v", wireServer.ProtectedSessionClassifier, role)
-	}
-	if wireServer.Build != "business-v1" || wireServer.LifecycleBuild != "0.0.1" {
-		t.Fatalf("wire identities = business %q lifecycle %q", wireServer.Build, wireServer.LifecycleBuild)
+	if wireServer.WireBuild != WireBuild {
+		t.Fatalf("wire build = %q", wireServer.WireBuild)
 	}
 }
 
@@ -131,8 +138,8 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 	s, err := New(Config{
 		AppName:        "cc-interact-test",
 		Paths:          p,
-		Version:        "0.0.1",
-		LifecycleBuild: "0.0.1",
+		WireBuild:      WireBuild,
+		RuntimeBuild:   "0.0.1",
 		DaemonRole:     testDaemonRole(t),
 		ActiveStatuses: []string{"open"},
 		StoreSchema:    store.Schema{DDL: `CREATE TABLE activation_probe (id TEXT PRIMARY KEY);`},
@@ -165,7 +172,7 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		client, connectErr := NewClient(probeCtx, ClientConfig{Socket: testPaths().SocketPath(), Build: "0.0.1", LifecycleBuild: "0.0.1"})
+		client, connectErr := NewClient(probeCtx, ClientConfig{Socket: testPaths().SocketPath(), WireBuild: WireBuild})
 		if connectErr == nil {
 			closeErr := client.Close()
 			probeCancel()
@@ -188,13 +195,86 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 	}
 }
 
+func TestRuntimeHealthWaitsForProductReadiness(t *testing.T) {
+	shortHome(t)
+	bootEntered := make(chan struct{})
+	releaseBoot := make(chan struct{})
+	s, err := New(Config{
+		AppName: "cc-interact-test", Paths: testPaths(),
+		WireBuild: WireBuild, RuntimeBuild: "0.0.1",
+		DaemonRole: testDaemonRole(t), ActiveStatuses: []string{"open"},
+		BootReconcile: func(context.Context, *Server) error {
+			close(bootEntered)
+			<-releaseBoot
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- s.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-served:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return")
+		}
+	})
+	select {
+	case <-bootEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("readiness bootstrap did not start")
+	}
+	client, err := NewClient(context.Background(), ClientConfig{
+		Socket: testPaths().SocketPath(), WireBuild: WireBuild,
+	})
+	if err != nil {
+		t.Fatalf("NewClient before readiness: %v", err)
+	}
+	defer client.Close()
+	starting, err := client.RuntimeHealth(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeHealth before readiness: %v", err)
+	}
+	if starting.Ready || starting.State != RuntimeStateStarting || starting.RuntimeBuild != "0.0.1" ||
+		starting.RuntimeProtocol != int(wire.ProtocolVersion) || starting.PID <= 1 || starting.ProcessGeneration == "" {
+		t.Fatalf("starting RuntimeHealth = %+v", starting)
+	}
+	close(releaseBoot)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		health, healthErr := client.RuntimeHealth(context.Background())
+		if healthErr == nil && health.Ready {
+			generation, generationErr := proc.ProcessGeneration()
+			if generationErr != nil {
+				t.Fatal(generationErr)
+			}
+			if health.RuntimeBuild != "0.0.1" || health.RuntimeProtocol != int(wire.ProtocolVersion) || !health.Ready ||
+				health.ProcessGeneration != generation || health.State != dkdaemon.StateHealthy {
+				t.Fatalf("RuntimeHealth = %+v", health)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("RuntimeHealth did not become ready: %+v, %v", health, healthErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestBackgroundWaitedBeforeServeReturns(t *testing.T) {
 	shortHome(t)
 	s, err := New(Config{
 		AppName:        "cc-interact-test",
 		Paths:          testPaths(),
-		Version:        "0.0.1",
-		LifecycleBuild: "0.0.1",
+		WireBuild:      WireBuild,
+		RuntimeBuild:   "0.0.1",
 		DaemonRole:     testDaemonRole(t),
 		ActiveStatuses: []string{"open"},
 	})
@@ -210,13 +290,13 @@ func TestBackgroundWaitedBeforeServeReturns(t *testing.T) {
 	for {
 		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		client, connectErr := NewClient(probeCtx, ClientConfig{
-			Socket: testPaths().SocketPath(), Build: "0.0.1", LifecycleBuild: "0.0.1",
+			Socket: testPaths().SocketPath(), WireBuild: WireBuild,
 		})
 		if connectErr == nil {
-			health, healthErr := client.Health(probeCtx)
+			health, healthErr := client.RuntimeHealth(probeCtx)
 			_ = client.Close()
 			probeCancel()
-			if healthErr == nil && health.Protocol == int(wire.ProtocolVersion) {
+			if healthErr == nil && health.RuntimeProtocol == int(wire.ProtocolVersion) {
 				break
 			}
 		} else {
@@ -267,8 +347,8 @@ func TestServeDrainsBackgroundBeforeStoreCloseOnHTTPStartupFailure(t *testing.T)
 	s, err := New(Config{
 		AppName:        "cc-interact-test",
 		Paths:          testPaths(),
-		Version:        "0.0.1",
-		LifecycleBuild: "0.0.1",
+		WireBuild:      WireBuild,
+		RuntimeBuild:   "0.0.1",
 		DaemonRole:     testDaemonRole(t),
 		ActiveStatuses: []string{"open"},
 		FixedPort:      boundPort(t, holder),
@@ -450,13 +530,13 @@ func TestListenHTTPPortReuse(t *testing.T) {
 }
 
 func TestNewRefusesUnauthenticatedBind(t *testing.T) {
-	if _, err := New(Config{Version: "0.0.1", LifecycleBuild: "0.0.1", BindAddr: "0.0.0.0", DaemonRole: testDaemonRole(t)}); !errors.Is(err, ErrUnauthenticatedBind) {
+	if _, err := New(Config{WireBuild: WireBuild, RuntimeBuild: "0.0.1", BindAddr: "0.0.0.0", DaemonRole: testDaemonRole(t)}); !errors.Is(err, ErrUnauthenticatedBind) {
 		t.Fatalf("New err = %v, want ErrUnauthenticatedBind", err)
 	}
 }
 
 func TestNewRefusesUnauthenticatedExtraListeners(t *testing.T) {
-	cfg := Config{Version: "0.0.1", LifecycleBuild: "0.0.1", DaemonRole: testDaemonRole(t), ExtraHTTPListeners: []func(context.Context) (net.Listener, error){
+	cfg := Config{WireBuild: WireBuild, RuntimeBuild: "0.0.1", DaemonRole: testDaemonRole(t), ExtraHTTPListeners: []func(context.Context) (net.Listener, error){
 		func(context.Context) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
 	}}
 	if _, err := New(cfg); !errors.Is(err, ErrUnauthenticatedBind) {

@@ -30,7 +30,7 @@ func TestWorkerGroupRejectsStartsAfterCloseAndBoundsWait(t *testing.T) {
 	}
 }
 
-func TestSessionServerHonorsCancellationBeforePublishingWorkers(t *testing.T) {
+func TestRuntimeActivationHonorsCancellationBeforePublishingWorkers(t *testing.T) {
 	s := newTestServer(t, Config{})
 	workers := &serverWorkers{owner: s}
 	workers.Close()
@@ -40,9 +40,7 @@ func TestSessionServerHonorsCancellationBeforePublishingWorkers(t *testing.T) {
 		called = true
 		return nil
 	}
-	err := (&sessionServer{owner: s}).Serve(
-		context.Background(), nil, func() error { return nil }, nil, nil,
-	)
+	err := s.activateServing(context.Background())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Serve err = %v, want context cancellation", err)
 	}

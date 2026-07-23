@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-interact/daemon"
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
 )
 
 // StatusCmd reports daemon liveness and the subject bound to the session+scope.
@@ -24,7 +23,7 @@ func StatusCmd(d Deps) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			if err := d.EnsureCurrentIfRunning(ctx); errors.Is(err, dkdaemon.ErrNoPeer) {
+			if err := d.EnsureCurrentIfRunning(ctx); errors.Is(err, daemon.ErrNoPeer) {
 				fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
 				return nil
 			} else if err != nil {
@@ -72,29 +71,20 @@ func StatusCmd(d Deps) *cobra.Command {
 	return cmd
 }
 
-// StopCmd asks a running daemon to step down.
+// StopCmd runs the exact-role stop controller for a running daemon.
 func StopCmd(d Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
 		Short: "Stop the background daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := cmd.Context()
-			if err := d.EnsureCurrentIfRunning(ctx); errors.Is(err, dkdaemon.ErrNoPeer) {
+			if err := d.Stop(cmd.Context()); errors.Is(err, daemon.ErrNoPeer) {
 				fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
 				return nil
 			} else if err != nil {
 				return err
 			}
-			client, err := d.NewClient(ctx)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = client.Close() }()
-			if err := client.Shutdown(ctx); err != nil {
-				return err
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "daemon: stopping")
+			fmt.Fprintln(cmd.OutOrStdout(), "daemon: stopped")
 			return nil
 		},
 	}

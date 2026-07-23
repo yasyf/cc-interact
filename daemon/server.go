@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
@@ -50,16 +51,18 @@ const subscriberPresenceWindow = 90 * time.Second
 // Server is the running daemon: the control-plane unix-socket server plus the
 // realtime HTTP/SSE plane it boots. It implements sse.Backend.
 type Server struct {
-	appName        string
-	version        string
-	lifecycleBuild string
-	daemonRole     daemonrole.Classifier
-	store          *store.Store
-	db             *sql.DB
-	bus            *event.Bus
-	activity       *Activity
-	subjects       subject.Resolver
-	sse            *sse.Server
+	appName       string
+	wireBuild     string
+	runtimeBuild  string
+	daemonRole    daemonrole.Classifier
+	daemonRuntime *dkdaemon.Runtime
+	runtimeReady  atomic.Bool
+	store         *store.Store
+	db            *sql.DB
+	bus           *event.Bus
+	activity      *Activity
+	subjects      subject.Resolver
+	sse           *sse.Server
 
 	scopeResolve    func(ctx context.Context, raw string) string
 	gate            GateFunc
@@ -119,11 +122,11 @@ type Server struct {
 // Consumers may register domain ops and mount routes before Serve; the store is
 // opened only after the runtime owns the listener.
 func New(cfg Config) (*Server, error) {
-	if cfg.Version == "" {
-		return nil, errors.New("daemon: business build is required")
+	if cfg.WireBuild != WireBuild {
+		return nil, fmt.Errorf("daemon: wire build %q, want exactly %q", cfg.WireBuild, WireBuild)
 	}
-	if cfg.LifecycleBuild == "" {
-		return nil, errors.New("daemon: lifecycle build is required")
+	if cfg.RuntimeBuild == "" {
+		return nil, errors.New("daemon: runtime build is required")
 	}
 	if err := cfg.DaemonRole.Validate(); err != nil {
 		return nil, fmt.Errorf("daemon: validate role: %w", err)
@@ -144,8 +147,8 @@ func New(cfg Config) (*Server, error) {
 	}
 	s := &Server{
 		appName:             cfg.AppName,
-		version:             cfg.Version,
-		lifecycleBuild:      cfg.LifecycleBuild,
+		wireBuild:           cfg.WireBuild,
+		runtimeBuild:        cfg.RuntimeBuild,
 		daemonRole:          cfg.DaemonRole,
 		bus:                 event.NewBus(),
 		activity:            NewActivity(),
@@ -249,13 +252,13 @@ func (s *Server) Background(fn func(context.Context)) {
 
 // Serve runs the exact daemonkit lifecycle and persistent control session.
 func (s *Server) Serve(parent context.Context) error {
-	wireServer, runtime, err := s.runtime()
+	_, runtime, err := s.runtime()
 	if err != nil {
 		_ = s.closeState()
 		return err
 	}
-	wireServer.RegisterLifecycle(runtime)
 	err = runtime.Run(parent)
+	s.log.Printf("daemon stopped")
 	if parent.Err() != nil && errors.Is(err, parent.Err()) {
 		return nil
 	}
@@ -263,7 +266,11 @@ func (s *Server) Serve(parent context.Context) error {
 }
 
 func (s *Server) activate(activation dkdaemon.Activation) error {
-	st, err := store.Open(activation.Startup, store.Path(s.paths), s.storeSchema)
+	return s.activateState(activation.Startup)
+}
+
+func (s *Server) activateState(startup context.Context) error {
+	st, err := store.Open(startup, store.Path(s.paths), s.storeSchema)
 	if err != nil {
 		return err
 	}
@@ -275,6 +282,35 @@ func (s *Server) activate(activation dkdaemon.Activation) error {
 			return slices.Contains(s.activeStatuses, sub.Status)
 		}},
 	}
+	return nil
+}
+
+func (s *Server) activateServing(lifetime context.Context) error {
+	workerCtx, cancel := context.WithCancel(lifetime)
+	s.serveCtxMu.Lock()
+	s.serveCtx = workerCtx
+	s.serveCancel = cancel
+	canceled := s.workersCanceled
+	s.serveCtxMu.Unlock()
+	if canceled {
+		cancel()
+		return workerCtx.Err()
+	}
+	if s.bootReconcile != nil {
+		if err := s.bootReconcile(workerCtx, s); err != nil {
+			return err
+		}
+	}
+	if err := s.reconcileDirectives(workerCtx); err != nil {
+		return err
+	}
+	if err := s.reconcileSubscriptions(workerCtx); err != nil {
+		return err
+	}
+	if err := s.startHTTP(workerCtx); err != nil {
+		return err
+	}
+	s.log.Printf("daemon %s started; socket=%s http=%s", s.runtimeBuild, s.socket, net.JoinHostPort(s.bindHost(), strconv.Itoa(s.httpPort)))
 	return nil
 }
 
@@ -455,7 +491,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
 	return s.dispatchPeer(ctx, env, wire.Peer{}, "")
 }
 
-func (s *Server) dispatchPeer(ctx context.Context, env Envelope, peer wire.Peer, build string) Reply {
+func (s *Server) dispatchPeer(ctx context.Context, env Envelope, peer wire.Peer, wireBuild string) Reply {
 	s.handlersMu.RLock()
 	handler, ok := s.handlers[env.Op]
 	s.handlersMu.RUnlock()
@@ -464,18 +500,18 @@ func (s *Server) dispatchPeer(ctx context.Context, env Envelope, peer wire.Peer,
 	}
 	scope := s.scopeResolve(ctx, env.Scope)
 	return handler(HandlerCtx{
-		Ctx:      ctx,
-		Env:      env,
-		Window:   subject.Window{Session: env.Session, ClaudePID: env.ClaudePID},
-		Scope:    scope,
-		Subjects: s.subjects,
-		DB:       s.db,
-		Append:   s.Append,
-		HTTPPort: s.httpPort,
-		Activity: s.activity,
-		RepoLock: s.repoLock(scope),
-		Peer:     peer,
-		Build:    build,
+		Ctx:       ctx,
+		Env:       env,
+		Window:    subject.Window{Session: env.Session, ClaudePID: env.ClaudePID},
+		Scope:     scope,
+		Subjects:  s.subjects,
+		DB:        s.db,
+		Append:    s.Append,
+		HTTPPort:  s.httpPort,
+		Activity:  s.activity,
+		RepoLock:  s.repoLock(scope),
+		Peer:      peer,
+		WireBuild: wireBuild,
 	})
 }
 
@@ -488,20 +524,20 @@ func (s *Server) Dispatch(ctx context.Context, env Envelope) Reply {
 
 func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
 	handlers := s.freezeHandlers()
-	serverDeadlines := make(map[wire.Op]time.Duration, len(handlers))
-	clientDeadlines := make(map[wire.Op]time.Duration, len(handlers))
+	serverDeadlines := make(map[wire.Op]time.Duration, len(handlers)+1)
+	clientDeadlines := make(map[wire.Op]time.Duration, len(handlers)+1)
 	for op := range handlers {
 		serverDeadlines[wire.Op(op)] = handleTimeout
 		clientDeadlines[wire.Op(op)] = handleTimeout + time.Second
 	}
+	serverDeadlines[wire.Op(OpRuntimeHealth)] = time.Second
+	clientDeadlines[wire.Op(OpRuntimeHealth)] = 2 * time.Second
 	ladder, err := wire.NewLadder(serverDeadlines, clientDeadlines)
 	if err != nil {
 		return nil, nil, err
 	}
 	wireServer := &wire.Server{
-		Build: s.version, LifecycleBuild: s.lifecycleBuild, MaxFrame: s.maxFrameBytes, Ladder: ladder,
-		ReservedProtectedSessions:  1,
-		ProtectedSessionClassifier: s.daemonRole,
+		WireBuild: s.wireBuild, MaxFrame: s.maxFrameBytes, Ladder: ladder,
 	}
 	for op := range handlers {
 		op := op
@@ -511,22 +547,29 @@ func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
 				return nil, err
 			}
 			env.Op = op
-			return s.dispatchPeer(ctx, env, req.Peer, req.Build), nil
+			return s.dispatchPeer(ctx, env, req.Peer, req.WireBuild), nil
 		})
 	}
-	peer := &wire.LifecyclePeer{Config: wire.ClientConfig{
-		Dial: wire.UnixDialer(s.socket), Build: s.version, LifecycleBuild: s.lifecycleBuild, MaxFrame: s.maxFrameBytes,
-	}}
-	runtime, err := dkdaemon.NewRuntime(dkdaemon.RuntimeConfig{
-		Socket: s.socket, Build: s.lifecycleBuild, Protocol: int(wire.ProtocolVersion),
-		Peer: peer, Contract: dkdaemon.RequestDaemon, WaitMode: dkdaemon.PIDExit,
-		Admission: s.wireIntake, Server: &sessionServer{owner: s, wire: wireServer},
-		Workers: &serverWorkers{owner: s}, State: serverState{owner: s}, Resources: lifecycleResource{peer},
+	runtime, err := wire.NewRuntime(wire.RuntimeConfig{
+		Socket: s.socket, RuntimeBuild: s.runtimeBuild, RuntimeProtocol: int(wire.ProtocolVersion),
+		Wire: wireServer, Classifier: s.daemonRole,
+		ReservedProtectedSessions: 1,
+		StopVerifier: wire.StopVerifier{
+			Classifier: s.daemonRole, Role: s.daemonRole.RoleID, Store: processStore(s.paths),
+		},
+		Observations: []wire.ObservationRoute{{
+			Op: wire.Op(OpRuntimeHealth), MaxResponseBytes: min(s.maxFrameBytes, 1024), AvailableBeforeReady: true,
+			Handler: s.observeRuntimeHealth,
+		}},
+		Readiness: serverReadiness{owner: s},
+		Admission: s.wireIntake, Workers: &serverWorkers{owner: s},
+		State: serverState{owner: s}, Resources: serverResources{},
 		Activate: s.activate,
 	})
 	if err != nil {
-		return nil, nil, errors.Join(err, peer.Close())
+		return nil, nil, err
 	}
+	s.daemonRuntime = runtime
 	return wireServer, runtime, nil
 }
 
@@ -558,50 +601,19 @@ func decodeEnvelope(payload []byte) (Envelope, error) {
 	return env, nil
 }
 
-type sessionServer struct {
-	owner *Server
-	wire  *wire.Server
-}
-
-func (s *sessionServer) Serve(
-	ctx context.Context,
-	listener net.Listener,
-	ready func() error,
-	admit, admitLifecycle func() (func(), error),
-) error {
-	workerCtx, cancel := context.WithCancel(ctx)
-	s.owner.serveCtxMu.Lock()
-	s.owner.serveCtx = workerCtx
-	s.owner.serveCancel = cancel
-	canceled := s.owner.workersCanceled
-	s.owner.serveCtxMu.Unlock()
-	if canceled {
-		cancel()
-		return workerCtx.Err()
-	}
-	if s.owner.bootReconcile != nil {
-		if err := s.owner.bootReconcile(workerCtx, s.owner); err != nil {
-			return err
-		}
-	}
-	if err := s.owner.reconcileDirectives(workerCtx); err != nil {
-		return err
-	}
-	if err := s.owner.reconcileSubscriptions(workerCtx); err != nil {
-		return err
-	}
-	if err := s.owner.startHTTP(workerCtx); err != nil {
-		return err
-	}
-	s.owner.log.Printf("daemon %s started; socket=%s http=%s", s.owner.version, s.owner.socket, net.JoinHostPort(s.owner.bindHost(), strconv.Itoa(s.owner.httpPort)))
-	err := s.wire.Serve(ctx, listener, ready, admit, admitLifecycle)
-	s.owner.log.Printf("daemon stopped")
-	return err
-}
-
-func (s *sessionServer) CloseIntake() error { return s.wire.CloseIntake() }
-
 type serverWorkers struct{ owner *Server }
+
+type serverReadiness struct{ owner *Server }
+
+func (r serverReadiness) Published() bool { return r.owner.runtimeReady.Load() }
+
+func (r serverReadiness) BeforeReady(ctx context.Context) error {
+	return r.owner.activateServing(ctx)
+}
+
+func (r serverReadiness) AfterReady(err error) {
+	r.owner.runtimeReady.Store(err == nil)
+}
 
 func (w *serverWorkers) Close() {
 	w.owner.workers.Close()
@@ -624,10 +636,10 @@ func (w *serverWorkers) Wait(ctx context.Context) error {
 	return errors.Join(settleErr, workerErr)
 }
 
-type lifecycleResource struct{ peer *wire.LifecyclePeer }
-
-func (r lifecycleResource) Close() error { return r.peer.Close() }
-
 type serverState struct{ owner *Server }
 
 func (s serverState) Close() error { return s.owner.closeState() }
+
+type serverResources struct{}
+
+func (serverResources) Close() error { return nil }

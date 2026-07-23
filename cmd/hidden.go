@@ -32,6 +32,19 @@ func DaemonCmd(d Deps) *cobra.Command {
 	}
 }
 
+// DaemonStopControlCmd is the reserved exact-role child entry point for stop.
+func DaemonStopControlCmd(d Deps) *cobra.Command {
+	return &cobra.Command{
+		Use:    daemon.StopControlCommand,
+		Short:  "Stop the background daemon as its exact runtime role",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return d.RunStopControl(cmd.Context())
+		},
+	}
+}
+
 // SessionRecordCmd is the hidden SessionStart hook handler: it rebinds the
 // window's subject to the rotated session id. Claude Code fires SessionStart
 // before any tool use in the new session, so the rebind lands before the first

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/wire"
 )
 
@@ -42,12 +41,11 @@ func (e *CallError) Error() string {
 // Unwrap returns the underlying transport error, when present.
 func (e *CallError) Unwrap() error { return e.Err }
 
-// ClientConfig identifies one exact daemon build and persistent control socket.
+// ClientConfig identifies one exact wire schema and persistent control socket.
 type ClientConfig struct {
-	Socket         string
-	Build          string
-	LifecycleBuild string
-	MaxFrameBytes  int
+	Socket        string
+	WireBuild     string
+	MaxFrameBytes int
 }
 
 type clientSession struct {
@@ -62,16 +60,14 @@ type closingClientSession struct {
 	stale   bool
 }
 
-// Client maintains a generation-aware business session and daemonkit's exact
-// lifecycle peer. A failed business operation is never replayed; the next
-// operation establishes a fresh session.
+// Client maintains a generation-aware business session. A failed business
+// operation is never replayed; the next operation establishes a fresh session.
 type Client struct {
 	cfg ClientConfig
 
 	mu         sync.Mutex
 	current    *clientSession
 	sessions   map[*clientSession]struct{}
-	lifecycle  *wire.LifecyclePeer
 	dialing    chan struct{}
 	generation uint64
 	operations sync.WaitGroup
@@ -83,13 +79,12 @@ type Client struct {
 
 // NewClient connects and completes the exact v1 build handshake.
 func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
-	if cfg.LifecycleBuild == "" {
-		return nil, errors.New("daemon: lifecycle build is required")
+	if cfg.WireBuild != WireBuild {
+		return nil, fmt.Errorf("daemon: wire build %q, want exactly %q", cfg.WireBuild, WireBuild)
 	}
 	c := &Client{
 		cfg:       cfg,
 		sessions:  make(map[*clientSession]struct{}),
-		lifecycle: &wire.LifecyclePeer{Config: lifecycleWireConfig(cfg)},
 		closeDone: make(chan struct{}),
 	}
 	session, err := c.dial(ctx)
@@ -104,30 +99,24 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 }
 
 func (c *Client) dial(ctx context.Context) (*clientSession, error) {
-	client, err := wire.NewClient(ctx, businessWireConfig(c.cfg))
+	client, err := wire.NewClient(ctx, wireClientConfig(c.cfg))
 	if err != nil {
 		return nil, fmt.Errorf("daemon: connect: %w", err)
 	}
 	return &clientSession{wire: client}, nil
 }
 
-func businessWireConfig(cfg ClientConfig) wire.ClientConfig {
+func wireClientConfig(cfg ClientConfig) wire.ClientConfig {
 	maxFrame := cfg.MaxFrameBytes
 	if maxFrame == 0 {
 		maxFrame = maxFrameBytes
 	}
 	return wire.ClientConfig{
-		Dial: wire.UnixDialer(cfg.Socket), Build: cfg.Build, MaxFrame: maxFrame,
+		Dial: wire.UnixDialer(cfg.Socket), WireBuild: cfg.WireBuild, MaxFrame: maxFrame,
 	}
 }
 
-func lifecycleWireConfig(cfg ClientConfig) wire.ClientConfig {
-	wireCfg := businessWireConfig(cfg)
-	wireCfg.LifecycleBuild = cfg.LifecycleBuild
-	return wireCfg
-}
-
-// Close permanently closes every business and lifecycle session.
+// Close permanently closes every business session.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	if c.closing || c.closed {
@@ -152,7 +141,6 @@ func (c *Client) Close() error {
 	}
 	c.current = nil
 	clear(c.sessions)
-	lifecycle := c.lifecycle
 	c.mu.Unlock()
 	var errs []error
 	for _, closing := range sessions {
@@ -163,9 +151,6 @@ func (c *Client) Close() error {
 		if err := closing.session.wire.Close(); err != nil {
 			errs = append(errs, err)
 		}
-	}
-	if err := lifecycle.Close(); err != nil {
-		errs = append(errs, err)
 	}
 	err := errors.Join(errs...)
 	c.mu.Lock()
@@ -201,32 +186,26 @@ func (c *Client) Do(ctx context.Context, env Envelope) (Reply, error) {
 	return reply, nil
 }
 
-// Health returns the connected daemon's exact lifecycle state.
-func (c *Client) Health(ctx context.Context) (dkdaemon.Health, error) {
+// RuntimeHealth returns the daemon's product-visible readiness snapshot.
+func (c *Client) RuntimeHealth(ctx context.Context) (RuntimeHealth, error) {
 	if err := c.beginOperation(); err != nil {
-		return dkdaemon.Health{}, ErrClientClosed
+		return RuntimeHealth{}, err
 	}
 	defer c.operations.Done()
 	ctx, cancel := operationContext(ctx)
 	defer cancel()
-	c.mu.Lock()
-	lifecycle := c.lifecycle
-	c.mu.Unlock()
-	return lifecycle.Health(ctx)
-}
-
-// Shutdown requests orderly daemon shutdown.
-func (c *Client) Shutdown(ctx context.Context) error {
-	if err := c.beginOperation(); err != nil {
-		return ErrClientClosed
+	result, err := c.call(ctx, wire.Op(OpRuntimeHealth), nil)
+	if err != nil {
+		return RuntimeHealth{}, err
 	}
-	defer c.operations.Done()
-	ctx, cancel := operationContext(ctx)
-	defer cancel()
-	c.mu.Lock()
-	lifecycle := c.lifecycle
-	c.mu.Unlock()
-	return lifecycle.Shutdown(ctx)
+	if result.Response.Err != "" {
+		return RuntimeHealth{}, errors.New(result.Response.Err)
+	}
+	var health RuntimeHealth
+	if err := decodeStrict(result.Response.Payload, &health); err != nil {
+		return RuntimeHealth{}, fmt.Errorf("daemon: decode runtime health: %w", err)
+	}
+	return health, nil
 }
 
 func operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -257,6 +236,9 @@ func (c *Client) call(ctx context.Context, op wire.Op, payload []byte) (wire.Res
 	}
 	c.release(session)
 	if callErr != nil || result.Outcome != wire.Delivered {
+		if callErr == nil {
+			callErr = result.Rejection()
+		}
 		return result, &CallError{
 			Op: op, Outcome: result.Outcome, Reason: result.Response.Reason, Err: callErr,
 		}

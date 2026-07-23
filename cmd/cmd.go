@@ -34,6 +34,10 @@ type Deps struct {
 	// EnsureCurrentIfRunning upgrades a running daemon but never cold-starts one —
 	// for hooks, which must not boot daemons (daemon.Launcher.EnsureCurrentIfRunning).
 	EnsureCurrentIfRunning func(ctx context.Context) error
+	// Stop launches the exact role executable in its reserved one-shot control mode.
+	Stop func(ctx context.Context) error
+	// RunStopControl performs protected shutdown inside that exact-role child.
+	RunStopControl func(ctx context.Context) error
 	// ClaudePID resolves the window identity stamped on every envelope (typically
 	// procs.ClaudePID). 0 is a pid-less consumer outside any Claude window.
 	ClaudePID func() int
