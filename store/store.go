@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -135,6 +136,10 @@ func Open(ctx context.Context, dbPath string, extension Schema) (*Store, error) 
 	if err != nil {
 		return nil, err
 	}
+	sqliteSchemaFingerprint, err := expectedSQLiteSchemaFingerprint(ctx, extension, fingerprint)
+	if err != nil {
+		return nil, err
+	}
 	info, err := os.Stat(dbPath)
 	exists := err == nil
 	if err != nil && !os.IsNotExist(err) {
@@ -152,13 +157,17 @@ func Open(ctx context.Context, dbPath string, extension Schema) (*Store, error) 
 	}
 	db.SetMaxOpenConns(1)
 	if exists {
-		if err := verifySchema(ctx, db, fingerprint); err != nil {
+		if err := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
 		return &Store{db: db}, nil
 	}
 	if err := createSchema(ctx, db, extension, fingerprint); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -195,7 +204,54 @@ func createSchema(ctx context.Context, db *sql.DB, extension Schema, fingerprint
 	return nil
 }
 
-func verifySchema(ctx context.Context, db *sql.DB, wantFingerprint string) error {
+func expectedSQLiteSchemaFingerprint(ctx context.Context, extension Schema, fingerprint string) (string, error) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return "", fmt.Errorf("open expected sqlite_schema: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer func() { _ = db.Close() }()
+	if err := createSchema(ctx, db, extension, fingerprint); err != nil {
+		return "", fmt.Errorf("create expected sqlite_schema: %w", err)
+	}
+	value, err := liveSQLiteSchemaFingerprint(ctx, db)
+	if err != nil {
+		return "", fmt.Errorf("fingerprint expected sqlite_schema: %w", err)
+	}
+	return value, nil
+}
+
+func liveSQLiteSchemaFingerprint(ctx context.Context, db *sql.DB) (string, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT type, name, tbl_name, COALESCE(sql, '')
+FROM sqlite_schema
+WHERE name NOT GLOB 'sqlite_*'
+ORDER BY type, name, tbl_name, sql`)
+	if err != nil {
+		return "", fmt.Errorf("query sqlite_schema: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	digest := sha256.New()
+	for rows.Next() {
+		var objectType, name, tableName, definition string
+		if err := rows.Scan(&objectType, &name, &tableName, &definition); err != nil {
+			return "", fmt.Errorf("scan sqlite_schema: %w", err)
+		}
+		for _, field := range []string{objectType, name, tableName, definition} {
+			var length [8]byte
+			binary.BigEndian.PutUint64(length[:], uint64(len(field)))
+			_, _ = digest.Write(length[:])
+			_, _ = digest.Write([]byte(field))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterate sqlite_schema: %w", err)
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func verifySchema(ctx context.Context, db *sql.DB, wantFingerprint, wantSQLiteSchemaFingerprint string) error {
 	var version int
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
@@ -209,6 +265,13 @@ func verifySchema(ctx context.Context, db *sql.DB, wantFingerprint string) error
 	}
 	if fingerprint != wantFingerprint {
 		return fmt.Errorf("store: schema fingerprint %q, want exactly %q", fingerprint, wantFingerprint)
+	}
+	sqliteSchemaFingerprint, err := liveSQLiteSchemaFingerprint(ctx, db)
+	if err != nil {
+		return err
+	}
+	if sqliteSchemaFingerprint != wantSQLiteSchemaFingerprint {
+		return fmt.Errorf("store: sqlite_schema fingerprint %q, want exactly %q", sqliteSchemaFingerprint, wantSQLiteSchemaFingerprint)
 	}
 	return nil
 }

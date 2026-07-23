@@ -116,6 +116,41 @@ func TestOpenRejectsForeignUserVersion(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsLiveSQLiteSchemaDrift(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate string
+	}{
+		{name: "extra table", mutate: `CREATE TABLE drift_table (id TEXT PRIMARY KEY);`},
+		{name: "extra index", mutate: `CREATE INDEX drift_index ON subjects(scope);`},
+		{name: "extra trigger", mutate: `CREATE TRIGGER drift_trigger AFTER INSERT ON subjects BEGIN SELECT 1; END;`},
+		{name: "dropped object", mutate: `DROP INDEX idx_subjects_scope;`},
+		{name: "altered object", mutate: `ALTER TABLE subjects ADD COLUMN drift TEXT;`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			path := filepath.Join(t.TempDir(), "test.db")
+			created, err := Open(ctx, path, Schema{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := created.DB().Exec(tt.mutate); err != nil {
+				t.Fatalf("mutate live schema: %v", err)
+			}
+			if err := created.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = Open(ctx, path, Schema{})
+			if err == nil || !strings.Contains(err.Error(), "sqlite_schema fingerprint") {
+				t.Fatalf("schema drift error = %v, want live sqlite_schema rejection", err)
+			}
+		})
+	}
+}
+
 func TestSchemaRejectsCompatibilityDDL(t *testing.T) {
 	_, err := (Schema{DDL: `CREATE TABLE IF NOT EXISTS widgets(id TEXT);`}).Fingerprint()
 	if err == nil || !strings.Contains(err.Error(), "IF NOT EXISTS") {
