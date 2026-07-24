@@ -30,8 +30,9 @@ import (
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/subject"
-	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/service"
+	"github.com/yasyf/daemonkit/trust"
 )
 
 // appVersion is the ldflags stamp target: -X main.appVersion=<version>.
@@ -80,18 +81,42 @@ type itemBody struct {
 
 func appPaths() paths.Paths { return paths.Paths{App: appDir} }
 
-func appDaemonRole() daemonrole.Classifier {
-	return daemonrole.Classifier{
-		RoleID: "com.yasyf.cc-interact.echo", RolePath: filepath.Join(appPaths().StateDir(), "bin", appName),
+func appRoles() daemon.Roles {
+	return daemon.Roles{
+		Business: trust.UnprotectedRole, Lifecycle: "com.yasyf.cc-interact.echo.lifecycle.v1",
+		StopControl: "com.yasyf.cc-interact.echo.stop.v1",
 	}
+}
+
+func appTrustPolicy() (trust.TrustPolicy, error) {
+	roles := appRoles()
+	requirement := trust.Requirement{TeamID: "SXKCTF23Q2", SigningIdentifier: "com.yasyf.cc-interact.echo"}
+	return trust.NewTrustPolicy(trust.TrustPolicyConfig{
+		ExpectedUID: os.Geteuid(), AllowUnprotected: true,
+		Roles:     map[trust.PeerRole]trust.Requirement{roles.Lifecycle: requirement, roles.StopControl: requirement},
+		StopRoles: []trust.PeerRole{roles.StopControl}, ReceiptRoles: []trust.PeerRole{roles.Lifecycle},
+		ReadinessRoles: []trust.PeerRole{roles.Lifecycle},
+	})
 }
 
 func newClient(ctx context.Context) (*daemon.Client, error) { return launcher().NewClient(ctx) }
 
 func launcher() daemon.Launcher {
+	executable, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		panic(err)
+	}
 	return daemon.Launcher{
 		Paths: appPaths(), WireBuild: daemon.WireBuild, RuntimeBuild: appVersion,
-		Args: []string{"daemon"}, StopArgs: []string{daemon.StopControlCommand}, DaemonRole: appDaemonRole(),
+		Agent: service.Agent{
+			Label: "com.yasyf.cc-interact.echo", Program: executable, Args: []string{"daemon"},
+			LogPath: appPaths().LogPath(), RestartPolicy: service.RestartOnFailure,
+		},
+		Roles: appRoles(),
 	}
 }
 
@@ -172,12 +197,17 @@ func agentGreeting(info agent.Info) string {
 // headless is the whole point.
 func buildServer() (*daemon.Server, error) {
 	c := channel.Connectivity{}
+	policy, err := appTrustPolicy()
+	if err != nil {
+		return nil, err
+	}
 	s, err := daemon.New(daemon.Config{
 		AppName:        appName,
 		Paths:          appPaths(),
 		WireBuild:      daemon.WireBuild,
 		RuntimeBuild:   appVersion,
-		DaemonRole:     appDaemonRole(),
+		TrustPolicy:    policy,
+		Roles:          appRoles(),
 		ActiveStatuses: []string{statusOpen},
 		// c.Type() (not c.EventType) so the SSE plane filters the same presence
 		// type the hooks emit — correct even for the Connectivity zero value.
@@ -340,7 +370,6 @@ func deps() cmd.Deps {
 		EnsureCurrent:          func(ctx context.Context) error { return launcher().EnsureCurrent(ctx, daemon.UpgradeTimeout) },
 		EnsureCurrentIfRunning: func(ctx context.Context) error { return launcher().EnsureCurrentIfRunning(ctx) },
 		Stop:                   func(ctx context.Context) error { return launcher().Stop(ctx, daemon.UpgradeTimeout) },
-		RunStopControl:         func(ctx context.Context) error { return launcher().RunStopControl(ctx) },
 		ClaudePID:              os.Getpid,
 		TerminalEvent:          func(t string) bool { return t == eventDone },
 		Serve:                  func(ctx context.Context) error { return serve(ctx) },
@@ -507,7 +536,6 @@ func root() *cobra.Command {
 	}
 	r.AddCommand(
 		cmd.DaemonCmd(d),
-		cmd.DaemonStopControlCmd(d),
 		withSessionDefault(cmd.WatchCmd(d)),
 		withSessionDefault(cmd.StatusCmd(d)),
 		cmd.StopCmd(d),

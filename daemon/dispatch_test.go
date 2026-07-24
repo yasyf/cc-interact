@@ -30,8 +30,9 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 	if cfg.ActiveStatuses == nil {
 		cfg.ActiveStatuses = []string{"open"}
 	}
-	if cfg.DaemonRole.RoleID == "" {
-		cfg.DaemonRole = testDaemonRole(t)
+	if cfg.Roles.Business == "" {
+		cfg.TrustPolicy = testTrustPolicy(t)
+		cfg.Roles = testRoles()
 	}
 	s, err := New(cfg)
 	if err != nil {

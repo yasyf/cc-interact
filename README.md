@@ -70,11 +70,11 @@ You get cc-review's plugin payload with the review strings swapped for yours. Th
 
 ## What the framework owns
 
-One process model, shipped. A lazily spawned daemon owns a single-writer SQLite (WAL) holding an append-only per-subject event log; the browser, `watch`, and the MCP channel all read the same SSE plane; newest-wins eviction upgrades the daemon in place when a newer binary lands. You register domain ops against a generic control envelope and the framework routes the rest.
+One process model, shipped. A launchd-managed daemon owns a single-writer SQLite (WAL) holding an append-only per-subject event log; the browser, `watch`, and the MCP channel all read the same SSE plane. Daemonkit owns exact service convergence, signed peer roles, readiness, and receipt-authenticated replacement. You register domain ops against a generic control envelope and the framework routes the rest.
 
 | Package | Owns |
 |---|---|
-| `daemon` | lazy spawn, newest-wins eviction, peer-credential identity, the op registry, the edit gate |
+| `daemon` | exact service convergence, signed roles, durable stop, the op registry, and the edit gate |
 | `store` | exact v1 pure-Go SQLite holding subjects, the event log, and declarative consumer tables |
 | `event` | the log-entry type and the per-subject pub/sub wakeup |
 | `sse` | the HTTP `/events` plane, at-least-once SSE with `Last-Event-ID` resume |

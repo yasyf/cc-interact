@@ -115,7 +115,7 @@ func (s *Server) observeRuntimeHealth(ctx context.Context, _ wire.ObservationReq
 		RuntimeBuild:      health.RuntimeBuild,
 		RuntimeProtocol:   health.RuntimeProtocol,
 		PID:               health.PID,
-		ProcessGeneration: health.ProcessGeneration,
+		ProcessGeneration: health.ProcessGeneration.String(),
 		Ready:             health.Ready,
 		State:             state,
 		Draining:          health.Draining,

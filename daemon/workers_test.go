@@ -32,15 +32,14 @@ func TestWorkerGroupRejectsStartsAfterCloseAndBoundsWait(t *testing.T) {
 
 func TestRuntimeActivationHonorsCancellationBeforePublishingWorkers(t *testing.T) {
 	s := newTestServer(t, Config{})
-	workers := &serverWorkers{owner: s}
-	workers.Close()
-	workers.Cancel()
 	called := false
 	s.bootReconcile = func(context.Context, *Server) error {
 		called = true
 		return nil
 	}
-	err := s.activateServing(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := s.activateServing(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Serve err = %v, want context cancellation", err)
 	}

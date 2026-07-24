@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,10 +18,12 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/daemon"
-	"github.com/yasyf/daemonkit/daemonrole"
-	"github.com/yasyf/daemonkit/drain"
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/proc"
+	"github.com/yasyf/daemonkit/trust"
 	"github.com/yasyf/daemonkit/wire"
+	"github.com/yasyf/daemonkit/worker"
 )
 
 const testClaudePID = 4242
@@ -50,10 +51,6 @@ func (r *recorder) last() daemon.Envelope {
 func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (string, *recorder) {
 	t.Helper()
 	socket := filepath.Join(shortTempDir(t), "d.sock")
-	ln, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
 	rec := &recorder{}
 	server := &wire.Server{WireBuild: daemon.WireBuild}
 	for _, op := range []daemon.Op{
@@ -62,7 +59,7 @@ func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (string,
 		daemon.OpAgentDirect, daemon.OpAgentReconcile,
 	} {
 		op := op
-		server.RegisterConcurrent(wire.Op(op), func(_ context.Context, request wire.Request) (any, error) {
+		server.Register(wire.HandlerSpec{Op: wire.Op(op), Concurrent: true, Handler: func(_ context.Context, request wire.Request) (any, error) {
 			var env daemon.Envelope
 			if err := json.Unmarshal(request.Payload, &env); err != nil {
 				return nil, err
@@ -70,19 +67,56 @@ func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (string,
 			env.Op = op
 			rec.record(env)
 			return reply(env), nil
-		})
+		}})
 	}
-	intake := &drain.Intake{}
+	policy, err := trust.NewTrustPolicy(trust.TrustPolicyConfig{ExpectedUID: os.Geteuid(), AllowUnprotected: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation, err := proc.ProcessGeneration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper := &proc.Reaper{Store: &proc.FileStore{Path: filepath.Join(t.TempDir(), "processes.db")}, Generation: generation}
+	children, err := proc.NewManager(4, reaper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disposable, err := worker.NewPool(worker.Config{
+		Capacity: 1, QueueCapacity: 0, MaxTotalRun: 30 * time.Second,
+		MaxStdinBytes: 1, MaxStdoutBytes: 1, MaxStderrBytes: 1,
+	}, reaper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := wire.NewRuntime(wire.RuntimeConfig{
+		Socket: socket, RuntimeBuild: "test", RuntimeProtocol: 1, Wire: server, TrustPolicy: policy,
+		StopControlStore: &proc.FileStore{Path: filepath.Join(t.TempDir(), "stop.db")},
+		Workers:          disposable, Children: children, ShutdownTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
+	slot := dkdaemon.NewPublicationSlot[struct{}](runtime)
+	activation, err := runtime.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := slot.Stage(activation, struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := activation.CommitReady(publication); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
-	go func() {
-		done <- server.Serve(ctx, ln, func() error { return nil }, intake.Admit, intake.Admit)
-	}()
+	go func() { done <- runtime.Wait(context.Background()) }()
 	t.Cleanup(func() {
-		intake.Close()
-		_ = server.CloseIntake()
 		cancel()
-		_ = ln.Close()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutdownCancel()
+		_ = runtime.Shutdown(shutdownCtx)
 		<-done
 	})
 	return socket, rec
@@ -110,13 +144,12 @@ func testDepsWithMaxFrame(socket string, maxFrameBytes int) Deps {
 		Version: "9.9.9",
 		NewClient: func(ctx context.Context) (*daemon.Client, error) {
 			return daemon.NewClient(ctx, daemon.ClientConfig{
-				Socket: socket, WireBuild: daemon.WireBuild, MaxFrameBytes: maxFrameBytes,
+				Socket: socket, WireBuild: daemon.WireBuild, Role: trust.UnprotectedRole, MaxFrameBytes: maxFrameBytes,
 			})
 		},
 		EnsureCurrent:          func(context.Context) error { return nil },
 		EnsureCurrentIfRunning: func(context.Context) error { return nil },
 		Stop:                   func(context.Context) error { return nil },
-		RunStopControl:         func(context.Context) error { return nil },
 		ClaudePID:              func() int { return testClaudePID },
 		TerminalEvent:          func(t string) bool { return t == "submit" },
 	}
@@ -132,24 +165,29 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 	t.Setenv("HOME", home)
 
 	p := paths.Paths{App: ".cc-interact-test"}
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatalf("resolve executable: %v", err)
+	roles := daemon.Roles{
+		Business: trust.UnprotectedRole, Lifecycle: "com.yasyf.cc-interact.cmd-test.lifecycle.v1",
+		StopControl: "com.yasyf.cc-interact.cmd-test.stop.v1",
 	}
-	target, err := filepath.EvalSymlinks(executable)
+	policy, err := trust.NewTrustPolicy(trust.TrustPolicyConfig{
+		ExpectedUID: os.Geteuid(), AllowUnprotected: true,
+		Roles: map[trust.PeerRole]trust.Requirement{
+			roles.Lifecycle:   {TeamID: "TESTTEAM", SigningIdentifier: "com.yasyf.cc-interact.cmd-test.lifecycle"},
+			roles.StopControl: {TeamID: "TESTTEAM", SigningIdentifier: "com.yasyf.cc-interact.cmd-test.stop"},
+		},
+		StopRoles: []trust.PeerRole{roles.StopControl}, ReceiptRoles: []trust.PeerRole{roles.Lifecycle},
+		ReadinessRoles: []trust.PeerRole{roles.Lifecycle},
+	})
 	if err != nil {
-		t.Fatalf("resolve executable target: %v", err)
-	}
-	rolePath := filepath.Join(home, "cc-interact-cmd-test")
-	if err := os.Symlink(target, rolePath); err != nil {
-		t.Fatalf("create daemon role: %v", err)
+		t.Fatalf("trust policy: %v", err)
 	}
 	s, err := daemon.New(daemon.Config{
 		AppName:        "cc-interact-test",
 		Paths:          p,
 		WireBuild:      daemon.WireBuild,
 		RuntimeBuild:   "9.9.9",
-		DaemonRole:     daemonrole.Classifier{RoleID: "com.yasyf.cc-interact.cmd-test", RolePath: rolePath},
+		TrustPolicy:    policy,
+		Roles:          roles,
 		ActiveStatuses: []string{"open"},
 		MaxFrameBytes:  maxFrameBytes,
 	})
@@ -174,7 +212,9 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		client, err := daemon.NewClient(probeCtx, daemon.ClientConfig{Socket: p.SocketPath(), WireBuild: daemon.WireBuild})
+		client, err := daemon.NewClient(probeCtx, daemon.ClientConfig{
+			Socket: p.SocketPath(), WireBuild: daemon.WireBuild, Role: trust.UnprotectedRole,
+		})
 		if err == nil {
 			health, healthErr := client.RuntimeHealth(probeCtx)
 			_ = client.Close()
@@ -369,13 +409,6 @@ func TestStatusNotRunning(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "daemon: not running") {
 		t.Fatalf("status output = %q", out.String())
-	}
-}
-
-func TestDaemonStopControlCommandIsHiddenAndReserved(t *testing.T) {
-	control := DaemonStopControlCmd(testDeps("unused.sock"))
-	if !control.Hidden || control.Use != daemon.StopControlCommand {
-		t.Fatalf("control command hidden=%t use=%q", control.Hidden, control.Use)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yasyf/daemonkit/trust"
 	"github.com/yasyf/daemonkit/wire"
 )
 
@@ -45,6 +46,7 @@ func (e *CallError) Unwrap() error { return e.Err }
 type ClientConfig struct {
 	Socket        string
 	WireBuild     string
+	Role          trust.PeerRole
 	MaxFrameBytes int
 }
 
@@ -82,6 +84,9 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if cfg.WireBuild != WireBuild {
 		return nil, fmt.Errorf("daemon: wire build %q, want exactly %q", cfg.WireBuild, WireBuild)
 	}
+	if cfg.Role == "" {
+		return nil, errors.New("daemon: client role is required")
+	}
 	c := &Client{
 		cfg:       cfg,
 		sessions:  make(map[*clientSession]struct{}),
@@ -112,7 +117,7 @@ func wireClientConfig(cfg ClientConfig) wire.ClientConfig {
 		maxFrame = maxFrameBytes
 	}
 	return wire.ClientConfig{
-		Dial: wire.UnixDialer(cfg.Socket), WireBuild: cfg.WireBuild, MaxFrame: maxFrame,
+		Dial: wire.UnixDialer(cfg.Socket), WireBuild: cfg.WireBuild, Role: cfg.Role, MaxFrame: maxFrame,
 	}
 }
 

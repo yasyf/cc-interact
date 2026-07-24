@@ -9,10 +9,10 @@ import (
 	"time"
 
 	dkdaemon "github.com/yasyf/daemonkit/daemon"
-	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/proc"
 	"github.com/yasyf/daemonkit/service"
+	"github.com/yasyf/daemonkit/trust"
 	"github.com/yasyf/daemonkit/version"
 	"github.com/yasyf/daemonkit/wire"
 )
@@ -22,9 +22,6 @@ const UpgradeTimeout = 30 * time.Second
 
 // ErrNoPeer means the local runtime endpoint is provably absent.
 var ErrNoPeer = errors.New("daemon: no peer")
-
-// StopControlCommand is the reserved exact-role one-shot stop entry point.
-const StopControlCommand = "daemon-control-stop"
 
 type runtimeAction uint8
 
@@ -41,9 +38,8 @@ type Launcher struct {
 	Paths        paths.Paths
 	WireBuild    string
 	RuntimeBuild string
-	Args         []string
-	StopArgs     []string
-	DaemonRole   daemonrole.Classifier
+	Agent        service.Agent
+	Roles        Roles
 }
 
 // NewClient connects to the exact business protocol selected by this launcher.
@@ -51,7 +47,7 @@ func (l Launcher) NewClient(ctx context.Context) (*Client, error) {
 	if err := l.validate(); err != nil {
 		return nil, err
 	}
-	return NewClient(ctx, ClientConfig{Socket: l.Paths.SocketPath(), WireBuild: l.WireBuild})
+	return NewClient(ctx, ClientConfig{Socket: l.Paths.SocketPath(), WireBuild: l.WireBuild, Role: l.Roles.Business})
 }
 
 // EnsureCurrent starts or upgrades the daemon and waits for exact product readiness.
@@ -65,7 +61,7 @@ func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) (err
 		return l.withController(operationCtx, func(controller *service.Controller) error {
 			health, probeErr := l.runtimeHealth(operationCtx)
 			if errors.Is(probeErr, ErrNoPeer) {
-				return l.spawn(timeout).EnsureRunning(operationCtx)
+				return l.start(operationCtx, controller, timeout)
 			}
 			if probeErr != nil {
 				return probeErr
@@ -78,19 +74,22 @@ func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) (err
 			case runtimeNoop:
 				return nil
 			case runtimeSpawn:
-				return l.spawn(timeout).EnsureRunning(operationCtx)
+				return l.start(operationCtx, controller, timeout)
 			case runtimeStopUpgrade:
-				if err := l.stopRuntime(operationCtx, controller, health, wire.StopIntentUpgrade); err != nil {
+				if err := l.stopRuntime(operationCtx, controller, health); err != nil {
 					return err
 				}
 			case runtimeStopRestart:
-				if err := l.stopRuntime(operationCtx, controller, health, wire.StopIntentRestart); err != nil {
+				if err := l.stopRuntime(operationCtx, controller, health); err != nil {
 					return err
 				}
 			default:
 				return fmt.Errorf("daemon: invalid runtime action %d for generation %s", action, health.ProcessGeneration)
 			}
-			if err := l.spawn(timeout).EnsureRunning(operationCtx); err != nil {
+			if err := controller.Converge(operationCtx, nil); err != nil {
+				return fmt.Errorf("daemon: settle prior service: %w", err)
+			}
+			if err := l.start(operationCtx, controller, timeout); err != nil {
 				if health, probeErr := l.runtimeHealth(operationCtx); probeErr == nil && version.Newer(health.RuntimeBuild, l.RuntimeBuild) {
 					return fmt.Errorf("daemon runtime build %s is newer than client build %s", health.RuntimeBuild, l.RuntimeBuild)
 				}
@@ -101,21 +100,12 @@ func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) (err
 	})
 }
 
-func (l Launcher) spawn(timeout time.Duration) proc.Spawn {
-	return proc.Spawn{
-		Socket:   l.Paths.SocketPath(),
-		LogPath:  l.Paths.LogPath(),
-		Args:     l.Args,
-		ExecPath: l.DaemonRole.RolePath,
-		Timeout:  timeout,
-		Available: func() bool {
-			probeCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-			health, err := l.runtimeHealth(probeCtx)
-			return err == nil && l.ready(health)
-		},
-		CanHost: func() error { return nil },
+func (l Launcher) start(ctx context.Context, controller *service.Controller, timeout time.Duration) error {
+	if err := controller.Converge(ctx, []service.Agent{l.Agent}); err != nil {
+		return fmt.Errorf("daemon: converge service: %w", err)
 	}
+	_, err := wire.AcquireReadyRuntime(ctx, l.runtimeClientConfig(l.Roles.Lifecycle, timeout), l.RuntimeBuild)
+	return err
 }
 
 // EnsureCurrentIfRunning upgrades a running daemon without cold-starting one.
@@ -138,8 +128,8 @@ func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
 	return l.EnsureCurrent(ctx, UpgradeTimeout)
 }
 
-// Stop returns ErrNoPeer for proven absence or runs the exact role executable
-// in its reserved one-shot control mode.
+// Stop returns ErrNoPeer for proven absence or performs daemonkit's durable,
+// receipt-authenticated stop before removing the service.
 func (l Launcher) Stop(ctx context.Context, timeout time.Duration) error {
 	if err := l.prepare(); err != nil {
 		return err
@@ -155,7 +145,10 @@ func (l Launcher) Stop(ctx context.Context, timeout time.Duration) error {
 			return err
 		}
 		return l.withController(controlCtx, func(controller *service.Controller) error {
-			return l.stopRuntime(controlCtx, controller, health, wire.StopIntentUninstall)
+			if err := l.stopRuntime(controlCtx, controller, health); err != nil {
+				return err
+			}
+			return controller.Converge(controlCtx, nil)
 		})
 	})
 }
@@ -164,31 +157,18 @@ func (l Launcher) stopRuntime(
 	ctx context.Context,
 	controller *service.Controller,
 	health RuntimeHealth,
-	intent wire.StopIntent,
 ) error {
-	_, err := controller.StopRuntime(ctx, service.StopControlSpec{
-		Executable: l.DaemonRole.RolePath, Args: l.StopArgs,
-		Role: l.DaemonRole.RoleID, RuntimeBuild: l.RuntimeBuild, RuntimeProtocol: int(wire.ProtocolVersion),
-		TargetProcessGeneration: health.ProcessGeneration, Intent: intent,
-	})
-	return err
-}
-
-// RunStopControl performs protected shutdown from the exact role child only.
-func (l Launcher) RunStopControl(ctx context.Context) error {
-	if err := l.validate(); err != nil {
-		return err
-	}
-	_, err := service.RunStopControlChild(ctx, service.StopControlClientConfig{
-		Dial:            wire.UnixDialer(l.Paths.SocketPath()),
-		WireBuild:       l.WireBuild,
-		RuntimeProtocol: int(wire.ProtocolVersion),
+	_, err := controller.StopRuntime(ctx, service.StopRuntimeRequest{
+		OperationID:          fmt.Sprintf("%s.stop.v1:%s", l.Agent.Label, health.ProcessGeneration),
+		RuntimeClientConfig:  l.runtimeClientConfig(l.Roles.StopControl, UpgradeTimeout),
+		ExpectedRuntimeBuild: health.RuntimeBuild,
+		ControlRole:          l.Roles.StopControl,
 	})
 	return err
 }
 
 func (l Launcher) runtimeHealth(ctx context.Context) (health RuntimeHealth, err error) {
-	client, err := NewClient(ctx, ClientConfig{Socket: l.Paths.SocketPath(), WireBuild: l.WireBuild})
+	client, err := NewClient(ctx, ClientConfig{Socket: l.Paths.SocketPath(), WireBuild: l.WireBuild, Role: l.Roles.Business})
 	if err != nil {
 		if provesNoRuntime(err) {
 			return RuntimeHealth{}, fmt.Errorf("daemon runtime health: %w", ErrNoPeer)
@@ -269,10 +249,14 @@ func processStore(p paths.Paths) *proc.FileStore {
 	return &proc.FileStore{Path: filepath.Join(p.StateDir(), "processes.db")}
 }
 
+func stopProcessStore(p paths.Paths) *proc.FileStore {
+	return &proc.FileStore{Path: filepath.Join(p.StateDir(), "stop-processes.db")}
+}
+
 func (l Launcher) withController(ctx context.Context, run func(*service.Controller) error) (err error) {
 	controller, err := service.NewController(ctx, service.ControllerConfig{
 		StatePath:   filepath.Join(l.Paths.StateDir(), "services.db"),
-		ProcessPath: processStore(l.Paths).Path,
+		ProcessPath: stopProcessStore(l.Paths).Path,
 		WorkerLimit: 1,
 	})
 	if err != nil {
@@ -280,6 +264,16 @@ func (l Launcher) withController(ctx context.Context, run func(*service.Controll
 	}
 	defer func() { err = errors.Join(err, controller.Close(context.WithoutCancel(ctx))) }()
 	return run(controller)
+}
+
+func (l Launcher) runtimeClientConfig(role trust.PeerRole, timeout time.Duration) wire.RuntimeClientConfig {
+	return wire.RuntimeClientConfig{
+		Client: wire.ClientConfig{
+			Dial: wire.UnixDialer(l.Paths.SocketPath()), WireBuild: l.WireBuild,
+			Role: role, MaxFrame: maxFrameBytes,
+		},
+		NoProgressTimeout: timeout,
+	}
 }
 
 func (l Launcher) ready(health RuntimeHealth) bool {
@@ -307,14 +301,11 @@ func (l Launcher) validate() error {
 	if l.RuntimeBuild == "" {
 		return errors.New("daemon: runtime build is required")
 	}
-	if len(l.Args) == 0 {
-		return errors.New("daemon: startup args are required")
+	if _, err := l.Agent.Plist(); err != nil {
+		return fmt.Errorf("daemon: validate service agent: %w", err)
 	}
-	if len(l.StopArgs) == 0 {
-		return errors.New("daemon: stop control args are required")
-	}
-	if err := l.DaemonRole.Validate(); err != nil {
-		return fmt.Errorf("daemon: validate launcher role: %w", err)
+	if l.Roles.Business == "" || l.Roles.Lifecycle == "" || l.Roles.StopControl == "" {
+		return errors.New("daemon: launcher roles are required")
 	}
 	return nil
 }

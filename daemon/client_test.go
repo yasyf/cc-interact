@@ -13,11 +13,15 @@ import (
 	"testing"
 	"time"
 
+	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/daemonkit/proc"
+	"github.com/yasyf/daemonkit/trust"
 	"github.com/yasyf/daemonkit/wire"
+	"github.com/yasyf/daemonkit/worker"
 )
 
 type clientTestServer struct {
-	server   *wire.Server
+	runtime  *dkdaemon.Runtime
 	cancel   context.CancelFunc
 	done     chan error
 	stopOnce sync.Once
@@ -40,22 +44,51 @@ func startClientTestServer(
 	admit func() (func(), error),
 ) *clientTestServer {
 	t.Helper()
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("remove stale socket: %v", err)
-	}
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
 	server := &wire.Server{WireBuild: WireBuild}
-	server.RegisterControl("test", handler)
-	if admit == nil {
-		admit = func() (func(), error) { return func() {}, nil }
+	server.Register(wire.HandlerSpec{Op: "test", Handler: handler})
+	if admit != nil {
+		t.Fatal("custom admission is no longer part of the product transport contract")
+	}
+	generation, err := proc.ProcessGeneration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper := &proc.Reaper{Store: &proc.FileStore{Path: filepath.Join(t.TempDir(), "processes.db")}, Generation: generation}
+	children, err := proc.NewManager(4, reaper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disposable, err := worker.NewPool(worker.Config{
+		Capacity: 1, QueueCapacity: 0, MaxTotalRun: 30 * time.Second,
+		MaxStdinBytes: 1, MaxStdoutBytes: 1, MaxStderrBytes: 1,
+	}, reaper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := wire.NewRuntime(wire.RuntimeConfig{
+		Socket: path, RuntimeBuild: "test", RuntimeProtocol: 1, Wire: server,
+		TrustPolicy: testTrustPolicy(t), StopControlStore: &proc.FileStore{Path: filepath.Join(t.TempDir(), "stop.db")},
+		Workers: disposable, Children: children, ShutdownTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	slot := dkdaemon.NewPublicationSlot[struct{}](runtime)
+	activation, err := runtime.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := slot.Stage(activation, struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := activation.CommitReady(publication); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
-	go func() { done <- server.Serve(ctx, listener, func() error { return nil }, admit, admit) }()
-	running := &clientTestServer{server: server, cancel: cancel, done: done}
+	go func() { done <- runtime.Wait(context.Background()) }()
+	running := &clientTestServer{runtime: runtime, cancel: cancel, done: done}
 	t.Cleanup(func() { running.stop(t) })
 	return running
 }
@@ -64,6 +97,9 @@ func (s *clientTestServer) stop(t *testing.T) {
 	t.Helper()
 	s.stopOnce.Do(func() {
 		s.cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutdownCancel()
+		_ = s.runtime.Shutdown(shutdownCtx)
 		select {
 		case err := <-s.done:
 			if err != nil {
@@ -78,7 +114,7 @@ func (s *clientTestServer) stop(t *testing.T) {
 func newTestClient(t *testing.T, path string, maxFrame int) *Client {
 	t.Helper()
 	client, err := NewClient(context.Background(), ClientConfig{
-		Socket: path, WireBuild: WireBuild, MaxFrameBytes: maxFrame,
+		Socket: path, WireBuild: WireBuild, Role: trust.UnprotectedRole, MaxFrameBytes: maxFrame,
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -123,45 +159,6 @@ func TestClientPreSendFailureReconnectsNextOperationWithoutReplay(t *testing.T) 
 	}
 	if client.generation != 2 {
 		t.Fatalf("session generation = %d, want 2", client.generation)
-	}
-}
-
-func TestClientRejectedOperationIsNotReplayed(t *testing.T) {
-	path := newClientTestSocket(t)
-	var admissions atomic.Int32
-	first := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
-		t.Fatal("rejected operation reached handler")
-		return nil, nil
-	}, func() (func(), error) {
-		admissions.Add(1)
-		return nil, errors.New("closed for replacement")
-	})
-	client := newTestClient(t, path, 0)
-
-	_, err := client.Do(context.Background(), Envelope{Op: "test"})
-	var callErr *CallError
-	if !errors.As(err, &callErr) || callErr.Outcome != wire.Rejected {
-		t.Fatalf("error = %v, want typed rejection", err)
-	}
-	if admissions.Load() != 1 {
-		t.Fatalf("admissions = %d, want one attempt", admissions.Load())
-	}
-
-	first.stop(t)
-	var calls atomic.Int32
-	startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
-		calls.Add(1)
-		return Reply{OK: true}, nil
-	}, nil)
-	reply, err := client.Do(context.Background(), Envelope{Op: "test"})
-	if err != nil || !reply.OK {
-		t.Fatalf("next operation reply=%+v err=%v", reply, err)
-	}
-	if calls.Load() != 1 || admissions.Load() != 1 {
-		t.Fatalf("calls=%d rejected admissions=%d, want 1 and 1", calls.Load(), admissions.Load())
-	}
-	if err := client.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
 	}
 }
 
@@ -227,7 +224,7 @@ func TestClientCloseReplaysStrictTerminal(t *testing.T) {
 	server := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
 		return Reply{OK: true}, nil
 	}, nil)
-	client, err := NewClient(context.Background(), ClientConfig{Socket: path, WireBuild: WireBuild})
+	client, err := NewClient(context.Background(), ClientConfig{Socket: path, WireBuild: WireBuild, Role: trust.UnprotectedRole})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -278,7 +275,7 @@ func TestClientCloseWaitsForInFlightRedial(t *testing.T) {
 	server := startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
 		return Reply{OK: true}, nil
 	}, nil)
-	client, err := NewClient(context.Background(), ClientConfig{Socket: path, WireBuild: WireBuild})
+	client, err := NewClient(context.Background(), ClientConfig{Socket: path, WireBuild: WireBuild, Role: trust.UnprotectedRole})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

@@ -12,8 +12,8 @@ import (
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
-	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/trust"
 )
 
 // AppendFunc persists an event then publishes its subject's wakeup — the single
@@ -48,7 +48,7 @@ type AgentGreetingFunc func(info agent.Info) string
 type SubscribeFunc func(s subject.Subject, info agent.Info) []string
 
 // Config builds a Server. The zero value is not runnable; AppName, Paths,
-// WireBuild, RuntimeBuild, DaemonRole, and ActiveStatuses are the load-bearing inputs.
+// WireBuild, RuntimeBuild, TrustPolicy, Roles, and ActiveStatuses are the load-bearing inputs.
 type Config struct {
 	// AppName labels logs and user-facing daemon messages (cc-review: "cc-review").
 	AppName string
@@ -58,9 +58,10 @@ type Config struct {
 	WireBuild string
 	// RuntimeBuild is the daemon release identity used for readiness and convergence.
 	RuntimeBuild string
-	// DaemonRole is the exact service label and stable executable alias shared
-	// with Launcher for spawn and receipt-authenticated stop control.
-	DaemonRole daemonrole.Classifier
+	// TrustPolicy is the immutable signed-peer policy for the runtime.
+	TrustPolicy trust.TrustPolicy
+	// Roles names the exact business, lifecycle, and stop authorities.
+	Roles Roles
 	// MaxFrameBytes overrides the control server's request-frame limit. Zero uses
 	// the 64 MiB default.
 	MaxFrameBytes int

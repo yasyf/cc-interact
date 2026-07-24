@@ -44,7 +44,7 @@ demo has no stable window pid across separate CLI processes). Pass a consistent
 `--cwd` so every command shares one scope.
 
 ```bash
-# 1. start the daemon (or let any command lazy-spawn it)
+# 1. start the daemon directly for this source-tree demo
 go run . daemon &          # store: ~/.cc-echo/cc-interact-v1/state.db; runtime files: ~/.cc-echo/
 
 # 2. create the subject; prints its id, slug, and HTTP port

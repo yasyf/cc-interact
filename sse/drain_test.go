@@ -6,9 +6,57 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/yasyf/daemonkit/drain"
 )
+
+type testIntake struct {
+	mu      sync.Mutex
+	active  int
+	closed  bool
+	drained chan struct{}
+}
+
+func newTestIntake() *testIntake { return &testIntake{drained: make(chan struct{})} }
+
+func (i *testIntake) Admit() (func(), error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.closed {
+		return nil, context.Canceled
+	}
+	i.active++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			i.mu.Lock()
+			defer i.mu.Unlock()
+			i.active--
+			if i.closed && i.active == 0 {
+				close(i.drained)
+			}
+		})
+	}, nil
+}
+
+func (i *testIntake) Close() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.closed {
+		return
+	}
+	i.closed = true
+	if i.active == 0 {
+		close(i.drained)
+	}
+}
+
+func (i *testIntake) Wait(ctx context.Context) error {
+	select {
+	case <-i.drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // TestDrainWaitsForInflightStream proves an in-flight SSE stream holds the drain
 // open: the drain's settle blocks until the stream ends, and a new stream is
@@ -16,7 +64,7 @@ import (
 func TestDrainWaitsForInflightStream(t *testing.T) {
 	b := newFakeBackend()
 	b.addSubject("s1")
-	d := &drain.Simple{}
+	d := newTestIntake()
 	var storeClosed atomic.Bool
 	released := make(chan bool, 1)
 	srv := startServer(t, b, Config{Admit: func() (func(), error) {
@@ -40,11 +88,8 @@ func TestDrainWaitsForInflightStream(t *testing.T) {
 	teardown.Add(1)
 	go func() {
 		defer teardown.Done()
-		drained <- d.Drain(context.Background(), drain.SimpleConfig{
-			Deactivate:      func(context.Context) error { return nil },
-			MarkClosing:     func() {},
-			CancelExecutors: func() {},
-		})
+		d.Close()
+		drained <- d.Wait(context.Background())
 	}()
 	closed := make(chan struct{})
 	go func() {

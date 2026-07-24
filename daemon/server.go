@@ -16,7 +16,6 @@ import (
 	"slices"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
@@ -24,10 +23,11 @@ import (
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
 	dkdaemon "github.com/yasyf/daemonkit/daemon"
-	"github.com/yasyf/daemonkit/daemonrole"
-	"github.com/yasyf/daemonkit/drain"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/proc"
+	"github.com/yasyf/daemonkit/trust"
 	"github.com/yasyf/daemonkit/wire"
+	"github.com/yasyf/daemonkit/worker"
 )
 
 // handleTimeout bounds a single control RPC. It is generous because a domain
@@ -54,9 +54,11 @@ type Server struct {
 	appName       string
 	wireBuild     string
 	runtimeBuild  string
-	daemonRole    daemonrole.Classifier
+	trustPolicy   trust.TrustPolicy
+	roles         Roles
 	daemonRuntime *dkdaemon.Runtime
-	runtimeReady  atomic.Bool
+	publication   *dkdaemon.PublicationSlot[*Server]
+	stateMu       sync.RWMutex
 	store         *store.Store
 	db            *sql.DB
 	bus           *event.Bus
@@ -109,14 +111,10 @@ type Server struct {
 	repoMu    sync.Mutex
 	repoLocks map[string]*sync.Mutex
 
-	wireIntake *drain.Intake
-	httpIntake *drain.Intake
-
-	serveCtxMu      sync.Mutex
-	serveCtx        context.Context
-	serveCancel     context.CancelFunc
-	workersCanceled bool
-	workers         *workerGroup
+	serveCtxMu  sync.Mutex
+	serveCtx    context.Context
+	serveCancel context.CancelFunc
+	workers     *workerGroup
 }
 
 // New builds the daemon composition without acquiring generation-owned state.
@@ -129,8 +127,8 @@ func New(cfg Config) (*Server, error) {
 	if cfg.RuntimeBuild == "" {
 		return nil, errors.New("daemon: runtime build is required")
 	}
-	if err := cfg.DaemonRole.Validate(); err != nil {
-		return nil, fmt.Errorf("daemon: validate role: %w", err)
+	if err := cfg.Roles.validate(cfg.TrustPolicy); err != nil {
+		return nil, err
 	}
 	if err := cfg.StoreSchema.Validate(); err != nil {
 		return nil, err
@@ -150,7 +148,8 @@ func New(cfg Config) (*Server, error) {
 		appName:             cfg.AppName,
 		wireBuild:           cfg.WireBuild,
 		runtimeBuild:        cfg.RuntimeBuild,
-		daemonRole:          cfg.DaemonRole,
+		trustPolicy:         cfg.TrustPolicy,
+		roles:               cfg.Roles,
 		bus:                 event.NewBus(),
 		activity:            NewActivity(),
 		scopeResolve:        scopeResolve,
@@ -183,8 +182,6 @@ func New(cfg Config) (*Server, error) {
 		extraListeners:      cfg.ExtraHTTPListeners,
 		publicHandler:       cfg.PublicHandler,
 		repoLocks:           make(map[string]*sync.Mutex),
-		wireIntake:          &drain.Intake{},
-		httpIntake:          &drain.Intake{},
 		workers:             newWorkerGroup(),
 	}
 	var ssePresence func(ctx context.Context, subjectID string, connected bool)
@@ -202,7 +199,7 @@ func New(cfg Config) (*Server, error) {
 		OnPresenceChange:  ssePresence,
 		PresenceEventType: cfg.PresenceEventType,
 		PresenceDebounce:  cfg.PresenceDebounce,
-		Admit:             s.httpIntake.Admit,
+		Admit:             s.workers.Admit,
 		MuteFrame:         muteFrame,
 	})
 	// Core ops ride the same registry as domain ops. A scope with no canonical
@@ -233,7 +230,11 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) Mux() *http.ServeMux { return s.sse.Mux() }
 
 // DB exposes the activated runtime's underlying connection.
-func (s *Server) DB() *sql.DB { return s.db }
+func (s *Server) DB() *sql.DB {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.db
+}
 
 // Background runs fn as daemon-lifecycle work. fn must return when its context
 // is cancelled; daemonkit's shutdown deadline bounds settlement before state
@@ -259,7 +260,44 @@ func (s *Server) Serve(parent context.Context) error {
 		_ = s.closeState()
 		return err
 	}
-	err = runtime.Run(parent)
+	activation, err := runtime.Begin(parent)
+	if err != nil {
+		return errors.Join(err, runtime.Wait(context.Background()), s.closeState())
+	}
+	settlement, err := activation.ClaimProductSettlement()
+	if err != nil {
+		_ = activation.Fail(err)
+		return errors.Join(err, runtime.Wait(context.Background()), s.closeState())
+	}
+	settled := make(chan error, 1)
+	go func() {
+		<-activation.Context().Done()
+		settled <- s.settleProduct(settlement)
+	}()
+	if err := s.activateState(activation.Context()); err != nil {
+		_ = activation.Fail(err)
+		return errors.Join(err, runtime.Wait(context.Background()), <-settled)
+	}
+	if err := s.activateServing(activation.Context()); err != nil {
+		_ = activation.Fail(err)
+		return errors.Join(err, runtime.Wait(context.Background()), <-settled)
+	}
+	publication, err := s.publication.Stage(activation, s)
+	if err != nil {
+		_ = activation.Fail(err)
+		return errors.Join(err, runtime.Wait(context.Background()), <-settled)
+	}
+	if err := activation.CommitReady(publication); err != nil {
+		_ = activation.Fail(err)
+		return errors.Join(err, runtime.Wait(context.Background()), <-settled)
+	}
+	stopContext := context.AfterFunc(parent, func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = runtime.Shutdown(shutdownCtx)
+	})
+	defer stopContext()
+	err = errors.Join(runtime.Wait(context.Background()), <-settled)
 	s.log.Printf("daemon stopped")
 	if parent.Err() != nil && errors.Is(err, parent.Err()) {
 		return nil
@@ -267,8 +305,17 @@ func (s *Server) Serve(parent context.Context) error {
 	return err
 }
 
-func (s *Server) activate(activation dkdaemon.Activation) error {
-	return s.activateState(activation.Startup)
+func (s *Server) settleProduct(settlement dkdaemon.ProductSettlement) error {
+	s.serveCtxMu.Lock()
+	cancel := s.serveCancel
+	s.serveCtxMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.workers.Close()
+	settleCtx, settleCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer settleCancel()
+	return errors.Join(s.workers.Wait(settleCtx), s.closeState(), settlement.Complete())
 }
 
 func (s *Server) activateState(startup context.Context) error {
@@ -276,6 +323,7 @@ func (s *Server) activateState(startup context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.stateMu.Lock()
 	s.store = st
 	s.db = st.DB()
 	s.subjects = subject.Resolver{
@@ -284,6 +332,7 @@ func (s *Server) activateState(startup context.Context) error {
 			return slices.Contains(s.activeStatuses, sub.Status)
 		}},
 	}
+	s.stateMu.Unlock()
 	return nil
 }
 
@@ -292,11 +341,9 @@ func (s *Server) activateServing(lifetime context.Context) error {
 	s.serveCtxMu.Lock()
 	s.serveCtx = workerCtx
 	s.serveCancel = cancel
-	canceled := s.workersCanceled
 	s.serveCtxMu.Unlock()
-	if canceled {
-		cancel()
-		return workerCtx.Err()
+	if err := workerCtx.Err(); err != nil {
+		return err
 	}
 	if s.bootReconcile != nil {
 		if err := s.bootReconcile(workerCtx, s); err != nil {
@@ -317,10 +364,15 @@ func (s *Server) activateServing(lifetime context.Context) error {
 }
 
 func (s *Server) closeState() error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	if s.store == nil {
 		return nil
 	}
-	return s.store.Close()
+	err := s.store.Close()
+	s.store = nil
+	s.db = nil
+	return err
 }
 
 // bindHost is the address the HTTP plane binds, defaulting to loopback-only
@@ -543,35 +595,46 @@ func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
 	}
 	for op := range handlers {
 		op := op
-		wireServer.RegisterConcurrent(wire.Op(op), func(ctx context.Context, req wire.Request) (any, error) {
+		wireServer.Register(wire.HandlerSpec{Op: wire.Op(op), Concurrent: true, Handler: func(ctx context.Context, req wire.Request) (any, error) {
 			env, err := decodeEnvelope(req.Payload)
 			if err != nil {
 				return nil, err
 			}
 			env.Op = op
 			return s.dispatchPeer(ctx, env, req.Peer, req.WireBuild), nil
-		})
+		}})
+	}
+	generation, err := proc.ProcessGeneration()
+	if err != nil {
+		return nil, nil, fmt.Errorf("daemon: process generation: %w", err)
+	}
+	reaper := &proc.Reaper{Store: processStore(s.paths), Generation: generation}
+	children, err := proc.NewManager(64, reaper)
+	if err != nil {
+		return nil, nil, err
+	}
+	disposable, err := worker.NewPool(worker.Config{
+		Capacity: 1, QueueCapacity: 0, MaxTotalRun: handleTimeout,
+		MaxStdinBytes: 1, MaxStdoutBytes: 1, MaxStderrBytes: 1,
+	}, reaper)
+	if err != nil {
+		return nil, nil, err
 	}
 	runtime, err := wire.NewRuntime(wire.RuntimeConfig{
 		Socket: s.socket, RuntimeBuild: s.runtimeBuild, RuntimeProtocol: int(wire.ProtocolVersion),
-		Wire: wireServer, Classifier: s.daemonRole,
-		ReservedProtectedSessions: 1,
-		StopVerifier: wire.StopVerifier{
-			Classifier: s.daemonRole, Role: s.daemonRole.RoleID, Store: processStore(s.paths),
-		},
+		Wire: wireServer, TrustPolicy: s.trustPolicy,
+		StopControlStore: stopProcessStore(s.paths),
 		Observations: []wire.ObservationRoute{{
-			Op: wire.Op(OpRuntimeHealth), MaxResponseBytes: min(s.maxFrameBytes, 1024), AvailableBeforeReady: true,
+			Op: wire.Op(OpRuntimeHealth), MaxResponseBytes: min(s.maxFrameBytes, 1024),
 			Handler: s.observeRuntimeHealth,
 		}},
-		Readiness: serverReadiness{owner: s},
-		Admission: s.wireIntake, Workers: &serverWorkers{owner: s},
-		State: serverState{owner: s}, Resources: serverResources{},
-		Activate: s.activate,
+		Workers: disposable, Children: children, ShutdownTimeout: 30 * time.Second,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	s.daemonRuntime = runtime
+	s.publication = dkdaemon.NewPublicationSlot[*Server](runtime)
 	return wireServer, runtime, nil
 }
 
@@ -602,46 +665,3 @@ func decodeEnvelope(payload []byte) (Envelope, error) {
 	}
 	return env, nil
 }
-
-type serverWorkers struct{ owner *Server }
-
-type serverReadiness struct{ owner *Server }
-
-func (r serverReadiness) Published() bool { return r.owner.runtimeReady.Load() }
-
-func (r serverReadiness) BeforeReady(ctx context.Context) error {
-	return r.owner.activateServing(ctx)
-}
-
-func (r serverReadiness) AfterReady(err error) {
-	r.owner.runtimeReady.Store(err == nil)
-}
-
-func (w *serverWorkers) Close() {
-	w.owner.workers.Close()
-	w.owner.httpIntake.Close()
-}
-
-func (w *serverWorkers) Cancel() {
-	w.owner.serveCtxMu.Lock()
-	w.owner.workersCanceled = true
-	cancel := w.owner.serveCancel
-	w.owner.serveCtxMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-}
-
-func (w *serverWorkers) Wait(ctx context.Context) error {
-	settleErr := w.owner.httpIntake.Settle(ctx)
-	workerErr := w.owner.workers.Wait(ctx)
-	return errors.Join(settleErr, workerErr)
-}
-
-type serverState struct{ owner *Server }
-
-func (s serverState) Close() error { return s.owner.closeState() }
-
-type serverResources struct{}
-
-func (serverResources) Close() error { return nil }

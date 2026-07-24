@@ -13,8 +13,8 @@ import (
 	"github.com/yasyf/daemonkit/wire"
 )
 
-// DaemonCmd is the hidden entry point the lazy-start spawns; it runs the
-// long-lived daemon until its context is cancelled.
+// DaemonCmd is the hidden entry point the launchd service runs until its
+// context is cancelled.
 func DaemonCmd(d Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:    "daemon",
@@ -28,19 +28,6 @@ func DaemonCmd(d Deps) *cobra.Command {
 				return err
 			}
 			return d.Serve(cmd.Context())
-		},
-	}
-}
-
-// DaemonStopControlCmd is the reserved exact-role child entry point for stop.
-func DaemonStopControlCmd(d Deps) *cobra.Command {
-	return &cobra.Command{
-		Use:    daemon.StopControlCommand,
-		Short:  "Stop the background daemon as its exact runtime role",
-		Hidden: true,
-		Args:   cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return d.RunStopControl(cmd.Context())
 		},
 	}
 }

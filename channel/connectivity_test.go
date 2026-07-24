@@ -4,15 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/store"
-	"github.com/yasyf/daemonkit/daemonrole"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/trust"
 )
 
 func newDaemon(t *testing.T) *daemon.Server {
@@ -23,16 +22,20 @@ func newDaemon(t *testing.T) *daemon.Server {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("HOME", home)
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
+	roles := daemon.Roles{
+		Business: trust.UnprotectedRole, Lifecycle: "com.yasyf.cc-interact.channel-test.lifecycle.v1",
+		StopControl: "com.yasyf.cc-interact.channel-test.stop.v1",
 	}
-	target, err := filepath.EvalSymlinks(executable)
+	policy, err := trust.NewTrustPolicy(trust.TrustPolicyConfig{
+		ExpectedUID: os.Geteuid(), AllowUnprotected: true,
+		Roles: map[trust.PeerRole]trust.Requirement{
+			roles.Lifecycle:   {TeamID: "TESTTEAM", SigningIdentifier: "com.yasyf.cc-interact.channel-test.lifecycle"},
+			roles.StopControl: {TeamID: "TESTTEAM", SigningIdentifier: "com.yasyf.cc-interact.channel-test.stop"},
+		},
+		StopRoles: []trust.PeerRole{roles.StopControl}, ReceiptRoles: []trust.PeerRole{roles.Lifecycle},
+		ReadinessRoles: []trust.PeerRole{roles.Lifecycle},
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	rolePath := filepath.Join(home, "cc-interact-channel-test")
-	if err := os.Symlink(target, rolePath); err != nil {
 		t.Fatal(err)
 	}
 	s, err := daemon.New(daemon.Config{
@@ -40,7 +43,8 @@ func newDaemon(t *testing.T) *daemon.Server {
 		Paths:          paths.Paths{App: ".cc-interact-test"},
 		WireBuild:      daemon.WireBuild,
 		RuntimeBuild:   "v1.0.0",
-		DaemonRole:     daemonrole.Classifier{RoleID: "com.yasyf.cc-interact.channel-test", RolePath: rolePath},
+		TrustPolicy:    policy,
+		Roles:          roles,
 		ActiveStatuses: []string{"open"},
 	})
 	if err != nil {
@@ -61,11 +65,16 @@ func newDaemon(t *testing.T) *daemon.Server {
 		client, connectErr := daemon.NewClient(probeCtx, daemon.ClientConfig{
 			Socket:    paths.Paths{App: ".cc-interact-test"}.SocketPath(),
 			WireBuild: daemon.WireBuild,
+			Role:      trust.UnprotectedRole,
 		})
 		if connectErr == nil {
+			health, healthErr := client.RuntimeHealth(probeCtx)
 			_ = client.Close()
 			probeCancel()
-			break
+			if healthErr == nil && health.Ready {
+				break
+			}
+			connectErr = healthErr
 		}
 		probeCancel()
 		if time.Now().After(deadline) {

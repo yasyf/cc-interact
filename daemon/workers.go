@@ -17,18 +17,26 @@ func newWorkerGroup() *workerGroup {
 }
 
 func (g *workerGroup) Start(fn func()) bool {
-	g.mu.Lock()
-	if g.closed {
-		g.mu.Unlock()
+	release, err := g.Admit()
+	if err != nil {
 		return false
 	}
-	g.active++
-	g.mu.Unlock()
 	go func() {
-		defer g.done()
+		defer release()
 		fn()
 	}()
 	return true
+}
+
+func (g *workerGroup) Admit() (func(), error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return nil, context.Canceled
+	}
+	g.active++
+	var once sync.Once
+	return func() { once.Do(g.done) }, nil
 }
 
 func (g *workerGroup) Close() {
