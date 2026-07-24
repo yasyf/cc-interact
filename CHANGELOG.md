@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-23
+
+### Changed
+
+- Hard-cut daemon lifecycle onto daemonkit's exact service convergence, signed peer roles,
+  readiness, and receipt-authenticated replacement runtime.
+
 ## [0.22.0] - 2026-07-23
 
 ### Added
