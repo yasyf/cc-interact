@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-07-24
+
+### Changed
+
+- Pin daemonkit v0.17.4 for settled terminal acknowledgements during runtime
+  drain.
+- Preserve post-send failure coverage with an actual abrupt socket disconnect
+  instead of treating graceful runtime shutdown as transport failure.
+
 ## [0.28.0] - 2026-07-24
 
 ### Changed
