@@ -9,11 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `store.Open` takes an opt-in `store.WithUnsupportedSchema(store.ArchiveUnsupportedSchema)`
-  option, threaded through `daemon.Config.UnsupportedSchema`. On a schema or
-  fingerprint mismatch it renames the wedged database and its `-wal`/`-shm`
-  sidecars to `<name>.<fingerprint>.<timestamp>.bak`, opens a fresh store, and
-  logs one warning, ending the activation crash-loop a drifted store would
-  otherwise cause. The default still fails closed and leaves the store on disk.
+  option, threaded through `daemon.Config.UnsupportedSchema`. On a definitive
+  `store.ErrUnsupportedSchema` mismatch (a foreign `user_version`, recorded
+  fingerprint, or live `sqlite_schema`) it renames the wedged database and its
+  `-wal`/`-shm` sidecars to `<name>.<fingerprint>.<timestamp>.bak`, opens a fresh
+  store, and logs one warning, ending the activation crash-loop a drifted store
+  would otherwise cause. Transient failures (a locked, I/O-erroring, or
+  permission-denied store) always propagate instead of archiving a healthy store,
+  and concurrent openers single-flight the reset behind a per-store advisory lock
+  so exactly one backup is taken and every loser rides the fresh store. The
+  default still fails closed and leaves the store on disk.
 
 ## [0.19.0] - 2026-07-23
 

@@ -3,11 +3,26 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"time"
 )
+
+// ErrUnsupportedSchema marks a definitive exact-v1 schema mismatch — a foreign
+// user_version, a drifted recorded fingerprint, or a drifted live sqlite_schema.
+// Only errors that wrap it are eligible for ArchiveUnsupportedSchema; transient
+// failures (SQLITE_BUSY, I/O, permissions) never are, so a merely locked but
+// healthy store is preserved rather than archived.
+var ErrUnsupportedSchema = errors.New("store: unsupported schema")
+
+// archiveLockSuffix names the per-store advisory lock file that single-flights an
+// archive so concurrent Opens produce exactly one backup and one fresh store.
+const archiveLockSuffix = ".archive.lock"
+
+// archiveLockTimeout bounds acquisition of the archive lock.
+const archiveLockTimeout = 30 * time.Second
 
 // UnsupportedSchemaPolicy selects how Open reacts to an existing database whose
 // exact v1 schema it does not recognize. The zero value fails closed.

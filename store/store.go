@@ -17,6 +17,7 @@ import (
 
 	"github.com/yasyf/cc-interact/internal/statepath"
 	"github.com/yasyf/daemonkit/paths"
+	"github.com/yasyf/daemonkit/proc"
 
 	_ "modernc.org/sqlite"
 )
@@ -135,6 +136,8 @@ func Path(p paths.Paths) string { return statepath.DB(p) }
 // altered, migrated, or interpreted under a different schema. On a mismatch Open
 // fails closed, leaving the store on disk, unless WithUnsupportedSchema opts into
 // ArchiveUnsupportedSchema, which renames the wedged store aside and starts fresh.
+// Only a definitive ErrUnsupportedSchema mismatch is archived; a transient failure
+// (a locked, I/O-erroring, or permission-denied store) always propagates.
 func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) (*Store, error) {
 	config := openConfig{}
 	for _, opt := range opts {
@@ -159,17 +162,58 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create sqlite directory: %w", err)
 	}
-	db, err := openSQLite(dbPath)
-	if err != nil {
-		return nil, err
-	}
 	if exists {
+		db, err := openSQLite(dbPath)
+		if err != nil {
+			return nil, err
+		}
 		verr := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint)
 		if verr == nil {
 			return &Store{db: db}, nil
 		}
 		_ = db.Close()
-		if config.unsupportedSchema != ArchiveUnsupportedSchema {
+		if config.unsupportedSchema != ArchiveUnsupportedSchema || !errors.Is(verr, ErrUnsupportedSchema) {
+			return nil, verr
+		}
+	}
+	// The store is absent, or unsupported with the caller opted into archiving. A
+	// no-archive caller creating a brand-new store keeps the lockless path; the
+	// archive policy serializes the reset so concurrent openers produce exactly one
+	// archive and one fresh store, with every loser riding the winner's fresh store.
+	if config.unsupportedSchema != ArchiveUnsupportedSchema {
+		return createStore(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint)
+	}
+	return resetUnderLock(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint)
+}
+
+// resetUnderLock takes the per-store archive lock, re-evaluates the on-disk store
+// under it, archives it if it is still a definitive mismatch, then creates a fresh
+// store. Holding the lock across the whole detect→archive→create sequence lets a
+// concurrent opener that acquires the lock afterward find and ride the fresh store.
+func resetUnderLock(ctx context.Context, dbPath string, extension Schema, fingerprint, sqliteSchemaFingerprint string) (*Store, error) {
+	lock, err := (proc.FileLockSpec{
+		Path:     dbPath + archiveLockSuffix,
+		Mode:     proc.FileLockExclusive,
+		Deadline: archiveLockTimeout,
+	}).Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: acquire archive lock: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	info, statErr := os.Stat(dbPath)
+	switch {
+	case statErr == nil && info.Mode().IsRegular():
+		db, err := openSQLite(dbPath)
+		if err != nil {
+			return nil, err
+		}
+		verr := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint)
+		if verr == nil {
+			return &Store{db: db}, nil
+		}
+		_ = db.Close()
+		if !errors.Is(verr, ErrUnsupportedSchema) {
 			return nil, verr
 		}
 		backup, archiveErr := archiveUnsupportedStore(dbPath)
@@ -178,9 +222,18 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 		}
 		slog.Warn("store: archived unsupported-schema store",
 			"path", dbPath, "expected", fingerprint, "backup", backup, "reason", verr)
-		if db, err = openSQLite(dbPath); err != nil {
-			return nil, err
-		}
+	case statErr == nil:
+		return nil, fmt.Errorf("store: database path %q is not a regular file", dbPath)
+	case !os.IsNotExist(statErr):
+		return nil, fmt.Errorf("inspect sqlite: %w", statErr)
+	}
+	return createStore(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint)
+}
+
+func createStore(ctx context.Context, dbPath string, extension Schema, fingerprint, sqliteSchemaFingerprint string) (*Store, error) {
+	db, err := openSQLite(dbPath)
+	if err != nil {
+		return nil, err
 	}
 	if err := createSchema(ctx, db, extension, fingerprint); err != nil {
 		_ = db.Close()
@@ -285,21 +338,21 @@ func verifySchema(ctx context.Context, db *sql.DB, wantFingerprint, wantSQLiteSc
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if version != schemaVersion {
-		return fmt.Errorf("store: schema version %d, want exactly %d", version, schemaVersion)
+		return fmt.Errorf("%w: schema version %d, want exactly %d", ErrUnsupportedSchema, version, schemaVersion)
 	}
 	var fingerprint string
 	if err := db.QueryRowContext(ctx, `SELECT fingerprint FROM cc_interact_schema_v1 WHERE id=1`).Scan(&fingerprint); err != nil {
 		return fmt.Errorf("read schema fingerprint: %w", err)
 	}
 	if fingerprint != wantFingerprint {
-		return fmt.Errorf("store: schema fingerprint %q, want exactly %q", fingerprint, wantFingerprint)
+		return fmt.Errorf("%w: schema fingerprint %q, want exactly %q", ErrUnsupportedSchema, fingerprint, wantFingerprint)
 	}
 	sqliteSchemaFingerprint, err := liveSQLiteSchemaFingerprint(ctx, db)
 	if err != nil {
 		return err
 	}
 	if sqliteSchemaFingerprint != wantSQLiteSchemaFingerprint {
-		return fmt.Errorf("store: sqlite_schema fingerprint %q, want exactly %q", sqliteSchemaFingerprint, wantSQLiteSchemaFingerprint)
+		return fmt.Errorf("%w: sqlite_schema fingerprint %q, want exactly %q", ErrUnsupportedSchema, sqliteSchemaFingerprint, wantSQLiteSchemaFingerprint)
 	}
 	return nil
 }

@@ -3,10 +3,13 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -194,5 +197,154 @@ func TestArchiveUnsupportedStoreMovesSidecars(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestArchivePreservesLockedMatchingStore proves a merely locked but
+// schema-matching store is never archived: the SQLITE_BUSY that its verify
+// queries hit is transient, not an ErrUnsupportedSchema mismatch, so it
+// propagates and the store is left on disk.
+func TestArchivePreservesLockedMatchingStore(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+	seeded, err := Open(ctx, path, Schema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seeded.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	locker, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locker.SetMaxOpenConns(1)
+	defer func() { _ = locker.Close() }()
+	conn, err := locker.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	for _, stmt := range []string{`PRAGMA journal_mode=DELETE`, `PRAGMA locking_mode=EXCLUSIVE`, `BEGIN EXCLUSIVE`} {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("lock setup %q: %v", stmt, err)
+		}
+	}
+
+	warnings := captureWarnings(t)
+	fresh, openErr := Open(ctx, path, Schema{}, WithUnsupportedSchema(ArchiveUnsupportedSchema))
+	if fresh != nil {
+		_ = fresh.Close()
+	}
+	_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+
+	if openErr == nil {
+		t.Fatal("a locked but schema-matching store must not be opened by archiving it")
+	}
+	if errors.Is(openErr, ErrUnsupportedSchema) {
+		t.Fatalf("a locked store must not be treated as a schema mismatch: %v", openErr)
+	}
+	if bak := storeBackups(t, path); len(bak) != 0 {
+		t.Fatalf("a locked healthy store must never be archived; found %v", bak)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("the locked store must be preserved on disk: %v", statErr)
+	}
+	if got := strings.Count(warnings.String(), "archived unsupported-schema store"); got != 0 {
+		t.Fatalf("a locked store must not log an archive warning:\n%s", warnings.String())
+	}
+}
+
+// TestConcurrentArchiveSingleFlight proves two simultaneous archiving Opens of a
+// mismatched store produce exactly one backup and one warning, with both openers
+// succeeding on the same fresh store.
+func TestConcurrentArchiveSingleFlight(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+	seeded, err := Open(ctx, path, Schema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedSubject(t, seeded)
+	if err := seeded.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	widgets := Schema{DDL: `CREATE TABLE widgets (id TEXT PRIMARY KEY);`}
+	warnings := captureWarnings(t)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var storesMu sync.Mutex
+	var stores []*Store
+	for range 2 {
+		go func() {
+			<-start
+			s, err := Open(ctx, path, widgets, WithUnsupportedSchema(ArchiveUnsupportedSchema))
+			if s != nil {
+				storesMu.Lock()
+				stores = append(stores, s)
+				storesMu.Unlock()
+			}
+			results <- err
+		}()
+	}
+	close(start)
+	err1, err2 := <-results, <-results
+	t.Cleanup(func() {
+		for _, s := range stores {
+			_ = s.Close()
+		}
+	})
+
+	if err1 != nil || err2 != nil {
+		t.Fatalf("both concurrent opens must succeed: %v, %v", err1, err2)
+	}
+	if len(stores) != 2 {
+		t.Fatalf("both openers must return a store, got %d", len(stores))
+	}
+	if bak := storeBackups(t, path); len(bak) != 1 {
+		t.Fatalf("single-flight archive must leave exactly one backup, found %v", bak)
+	}
+	if got := strings.Count(warnings.String(), "archived unsupported-schema store"); got != 1 {
+		t.Fatalf("single-flight archive must log exactly one warning, got %d:\n%s", got, warnings.String())
+	}
+	for i, s := range stores {
+		if got := subjectCount(t, s); got != 0 {
+			t.Fatalf("store %d must ride the fresh store (0 rows), got %d", i, got)
+		}
+	}
+}
+
+// TestArchiveIsolatesFromLiveHandle proves archiving out from under a still-open
+// handle yields a clean, isolated fresh store: writes on the stale handle never
+// leak into it. The stale handle's own fate is best-effort and unasserted.
+func TestArchiveIsolatesFromLiveHandle(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+	old, err := Open(ctx, path, Schema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = old.Close() }()
+	if _, err := old.DB().Exec(`INSERT INTO subjects(id, scope, created_at, updated_at) VALUES('old-1', '/repo', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := Open(ctx, path, Schema{DDL: `CREATE TABLE widgets (id TEXT PRIMARY KEY);`}, WithUnsupportedSchema(ArchiveUnsupportedSchema))
+	if err != nil {
+		t.Fatalf("archive open with a live handle: %v", err)
+	}
+	defer func() { _ = fresh.Close() }()
+
+	if got := subjectCount(t, fresh); got != 0 {
+		t.Fatalf("fresh store must be empty, got %d", got)
+	}
+	if bak := storeBackups(t, path); len(bak) != 1 {
+		t.Fatalf("archive must leave exactly one backup, found %v", bak)
+	}
+	_, _ = old.DB().Exec(`INSERT INTO subjects(id, scope, created_at, updated_at) VALUES('old-2', '/repo', 2, 2)`)
+	if got := subjectCount(t, fresh); got != 0 {
+		t.Fatalf("a stale live handle must not leak rows into the fresh store, got %d", got)
 	}
 }
