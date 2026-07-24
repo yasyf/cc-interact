@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `store.Open` takes an opt-in `store.WithUnsupportedSchema(store.ArchiveUnsupportedSchema)`
+  option, threaded through `daemon.Config.UnsupportedSchema`. On a schema or
+  fingerprint mismatch it renames the wedged database and its `-wal`/`-shm`
+  sidecars to `<name>.<fingerprint>.<timestamp>.bak`, opens a fresh store, and
+  logs one warning, ending the activation crash-loop a drifted store would
+  otherwise cause. The default still fails closed and leaves the store on disk.
+
 ## [0.19.0] - 2026-07-23
 
 ### Changed

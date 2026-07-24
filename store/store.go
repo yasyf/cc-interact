@@ -7,7 +7,9 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,8 +132,14 @@ func Path(p paths.Paths) string { return statepath.DB(p) }
 
 // Open opens or creates an exact v1 store. Existing databases must match both
 // user_version and the compiled core-plus-consumer fingerprint; they are never
-// altered, migrated, or interpreted under a different schema.
-func Open(ctx context.Context, dbPath string, extension Schema) (*Store, error) {
+// altered, migrated, or interpreted under a different schema. On a mismatch Open
+// fails closed, leaving the store on disk, unless WithUnsupportedSchema opts into
+// ArchiveUnsupportedSchema, which renames the wedged store aside and starts fresh.
+func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) (*Store, error) {
+	config := openConfig{}
+	for _, opt := range opts {
+		opt(&config)
+	}
 	fingerprint, err := extension.Fingerprint()
 	if err != nil {
 		return nil, err
@@ -151,17 +159,28 @@ func Open(ctx context.Context, dbPath string, extension Schema) (*Store, error) 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create sqlite directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
+	db, err := openSQLite(dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, err
 	}
-	db.SetMaxOpenConns(1)
 	if exists {
-		if err := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint); err != nil {
-			_ = db.Close()
+		verr := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint)
+		if verr == nil {
+			return &Store{db: db}, nil
+		}
+		_ = db.Close()
+		if config.unsupportedSchema != ArchiveUnsupportedSchema {
+			return nil, verr
+		}
+		backup, archiveErr := archiveUnsupportedStore(dbPath)
+		if archiveErr != nil {
+			return nil, errors.Join(verr, archiveErr)
+		}
+		slog.Warn("store: archived unsupported-schema store",
+			"path", dbPath, "expected", fingerprint, "backup", backup, "reason", verr)
+		if db, err = openSQLite(dbPath); err != nil {
 			return nil, err
 		}
-		return &Store{db: db}, nil
 	}
 	if err := createSchema(ctx, db, extension, fingerprint); err != nil {
 		_ = db.Close()
@@ -176,6 +195,15 @@ func Open(ctx context.Context, dbPath string, extension Schema) (*Store, error) 
 		return nil, fmt.Errorf("secure sqlite: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func openSQLite(dbPath string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
 }
 
 func createSchema(ctx context.Context, db *sql.DB, extension Schema, fingerprint string) error {

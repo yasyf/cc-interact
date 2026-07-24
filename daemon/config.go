@@ -125,6 +125,12 @@ type Config struct {
 
 	// StoreSchema is the consumer's exact declarative v1 schema extension.
 	StoreSchema store.Schema
+	// UnsupportedSchema governs the durable store when an existing database fails
+	// exact v1 verification. The zero value fails closed, leaving the store on disk
+	// (the safe default); store.ArchiveUnsupportedSchema renames the wedged store
+	// aside and starts fresh, ending the activation crash-loop a drifted store would
+	// otherwise cause. No data is read or migrated.
+	UnsupportedSchema store.UnsupportedSchemaPolicy
 
 	// FixedPort pins the HTTP plane to a known port (the Vite dev proxy); 0 binds
 	// the last-published port if free, else an ephemeral one.

@@ -64,13 +64,14 @@ type Server struct {
 	subjects      subject.Resolver
 	sse           *sse.Server
 
-	scopeResolve    func(ctx context.Context, raw string) string
-	gate            GateFunc
-	gateErrorReason string
-	gateObserve     func(ctx context.Context, s subject.Subject, tool ToolCall, allow bool, reason string)
-	bootReconcile   func(ctx context.Context, s *Server) error
-	storeSchema     store.Schema
-	activeStatuses  []string
+	scopeResolve      func(ctx context.Context, raw string) string
+	gate              GateFunc
+	gateErrorReason   string
+	gateObserve       func(ctx context.Context, s subject.Subject, tool ToolCall, allow bool, reason string)
+	bootReconcile     func(ctx context.Context, s *Server) error
+	storeSchema       store.Schema
+	unsupportedSchema store.UnsupportedSchemaPolicy
+	activeStatuses    []string
 
 	agentGate           AgentGateFunc
 	agentGreeting       AgentGreetingFunc
@@ -158,6 +159,7 @@ func New(cfg Config) (*Server, error) {
 		gateObserve:         cfg.GateObserve,
 		bootReconcile:       cfg.BootReconcile,
 		storeSchema:         cfg.StoreSchema,
+		unsupportedSchema:   cfg.UnsupportedSchema,
 		activeStatuses:      slices.Clone(cfg.ActiveStatuses),
 		agentGate:           cfg.AgentGate,
 		agentGreeting:       cfg.AgentGreeting,
@@ -270,7 +272,7 @@ func (s *Server) activate(activation dkdaemon.Activation) error {
 }
 
 func (s *Server) activateState(startup context.Context) error {
-	st, err := store.Open(startup, store.Path(s.paths), s.storeSchema)
+	st, err := store.Open(startup, store.Path(s.paths), s.storeSchema, store.WithUnsupportedSchema(s.unsupportedSchema))
 	if err != nil {
 		return err
 	}
