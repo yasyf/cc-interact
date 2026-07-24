@@ -596,12 +596,16 @@ func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
 	for op := range handlers {
 		op := op
 		wireServer.Register(wire.HandlerSpec{Op: wire.Op(op), Concurrent: true, Handler: func(ctx context.Context, req wire.Request) (any, error) {
+			published, err := s.publication.Value(req.Publication)
+			if err != nil {
+				return nil, err
+			}
 			env, err := decodeEnvelope(req.Payload)
 			if err != nil {
 				return nil, err
 			}
 			env.Op = op
-			return s.dispatchPeer(ctx, env, req.Peer, req.WireBuild), nil
+			return published.dispatchPeer(ctx, env, req.Peer, req.WireBuild), nil
 		}})
 	}
 	generation, err := proc.ProcessGeneration()

@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-07-24
+
+### Changed
+
+- Business wire handlers resolve the exact resource graph pinned by their
+  daemonkit admission instead of using the server captured during registration.
+- Pinned daemon lifecycle, publication, process ownership, and wire runtime to
+  daemonkit v0.17.2.
+
+## [0.26.0] - 2026-07-24
+
+### Changed
+
+- Pinned daemonkit v0.16.0.
+
 ## [0.25.0] - 2026-07-24
 
 ### Added
@@ -474,7 +489,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/yasyf/cc-interact/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/yasyf/cc-interact/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/yasyf/cc-interact/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/yasyf/cc-interact/compare/v0.23.0...v0.24.0
 [0.19.0]: https://github.com/yasyf/cc-interact/compare/v0.18.1...v0.19.0

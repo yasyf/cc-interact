@@ -222,6 +222,19 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 	if _, err := s.DB().Exec(`INSERT INTO activation_probe(id) VALUES('ready')`); err != nil {
 		t.Fatalf("exact consumer schema unavailable after readiness: %v", err)
 	}
+	client, err := NewClient(context.Background(), ClientConfig{
+		Socket: testPaths().SocketPath(), WireBuild: WireBuild, Role: trust.UnprotectedRole,
+	})
+	if err != nil {
+		t.Fatalf("connect business client: %v", err)
+	}
+	reply, err := client.Do(context.Background(), Envelope{Op: OpStatus, Scope: "/not/a/repo"})
+	if err != nil || !reply.OK {
+		t.Fatalf("admitted business request = %+v, %v", reply, err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close business client: %v", err)
+	}
 }
 
 func TestRuntimeHealthWaitsForProductReadiness(t *testing.T) {
