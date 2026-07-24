@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-07-24
+
+### Added
+
+- `vcs.DetectStack` reports whether a working copy sits on a Graphite-tracked
+  branch of a plain git repository, and `vcs.CaptureStack` snapshots the whole
+  stack as ordered per-branch sections (`vcs.StackSnapshot`/`vcs.StackSection`) —
+  trunk-most first, each branch diffed against its parent's live fork point, with
+  a trailing pending section for a dirty working tree. Branch parentage is read
+  from gt's `.graphite_metadata.db` (SQLite), opened read-only and querying only
+  `branch_name`/`parent_branch_name`, so schema migrations that add columns don't
+  break the read and the stale-able `parent_branch_revision` is never consulted;
+  every ref is re-resolved from the live stack, so a no-op restack yields
+  byte-identical section patches. A jj-colocated repo, a detached or trunk
+  checkout, a repo with no metadata db, or an untracked branch are all "not
+  stacked"; an empty stack with a clean tree is `ErrNoChanges`.
+
 ## [0.24.0] - 2026-07-23
 
 ### Changed
@@ -457,7 +474,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/yasyf/cc-interact/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/yasyf/cc-interact/compare/v0.23.0...v0.24.0
 [0.19.0]: https://github.com/yasyf/cc-interact/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/yasyf/cc-interact/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/yasyf/cc-interact/compare/v0.17.0...v0.18.0
