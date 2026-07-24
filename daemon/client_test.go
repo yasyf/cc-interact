@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -25,6 +26,70 @@ type clientTestServer struct {
 	cancel   context.CancelFunc
 	done     chan error
 	stopOnce sync.Once
+}
+
+type clientTestProxy struct {
+	listener net.Listener
+	ready    chan struct{}
+	done     chan struct{}
+	mu       sync.Mutex
+	front    net.Conn
+	back     net.Conn
+	dropOnce sync.Once
+}
+
+func startClientTestProxy(t *testing.T, path, backend string) *clientTestProxy {
+	t.Helper()
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen for client proxy: %v", err)
+	}
+	proxy := &clientTestProxy{listener: listener, ready: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(proxy.done)
+		front, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			close(proxy.ready)
+			return
+		}
+		back, dialErr := net.Dial("unix", backend)
+		if dialErr != nil {
+			_ = front.Close()
+			close(proxy.ready)
+			return
+		}
+		proxy.mu.Lock()
+		proxy.front = front
+		proxy.back = back
+		proxy.mu.Unlock()
+		close(proxy.ready)
+
+		copies := make(chan struct{}, 2)
+		go func() { _, _ = io.Copy(front, back); copies <- struct{}{} }()
+		go func() { _, _ = io.Copy(back, front); copies <- struct{}{} }()
+		<-copies
+		_ = front.Close()
+		_ = back.Close()
+		<-copies
+	}()
+	t.Cleanup(func() { proxy.drop() })
+	return proxy
+}
+
+func (p *clientTestProxy) drop() {
+	p.dropOnce.Do(func() {
+		_ = p.listener.Close()
+		<-p.ready
+		p.mu.Lock()
+		if p.front != nil {
+			_ = p.front.Close()
+		}
+		if p.back != nil {
+			_ = p.back.Close()
+		}
+		p.mu.Unlock()
+		<-p.done
+	})
 }
 
 func newClientTestSocket(t *testing.T) string {
@@ -163,15 +228,17 @@ func TestClientPreSendFailureReconnectsNextOperationWithoutReplay(t *testing.T) 
 }
 
 func TestClientPostSendFailureReconnectsNextOperationWithoutReplay(t *testing.T) {
-	path := newClientTestSocket(t)
+	backendPath := newClientTestSocket(t)
+	path := filepath.Join(filepath.Dir(backendPath), "proxy.sock")
 	entered := make(chan struct{})
 	var firstCalls atomic.Int32
-	first := startClientTestServer(t, path, func(ctx context.Context, _ wire.Request) (any, error) {
+	first := startClientTestServer(t, backendPath, func(ctx context.Context, _ wire.Request) (any, error) {
 		firstCalls.Add(1)
 		close(entered)
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}, nil)
+	proxy := startClientTestProxy(t, path, backendPath)
 	client := newTestClient(t, path, 0)
 
 	result := make(chan error, 1)
@@ -184,7 +251,7 @@ func TestClientPostSendFailureReconnectsNextOperationWithoutReplay(t *testing.T)
 	case <-time.After(3 * time.Second):
 		t.Fatal("operation was not dispatched")
 	}
-	first.stop(t)
+	proxy.drop()
 	var err error
 	select {
 	case err = <-result:
@@ -198,6 +265,7 @@ func TestClientPostSendFailureReconnectsNextOperationWithoutReplay(t *testing.T)
 	if firstCalls.Load() != 1 {
 		t.Fatalf("uncertain operation dispatches = %d, want 1", firstCalls.Load())
 	}
+	first.stop(t)
 
 	var nextCalls atomic.Int32
 	startClientTestServer(t, path, func(context.Context, wire.Request) (any, error) {
