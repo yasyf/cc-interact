@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"strings"
 	"testing"
@@ -197,53 +196,11 @@ func TestDispatchStatusReportsSubject(t *testing.T) {
 	}
 }
 
-func TestDispatchPublic(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		register bool
-		env      Envelope
-		wantOK   bool
-		wantErr  string
-		wantBody string
-	}{
-		{
-			name:     "registered op round-trips",
-			register: true,
-			env:      Envelope{Op: "echo", Body: json.RawMessage(`{"msg":"hi"}`)},
-			wantOK:   true,
-			wantBody: `{"echo":"hi"}`,
-		},
-		{
-			name:    "unknown op errors",
-			env:     Envelope{Op: "nope"},
-			wantOK:  false,
-			wantErr: "nope",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := newTestServer(t, Config{})
-			if tc.register {
-				s.Register("echo", func(hc HandlerCtx) Reply {
-					var body struct {
-						Msg string `json:"msg"`
-					}
-					if err := json.Unmarshal(hc.Env.Body, &body); err != nil {
-						t.Fatalf("unmarshal envelope body: %v", err)
-					}
-					return Reply{OK: true, Body: json.RawMessage(fmt.Sprintf(`{"echo":%q}`, body.Msg))}
-				})
-			}
-			r := s.Dispatch(context.Background(), tc.env)
-			if r.OK != tc.wantOK {
-				t.Fatalf("Dispatch(%+v) ok = %v, want %v (reply: %+v)", tc.env, r.OK, tc.wantOK, r)
-			}
-			if tc.wantErr != "" && !contains(r.Error, tc.wantErr) {
-				t.Fatalf("Dispatch error = %q, want substring %q", r.Error, tc.wantErr)
-			}
-			if tc.wantBody != "" && string(r.Body) != tc.wantBody {
-				t.Fatalf("Dispatch body = %s, want %s", r.Body, tc.wantBody)
-			}
-		})
+func TestDispatchPublicRequiresPublishedRuntime(t *testing.T) {
+	s := newTestServer(t, Config{})
+	reply := s.Dispatch(context.Background(), Envelope{Op: OpStatus})
+	if reply.OK || !contains(reply.Error, "publication is unavailable") {
+		t.Fatalf("Dispatch before publication = %+v", reply)
 	}
 }
 

@@ -573,7 +573,12 @@ func (s *Server) dispatchPeer(ctx context.Context, env Envelope, peer wire.Peer,
 // socket connection would. It exists for consumer-mounted HTTP bridges; callers
 // stamp Session, ClaudePID, and Scope themselves.
 func (s *Server) Dispatch(ctx context.Context, env Envelope) Reply {
-	return s.dispatch(ctx, env)
+	published, release, err := s.publication.Acquire()
+	if err != nil {
+		return errReply(err.Error())
+	}
+	defer release()
+	return published.dispatch(ctx, env)
 }
 
 func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {

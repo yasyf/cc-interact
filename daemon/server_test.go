@@ -235,6 +235,10 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 	if err := client.Close(); err != nil {
 		t.Fatalf("close business client: %v", err)
 	}
+	bridgeReply := s.Dispatch(context.Background(), Envelope{Op: OpStatus, Scope: "/not/a/repo"})
+	if !bridgeReply.OK {
+		t.Fatalf("admitted bridge request = %+v", bridgeReply)
+	}
 }
 
 func TestRuntimeHealthWaitsForProductReadiness(t *testing.T) {
