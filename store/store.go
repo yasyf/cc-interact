@@ -136,8 +136,11 @@ func Path(p paths.Paths) string { return statepath.DB(p) }
 // altered, migrated, or interpreted under a different schema. On a mismatch Open
 // fails closed, leaving the store on disk, unless WithUnsupportedSchema opts into
 // ArchiveUnsupportedSchema, which renames the wedged store aside and starts fresh.
-// Only a definitive ErrUnsupportedSchema mismatch is archived; a transient failure
-// (a locked, I/O-erroring, or permission-denied store) always propagates.
+// Archiving is decided under an exclusive per-store lock and fires only on a
+// definitive ErrUnsupportedSchema mismatch, so a genuinely transient failure (a
+// locked, I/O-erroring, or permission-denied store) is never archived; an opener
+// whose lockless pre-check merely raced a concurrent archive re-checks under the
+// lock and rides the fresh store.
 func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) (*Store, error) {
 	config := openConfig{}
 	for _, opt := range opts {
@@ -172,7 +175,12 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 			return &Store{db: db}, nil
 		}
 		_ = db.Close()
-		if config.unsupportedSchema != ArchiveUnsupportedSchema || !errors.Is(verr, ErrUnsupportedSchema) {
+		// Any verify miss for an archive-opted caller re-checks under the lock,
+		// which is the single source of truth: a lockless pre-verify that merely
+		// straddled a concurrent archive rides the fresh store there, while a
+		// genuinely locked or corrupt store still fails the under-lock verify with a
+		// non-sentinel error and is never archived.
+		if config.unsupportedSchema != ArchiveUnsupportedSchema {
 			return nil, verr
 		}
 	}

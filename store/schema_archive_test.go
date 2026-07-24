@@ -348,3 +348,75 @@ func TestArchiveIsolatesFromLiveHandle(t *testing.T) {
 		t.Fatalf("a stale live handle must not leak rows into the fresh store, got %d", got)
 	}
 }
+
+// TestConcurrentArchiveManyOpenersRideFresh stresses the archive at high
+// contention: a lockless pre-verify can straddle the winner's archive rename and
+// hit a transient SQLITE_IOERR, which must re-check under the lock and ride the
+// fresh store rather than surface as a failure. Every one of many openers must
+// succeed on the single fresh store, with exactly one backup and one warning.
+func TestConcurrentArchiveManyOpenersRideFresh(t *testing.T) {
+	const n = 32
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+	seeded, err := Open(ctx, path, Schema{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A multi-megabyte store widens the verify read window so a pre-verify is far
+	// more likely to straddle the concurrent archive rename.
+	if _, err := seeded.DB().Exec(`INSERT INTO subjects(id, scope, created_at, updated_at) VALUES('big', printf('%.*c', 5000000, 'x'), 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := seeded.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	widgets := Schema{DDL: `CREATE TABLE widgets (id TEXT PRIMARY KEY);`}
+	warnings := captureWarnings(t)
+	start := make(chan struct{})
+	results := make(chan error, n)
+	var storesMu sync.Mutex
+	var stores []*Store
+	for range n {
+		go func() {
+			<-start
+			s, err := Open(ctx, path, widgets, WithUnsupportedSchema(ArchiveUnsupportedSchema))
+			if s != nil {
+				storesMu.Lock()
+				stores = append(stores, s)
+				storesMu.Unlock()
+			}
+			results <- err
+		}()
+	}
+	close(start)
+	var failures []error
+	for range n {
+		if err := <-results; err != nil {
+			failures = append(failures, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, s := range stores {
+			_ = s.Close()
+		}
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("every opener must ride the fresh store, got %d transient failures: %v", len(failures), failures)
+	}
+	if len(stores) != n {
+		t.Fatalf("want %d stores, got %d", n, len(stores))
+	}
+	if bak := storeBackups(t, path); len(bak) != 1 {
+		t.Fatalf("single-flight archive must leave exactly one backup, found %v", bak)
+	}
+	if got := strings.Count(warnings.String(), "archived unsupported-schema store"); got != 1 {
+		t.Fatalf("single-flight archive must log exactly one warning, got %d:\n%s", got, warnings.String())
+	}
+	for i, s := range stores {
+		if got := subjectCount(t, s); got != 0 {
+			t.Fatalf("store %d must ride the fresh store (0 rows), got %d", i, got)
+		}
+	}
+}
