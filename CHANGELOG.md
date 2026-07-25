@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-07-24
+
+### Changed
+
+- Pin daemonkit v0.19.1 so a terminalized worker claim tears down the owning
+  daemon runtime instead of leaving an unusable process alive.
+
 ## [0.30.0] - 2026-07-24
 
 ### Changed
