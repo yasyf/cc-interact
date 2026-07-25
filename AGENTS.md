@@ -12,7 +12,7 @@ cc-interact/
 ├── event/              # Event, Origin consts, Bus (append-only log primitives)
 ├── daemon/             # lazy daemon: unix-socket IPC, Envelope/Reply + handler registry,
 │                       #   spawn/evict, edit-gate, Activity presence, per-repo lock
-├── sse/                # /events SSE plane (REQUIRED) + Backend iface; StaticHandler(fs.FS) opt-in
+├── sse/                # /events SSE plane (REQUIRED) + Backend iface; StaticHandler(fs.FS, routePrefixes...) opt-in
 ├── consume/            # StreamSource, ConsumeEvents, persisted cursor (resilient SSE client)
 ├── channel/            # generic MCP stdio server + StreamEvents + Connectivity feature
 ├── store/              # modernc.org/sqlite: Open(path, migrate), core DDL, SubjectStore, event SQL
