@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `sse.StaticHandler` takes optional SPA route prefixes: a path whose first
+  segment is registered always falls back to index.html, so deep links whose
+  slug contains a dot no longer 404 as missing assets.
+
 ## [0.30.1] - 2026-07-24
 
 ### Changed
