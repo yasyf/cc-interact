@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-24
+
 ### Added
 
 - `sse.StaticHandler` takes optional SPA route prefixes: a path whose first
