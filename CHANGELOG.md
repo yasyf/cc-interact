@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-24
+
+### Changed
+
+- Pin daemonkit v0.18.0 and dispatch its mandatory trust-verifier child before
+  command parsing in the executable and test binaries that own daemon runtimes.
+
 ## [0.29.0] - 2026-07-24
 
 ### Changed
@@ -505,7 +512,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/yasyf/cc-interact/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/yasyf/cc-interact/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/yasyf/cc-interact/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/yasyf/cc-interact/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/yasyf/cc-interact/compare/v0.25.0...v0.26.0

@@ -555,6 +555,13 @@ func root() *cobra.Command {
 }
 
 func main() {
+	if handled, err := trust.RunVerifierChild(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := root().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

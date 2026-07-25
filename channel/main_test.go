@@ -1,0 +1,21 @@
+package channel
+
+import (
+	"fmt"
+	"os"
+	"testing"
+
+	"github.com/yasyf/daemonkit/trust"
+)
+
+// TestMain dispatches the verifier child before the test binary starts runtimes.
+func TestMain(m *testing.M) {
+	if handled, err := trust.RunVerifierChild(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
