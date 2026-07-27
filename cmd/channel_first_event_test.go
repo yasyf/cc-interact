@@ -15,6 +15,7 @@ import (
 
 	"github.com/yasyf/cc-interact/channel"
 	"github.com/yasyf/cc-interact/daemon"
+	"github.com/yasyf/cc-interact/internal/testhome"
 )
 
 // safeBuffer is an io.Writer safe for the concurrent writes the channel server's
@@ -40,7 +41,7 @@ func (b *safeBuffer) String() string {
 // contract: the channel emits no notification at attach — no channel.hello —
 // and the first frame to reach the agent is the subject's first real event.
 func TestChannelPushesNothingBeforeFirstEvent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 
 	sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

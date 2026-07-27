@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
 	"github.com/yasyf/daemonkit/paths"
@@ -15,7 +16,7 @@ import (
 
 func newTestServer(t *testing.T, cfg Config) *Server {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	if cfg.AppName == "" {
 		cfg.AppName = "cc-test"
 	}

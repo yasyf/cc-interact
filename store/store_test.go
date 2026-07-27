@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/cc-interact/subject"
 	"github.com/yasyf/daemonkit/paths"
 )
@@ -180,7 +181,7 @@ func TestComposePreservesExactSchemaOrder(t *testing.T) {
 }
 
 func TestPathIgnoresLegacyStoreNamespace(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	p := paths.Paths{App: ".cc-interact-test"}
 	if err := p.EnsureStateDir(); err != nil {
 		t.Fatal(err)

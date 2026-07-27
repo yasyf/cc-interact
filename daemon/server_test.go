@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/cc-interact/store"
 	dkdaemon "github.com/yasyf/daemonkit/daemon"
@@ -72,7 +73,7 @@ func testAgent(t *testing.T) service.Agent {
 // starts without an http.json handshake.
 func isolateStateDir(t *testing.T) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	if err := testPaths().EnsureStateDir(); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func shortHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	t.Setenv("HOME", dir)
+	testhome.Set(t, dir)
 }
 
 func TestNewRequiresTrustPolicyAndRoles(t *testing.T) {

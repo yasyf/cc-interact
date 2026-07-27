@@ -9,6 +9,7 @@ import (
 
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/trust"
@@ -21,7 +22,7 @@ func newDaemon(t *testing.T) *daemon.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	roles := daemon.Roles{
 		Business: trust.UnprotectedRole, Lifecycle: "com.yasyf.cc-interact.channel-test.lifecycle.v1",
 		StopControl: "com.yasyf.cc-interact.channel-test.stop.v1",

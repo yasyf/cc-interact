@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/internal/statepath"
+	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -19,7 +20,7 @@ import (
 // consumer whose window is already gone returns immediately without connecting or
 // advancing the shared cursor.
 func TestConsumeEventsExitsWhenWindowDead(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	p := paths.Paths{App: ".cc-interact-test"}
 
 	var hits atomic.Int32
@@ -59,7 +60,7 @@ func TestConsumeEventsExitsWhenWindowDead(t *testing.T) {
 // Read mid-stream: the window is alive at connect, then dies while the consumer
 // is blocked on a held-open SSE connection, and ConsumeEvents returns.
 func TestConsumeEventsUnparksOnWindowDeath(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	p := paths.Paths{App: ".cc-interact-test"}
 
 	orig := livenessInterval
@@ -105,7 +106,7 @@ func TestConsumeEventsUnparksOnWindowDeath(t *testing.T) {
 // pre-creating the subject dir, ConsumeEvents creates it so the cursor persists
 // and a reconnect does not replay the backlog.
 func TestConsumeEventsCreatesSubjectDir(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	p := paths.Paths{App: ".cc-interact-test"}
 
 	if _, err := os.Stat(statepath.SubjectDir(p, "fresh")); !os.IsNotExist(err) {

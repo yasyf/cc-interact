@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/daemon"
+	"github.com/yasyf/cc-interact/internal/testhome"
 	dkdaemon "github.com/yasyf/daemonkit/daemon"
 	"github.com/yasyf/daemonkit/paths"
 	"github.com/yasyf/daemonkit/proc"
@@ -162,7 +163,7 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 		t.Fatalf("mkdir temp: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 
 	p := paths.Paths{App: ".cc-interact-test"}
 	roles := daemon.Roles{
@@ -445,7 +446,7 @@ func TestStopReportsAbsentDaemon(t *testing.T) {
 // against a fake daemon, stream events from a fake SSE plane, print each, and
 // stop on the terminal event.
 func TestWatchStreamsUntilTerminal(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	wantConsumer := fmt.Sprintf("%s-%d", watchConsumer, os.Getpid())
 	sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("consumer"); got != wantConsumer {
@@ -483,7 +484,7 @@ func TestWatchStreamsUntilTerminal(t *testing.T) {
 // event (not the terminal one) and advances the cursor, so a second --once run
 // resumes past the event it already delivered.
 func TestWatchOnceExitsAfterFirstEvent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch r.Header.Get("Last-Event-ID") {

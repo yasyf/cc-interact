@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-interact/channelsetup"
+	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -23,7 +24,7 @@ func TestSetupChannelsCheck(t *testing.T) {
 		{name: "already offered with explicit check", args: []string{"--check"}, marker: true, wantOutput: `{"offer":false,"reason":"already offered"}` + "\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			testhome.Isolate(t)
 			setManagedSettingsPath(t, filepath.Join(t.TempDir(), "managed-settings.json"))
 			d := Deps{Paths: paths.Paths{App: ".cc-test"}, Version: "v1.2.3"}
 			if tc.marker {
@@ -49,7 +50,7 @@ func TestSetupChannelsCheck(t *testing.T) {
 }
 
 func TestSetupChannelsDeclineThenCheck(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	setManagedSettingsPath(t, filepath.Join(t.TempDir(), "managed-settings.json"))
 	d := Deps{Paths: paths.Paths{App: ".cc-test"}, Version: "v1.2.3"}
 	plugin := channelsetup.Plugin{Marketplace: "cc-orchestrate", Name: "cc-orchestrate"}
@@ -85,7 +86,7 @@ func TestSetupChannelsDeclineThenCheck(t *testing.T) {
 }
 
 func TestSetupChannelsFlagsMutuallyExclusive(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	setManagedSettingsPath(t, filepath.Join(t.TempDir(), "managed-settings.json"))
 	d := Deps{Paths: paths.Paths{App: ".cc-test"}, Version: "v1.2.3"}
 	plugin := channelsetup.Plugin{Marketplace: "cc-orchestrate", Name: "cc-orchestrate"}

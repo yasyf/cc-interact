@@ -19,6 +19,7 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/internal/statepath"
+	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -77,7 +78,7 @@ func TestStreamURLExcludeOrigin(t *testing.T) {
 // never delivered as an event, never errors the stream, and never advances the
 // cursor past the real events around it.
 func TestConsumeEventsSkipsCaughtUpMarker(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	p := paths.Paths{App: ".cc-interact-test"}
 	if err := statepath.EnsureSubjectDir(p, "caught-up"); err != nil {
 		t.Fatal(err)
@@ -165,7 +166,7 @@ func TestWriteCursorConcurrent(t *testing.T) {
 }
 
 func TestConsumeEventsWarnsAndContinuesAfterCursorPersistFailure(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	p := paths.Paths{App: ".cc-interact-test"}
 	const subjectID = "persist-warning"
 	dir := statepath.SubjectDir(p, subjectID)
@@ -227,7 +228,7 @@ func TestSeedCursor(t *testing.T) {
 		{
 			name: "furthest cursor seeds before dead sibling GC",
 			run: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
+				testhome.Isolate(t)
 				p := paths.Paths{App: ".cc-interact-test"}
 				const subjectID = "seeded"
 				if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
@@ -272,7 +273,7 @@ func TestSeedCursor(t *testing.T) {
 		{
 			name: "no cursors leaves replay at zero without writing",
 			run: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
+				testhome.Isolate(t)
 				p := paths.Paths{App: ".cc-interact-test"}
 				const subjectID = "empty"
 				self := fmt.Sprintf("watch-%d", os.Getpid())
@@ -287,7 +288,7 @@ func TestSeedCursor(t *testing.T) {
 		{
 			name: "unscoped base cursor is ignored",
 			run: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
+				testhome.Isolate(t)
 				p := paths.Paths{App: ".cc-interact-test"}
 				const subjectID = "base-ignored"
 				if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
@@ -312,7 +313,7 @@ func TestSeedCursor(t *testing.T) {
 		{
 			name: "pre-v1 cursor namespace is ignored",
 			run: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
+				testhome.Isolate(t)
 				p := paths.Paths{App: ".cc-interact-test"}
 				const subjectID = "old-namespace"
 				if err := p.EnsureSubjectDir(subjectID); err != nil {
@@ -337,7 +338,7 @@ func TestSeedCursor(t *testing.T) {
 		{
 			name: "own corrupt cursor remains fatal",
 			run: func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
+				testhome.Isolate(t)
 				p := paths.Paths{App: ".cc-interact-test"}
 				const subjectID = "corrupt-own"
 				if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
@@ -364,7 +365,7 @@ func TestSeedCursor(t *testing.T) {
 }
 
 func TestSeedCursorWarnsAndSkipsCorruptSibling(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	p := paths.Paths{App: ".cc-interact-test"}
 	const subjectID = "corrupt-sibling"
 	if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
@@ -397,7 +398,7 @@ func TestSeedCursorWarnsAndSkipsCorruptSibling(t *testing.T) {
 // dies the Refresh hook redirects the stream to the replacement daemon. It also
 // asserts the per-consumer cursor lands on the last delivered seq.
 func TestConsumeEventsSendsConsumerParamAndRefreshes(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Isolate(t)
 	p := paths.Paths{App: ".cc-interact-test"}
 	if err := statepath.EnsureSubjectDir(p, "stream-test"); err != nil {
 		t.Fatal(err)
