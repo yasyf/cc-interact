@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-07-27
+
+### Changed
+
+- Pin daemonkit v0.20.9 so helper installs resolve the real home directory and
+  survive Homebrew postinstall's sandboxed temp HOME, a launchctl exit 5 is no
+  longer retried as transient, and recovery-mode reconcile clears self-wedged
+  installs.
+
 ## [0.31.0] - 2026-07-24
 
 ### Added
@@ -527,7 +536,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.31.1...HEAD
+[0.31.1]: https://github.com/yasyf/cc-interact/compare/v0.31.0...v0.31.1
+[0.31.0]: https://github.com/yasyf/cc-interact/compare/v0.30.1...v0.31.0
+[0.30.1]: https://github.com/yasyf/cc-interact/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/yasyf/cc-interact/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/yasyf/cc-interact/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/yasyf/cc-interact/compare/v0.27.0...v0.28.0
