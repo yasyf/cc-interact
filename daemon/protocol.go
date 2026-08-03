@@ -5,11 +5,7 @@ package daemon
 
 //go:generate go run ./protocolgen
 
-import (
-	"encoding/json"
-
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
-)
+import "encoding/json"
 
 // Op is a cc-interact business operation.
 type Op string
@@ -21,7 +17,6 @@ const (
 	OpGuardEdit      Op = "guard-edit"
 	OpChannelAck     Op = "channel-ack"
 	OpStatus         Op = "status"
-	OpRuntimeHealth  Op = "cc-interact.runtime.health"
 	OpAgentStart     Op = "agent-start"
 	OpAgentStop      Op = "agent-stop"
 	OpAgentInject    Op = "agent-inject"
@@ -29,21 +24,6 @@ const (
 	OpAgentDirect    Op = "agent-direct"
 	OpAgentReconcile Op = "agent-reconcile"
 )
-
-// RuntimeHealth is the product-visible daemon runtime snapshot.
-type RuntimeHealth struct {
-	RuntimeBuild      string         `json:"runtime_build"`
-	RuntimeProtocol   int            `json:"runtime_protocol"`
-	PID               int            `json:"pid"`
-	ProcessGeneration string         `json:"process_generation"`
-	Ready             bool           `json:"ready"`
-	State             dkdaemon.State `json:"state"`
-	Draining          bool           `json:"draining"`
-	Busy              bool           `json:"busy"`
-}
-
-// RuntimeStateStarting means the product readiness fence is unpublished.
-const RuntimeStateStarting dkdaemon.State = "starting"
 
 // Envelope is one cc-interact operation payload. Op selects the v1 wire route
 // and is never duplicated inside the payload.
@@ -54,6 +34,14 @@ type Envelope struct {
 	Scope     string          `json:"scope,omitempty"`
 	Consumer  string          `json:"consumer,omitempty"`
 	Body      json.RawMessage `json:"body,omitempty"`
+}
+
+// HealthDetail is the product's half of daemonkit's Health.Detail, published
+// once at start and read back by the launcher. daemonkit's own Health.Build is
+// an executable digest, which proves two builds differ but never which is
+// newer; RuntimeBuild is the semantic release that orders them.
+type HealthDetail struct {
+	RuntimeBuild string `json:"runtime_build"`
 }
 
 // Reply is one cc-interact business response.

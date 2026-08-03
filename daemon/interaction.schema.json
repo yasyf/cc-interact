@@ -29,30 +29,6 @@
         "reason": {"type": "string"},
         "body": {}
       }
-    },
-    "RuntimeHealth": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "runtime_build",
-        "runtime_protocol",
-        "pid",
-        "process_generation",
-        "ready",
-        "state",
-        "draining",
-        "busy"
-      ],
-      "properties": {
-        "runtime_build": {"type": "string", "minLength": 1},
-        "runtime_protocol": {"type": "integer", "minimum": 1},
-        "pid": {"type": "integer", "minimum": 2},
-        "process_generation": {"type": "string", "minLength": 1},
-        "ready": {"type": "boolean"},
-        "state": {"enum": ["starting", "healthy", "degraded", "failed"]},
-        "draining": {"type": "boolean"},
-        "busy": {"type": "boolean"}
-      }
     }
   },
   "x-routes": {
@@ -60,10 +36,6 @@
       "operation": "*",
       "request": {"$ref": "#/$defs/Envelope"},
       "response": {"$ref": "#/$defs/Reply"}
-    },
-    "runtime_health": {
-      "operation": "cc-interact.runtime.health",
-      "response": {"$ref": "#/$defs/RuntimeHealth"}
     }
   }
 }

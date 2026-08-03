@@ -10,24 +10,35 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/internal/testhome"
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/daemonkit"
 	"github.com/yasyf/daemonkit/paths"
-	"github.com/yasyf/daemonkit/proc"
-	"github.com/yasyf/daemonkit/trust"
-	"github.com/yasyf/daemonkit/wire"
-	"github.com/yasyf/daemonkit/worker"
 )
 
 const testClaudePID = 4242
+
+// fakeLabel is shared with the guard-edit re-exec child, which rebuilds the
+// spec from this label plus the inherited DAEMONKIT_HOME.
+const fakeLabel = "cci-cmd-fake"
+
+// probeOp is the readiness probe the fake daemon answers without recording.
+const probeOp daemon.Op = "probe"
+
+func testSpec(label string) daemonkit.Daemon {
+	return daemon.Spec(daemonkit.Daemon{
+		Label: daemonkit.Label(label),
+		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
+	})
+}
 
 // recorder collects every envelope a fake daemon receives.
 type recorder struct {
@@ -47,106 +58,111 @@ func (r *recorder) last() daemon.Envelope {
 	return r.envs[len(r.envs)-1]
 }
 
-// fakeDaemon serves the control socket, recording each envelope and replying via
-// reply. It returns the socket path and the recorder.
-func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (string, *recorder) {
-	t.Helper()
-	socket := filepath.Join(shortTempDir(t), "d.sock")
-	rec := &recorder{}
-	server := &wire.Server{WireBuild: daemon.WireBuild}
-	for _, op := range []daemon.Op{
-		daemon.OpResolve, daemon.OpSessionRecord, daemon.OpGuardEdit, daemon.OpChannelAck, daemon.OpStatus,
-		daemon.OpAgentStart, daemon.OpAgentStop, daemon.OpAgentInject, daemon.OpAgentReport,
-		daemon.OpAgentDirect, daemon.OpAgentReconcile,
-	} {
-		op := op
-		server.Register(wire.HandlerSpec{Op: wire.Op(op), Concurrent: true, Handler: func(_ context.Context, request wire.Request) (any, error) {
-			var env daemon.Envelope
-			if err := json.Unmarshal(request.Payload, &env); err != nil {
-				return nil, err
-			}
-			env.Op = op
-			rec.record(env)
-			return reply(env), nil
-		}})
-	}
-	policy, err := trust.NewTrustPolicy(trust.TrustPolicyConfig{ExpectedUID: os.Geteuid(), AllowUnprotected: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	generation, err := proc.ProcessGeneration()
-	if err != nil {
-		t.Fatal(err)
-	}
-	reaper := &proc.Reaper{Store: &proc.FileStore{Path: filepath.Join(t.TempDir(), "processes.db")}, Generation: generation}
-	children, err := proc.NewManager(4, reaper)
-	if err != nil {
-		t.Fatal(err)
-	}
-	disposable, err := worker.NewPool(worker.Config{
-		Capacity: 1, QueueCapacity: 0, MaxTotalRun: 30 * time.Second,
-		MaxStdinBytes: 1, MaxStdoutBytes: 1, MaxStderrBytes: 1,
-	}, reaper)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := wire.NewRuntime(wire.RuntimeConfig{
-		Socket: socket, RuntimeBuild: "test", RuntimeProtocol: 1, Wire: server, TrustPolicy: policy,
-		StopControlStore: &proc.FileStore{Path: filepath.Join(t.TempDir(), "stop.db")},
-		Workers:          disposable, Children: children, ShutdownTimeout: 3 * time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	slot := dkdaemon.NewPublicationSlot[struct{}](runtime)
-	activation, err := runtime.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	publication, err := slot.Stage(activation, struct{}{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := activation.CommitReady(publication); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- runtime.Wait(context.Background()) }()
-	t.Cleanup(func() {
-		cancel()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer shutdownCancel()
-		_ = runtime.Shutdown(shutdownCtx)
-		<-done
-	})
-	return socket, rec
+// fakeProduct answers every op with reply, recording each envelope except the
+// readiness probe.
+type fakeProduct struct {
+	rec   *recorder
+	reply func(daemon.Envelope) daemon.Reply
 }
 
-// shortTempDir returns a temp dir with a short path; the test-name-based
-// t.TempDir() blows past the ~104-byte unix-socket path limit on macOS.
-func shortTempDir(t *testing.T) string {
+func (p fakeProduct) Handle(_ context.Context, req daemonkit.Request) (daemonkit.Reply, error) {
+	var env daemon.Envelope
+	if err := json.Unmarshal(req.Body, &env); err != nil {
+		return daemonkit.Reply{}, err
+	}
+	env.Op = daemon.Op(req.Op)
+	if env.Op == probeOp {
+		return daemonkit.Reply{Body: []byte(`{"ok":true}`)}, nil
+	}
+	p.rec.record(env)
+	body, err := json.Marshal(p.reply(env))
+	if err != nil {
+		return daemonkit.Reply{}, err
+	}
+	return daemonkit.Reply{Body: body}, nil
+}
+
+func (fakeProduct) Drain(daemonkit.Budget) error { return nil }
+
+func (fakeProduct) Close(daemonkit.Budget) error { return nil }
+
+// fakeDaemon serves the label's socket in-process, recording each envelope and
+// replying via reply. It returns the shared spec and the recorder.
+func fakeDaemon(t *testing.T, reply func(daemon.Envelope) daemon.Reply) (daemonkit.Daemon, *recorder) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "ccx")
+	shortHome(t)
+	rec := &recorder{}
+	spec := testSpec(fakeLabel)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := daemonkit.Serve(ctx, spec, func(daemonkit.Ctx) (daemonkit.Product, error) {
+			return fakeProduct{rec: rec, reply: reply}, nil
+		})
+		done <- err
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("fake daemon Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("fake daemon did not stop")
+		}
+	})
+	awaitReady(t, spec, done)
+	return spec, rec
+}
+
+// shortHome points HOME and DAEMONKIT_HOME at a short-prefix temp dir so the
+// daemon's unix socket path stays under the sun_path length limit.
+func shortHome(t *testing.T) {
+	t.Helper()
+	home, err := os.MkdirTemp("/tmp", "cci-cmd-test-")
 	if err != nil {
 		t.Fatalf("mkdir temp: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	testhome.Set(t, home)
 }
 
-func testDeps(socket string) Deps {
-	return testDepsWithMaxFrame(socket, 0)
+// awaitReady polls the business lane until the daemon dispatches, so a test
+// never races the bind.
+func awaitReady(t *testing.T, spec daemonkit.Daemon, served <-chan error) {
+	t.Helper()
+	client, err := daemon.NewClient(spec)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		_, probeErr := client.Do(probeCtx, daemon.Envelope{Op: probeOp})
+		probeCancel()
+		if probeErr == nil {
+			return
+		}
+		select {
+		case err := <-served:
+			t.Fatalf("serve daemon: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon did not become ready: %v", probeErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
-func testDepsWithMaxFrame(socket string, maxFrameBytes int) Deps {
+func testDeps(spec daemonkit.Daemon) Deps {
 	return Deps{
 		Paths:   paths.Paths{App: ".cc-interact-test"},
 		Version: "9.9.9",
-		NewClient: func(ctx context.Context) (*daemon.Client, error) {
-			return daemon.NewClient(ctx, daemon.ClientConfig{
-				Socket: socket, WireBuild: daemon.WireBuild, Role: trust.UnprotectedRole, MaxFrameBytes: maxFrameBytes,
-			})
+		NewClient: func(context.Context) (*daemon.Client, error) {
+			return daemon.NewClient(spec)
 		},
 		EnsureCurrent:          func(context.Context) error { return nil },
 		EnsureCurrentIfRunning: func(context.Context) error { return nil },
@@ -156,44 +172,33 @@ func testDepsWithMaxFrame(socket string, maxFrameBytes int) Deps {
 	}
 }
 
-func liveDaemon(t *testing.T, maxFrameBytes int) string {
+// absentSpec is a spec whose socket provably has no listener.
+func absentSpec(t *testing.T) daemonkit.Daemon {
 	t.Helper()
-	home, err := os.MkdirTemp("/tmp", "cci-cmd-test-")
-	if err != nil {
-		t.Fatalf("mkdir temp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	testhome.Set(t, home)
+	shortHome(t)
+	return testSpec("cci-cmd-absent")
+}
 
-	p := paths.Paths{App: ".cc-interact-test"}
-	roles := daemon.Roles{
-		Business: trust.UnprotectedRole, Lifecycle: "com.yasyf.cc-interact.cmd-test.lifecycle.v1",
-		StopControl: "com.yasyf.cc-interact.cmd-test.stop.v1",
-	}
-	policy, err := trust.NewTrustPolicy(trust.TrustPolicyConfig{
-		ExpectedUID: os.Geteuid(), AllowUnprotected: true,
-		Roles: map[trust.PeerRole]trust.Requirement{
-			roles.Lifecycle:   {TeamID: "TESTTEAM", SigningIdentifier: "com.yasyf.cc-interact.cmd-test.lifecycle"},
-			roles.StopControl: {TeamID: "TESTTEAM", SigningIdentifier: "com.yasyf.cc-interact.cmd-test.stop"},
-		},
-		StopRoles: []trust.PeerRole{roles.StopControl}, ReceiptRoles: []trust.PeerRole{roles.Lifecycle},
-		ReadinessRoles: []trust.PeerRole{roles.Lifecycle},
+func liveDaemon(t *testing.T, maxFrame daemonkit.Bytes) daemonkit.Daemon {
+	t.Helper()
+	shortHome(t)
+	spec := daemon.Spec(daemonkit.Daemon{
+		Label:    "cci-cmd-live",
+		MaxFrame: maxFrame,
+		Trust:    daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
-	if err != nil {
-		t.Fatalf("trust policy: %v", err)
-	}
 	s, err := daemon.New(daemon.Config{
 		AppName:        "cc-interact-test",
-		Paths:          p,
-		WireBuild:      daemon.WireBuild,
+		Paths:          paths.Paths{App: ".cc-interact-test"},
+		Daemon:         spec,
 		RuntimeBuild:   "9.9.9",
-		TrustPolicy:    policy,
-		Roles:          roles,
 		ActiveStatuses: []string{"open"},
-		MaxFrameBytes:  maxFrameBytes,
 	})
 	if err != nil {
 		t.Fatalf("new daemon: %v", err)
+	}
+	if err := (paths.Paths{App: ".cc-interact-test"}).EnsureStateDir(); err != nil {
+		t.Fatalf("ensure state dir: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	served := make(chan error, 1)
@@ -210,21 +215,18 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 		}
 	})
 
+	client, err := daemon.NewClient(spec)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = client.Close() }()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		client, err := daemon.NewClient(probeCtx, daemon.ClientConfig{
-			Socket: p.SocketPath(), WireBuild: daemon.WireBuild, Role: trust.UnprotectedRole,
-		})
-		if err == nil {
-			health, healthErr := client.RuntimeHealth(probeCtx)
-			_ = client.Close()
-			probeCancel()
-			if healthErr == nil && health.RuntimeBuild == "9.9.9" && health.RuntimeProtocol == int(wire.ProtocolVersion) {
-				return p.SocketPath()
-			}
-		} else {
-			probeCancel()
+		reply, probeErr := client.Do(probeCtx, daemon.Envelope{Op: daemon.OpStatus})
+		probeCancel()
+		if probeErr == nil && reply.DaemonVersion == "9.9.9" {
+			return spec
 		}
 		select {
 		case err := <-served:
@@ -232,7 +234,7 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("daemon did not start")
+			t.Fatalf("daemon did not start: %v", probeErr)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -242,10 +244,10 @@ func liveDaemon(t *testing.T, maxFrameBytes int) string {
 // and stamps the window pid, scope, and the {tool_name, tool_input} body the
 // daemon's guard-edit handler expects.
 func TestGuardEditAllowSendsEnvelope(t *testing.T) {
-	socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: true, Allow: true}
 	})
-	cmd := GuardEditCmd(testDeps(socket))
+	cmd := GuardEditCmd(testDeps(spec))
 	cmd.SetIn(strings.NewReader(`{"session_id":"s1","cwd":"/repo","tool_name":"Edit","tool_input":{"path":"a.go"}}`))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -274,7 +276,7 @@ func TestGuardEditAllowSendsEnvelope(t *testing.T) {
 // TestGuardEditDaemonDownAllows proves a missing daemon fails open: no error,
 // no exit.
 func TestGuardEditDaemonDownAllows(t *testing.T) {
-	cmd := GuardEditCmd(testDeps(filepath.Join(t.TempDir(), "absent.sock")))
+	cmd := GuardEditCmd(testDeps(absentSpec(t)))
 	cmd.SetIn(strings.NewReader(`{"session_id":"s1","cwd":"/repo","tool_name":"Edit"}`))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -285,10 +287,9 @@ func TestGuardEditDaemonDownAllows(t *testing.T) {
 
 // TestGuardEditOversizeLogsAndAllows pins fail-open visibility at a lowered cap.
 func TestGuardEditOversizeLogsAndAllows(t *testing.T) {
-	const maxFrameBytes = 256
-	socket := liveDaemon(t, maxFrameBytes)
-	input := fmt.Sprintf(`{"session_id":"s1","cwd":"/repo","tool_name":"Write","tool_input":{"content":%q}}`, strings.Repeat("x", 512))
-	cmd := GuardEditCmd(testDepsWithMaxFrame(socket, maxFrameBytes))
+	spec := liveDaemon(t, 8<<10)
+	input := fmt.Sprintf(`{"session_id":"s1","cwd":"/repo","tool_name":"Write","tool_input":{"content":%q}}`, strings.Repeat("x", 4096))
+	cmd := GuardEditCmd(testDeps(spec))
 	cmd.SetIn(strings.NewReader(input))
 	cmd.SetOut(&bytes.Buffer{})
 	var stderr bytes.Buffer
@@ -322,17 +323,16 @@ func TestGuardEditOversizeLogsAndAllows(t *testing.T) {
 // block signal is observable, and asserts the reason reaches stderr.
 func TestGuardEditBlockExits2(t *testing.T) {
 	if os.Getenv("GUARD_EDIT_HELPER") == "1" {
-		socket := os.Getenv("GUARD_EDIT_SOCKET")
-		cmd := GuardEditCmd(testDeps(socket))
+		cmd := GuardEditCmd(testDeps(testSpec(fakeLabel)))
 		cmd.SetIn(strings.NewReader(`{"session_id":"s1","cwd":"/repo","tool_name":"Edit"}`))
 		_ = cmd.ExecuteContext(context.Background())
 		return
 	}
-	socket, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	_, _ = fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: true, Allow: false, Reason: "review open: edits blocked"}
 	})
 	child := exec.Command(os.Args[0], "-test.run=TestGuardEditBlockExits2")
-	child.Env = append(os.Environ(), "GUARD_EDIT_HELPER=1", "GUARD_EDIT_SOCKET="+socket)
+	child.Env = append(os.Environ(), "GUARD_EDIT_HELPER=1")
 	var stderr bytes.Buffer
 	child.Stderr = &stderr
 	err := child.Run()
@@ -358,10 +358,10 @@ func asExitError(err error, target **exec.ExitError) bool {
 
 // TestChannelAckErrorPropagates proves a not-OK reply surfaces as a command error.
 func TestChannelAckErrorPropagates(t *testing.T) {
-	socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: false, Error: "no window"}
 	})
-	cmd := ChannelAckCmd(testDeps(socket))
+	cmd := ChannelAckCmd(testDeps(spec))
 	cmd.SetArgs([]string{"--session", "s1", "--cwd", "/repo"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -377,13 +377,13 @@ func TestChannelAckErrorPropagates(t *testing.T) {
 // TestStatusReportsSubject proves status renders the daemon version, port, and
 // the bound subject.
 func TestStatusReportsSubject(t *testing.T) {
-	socket, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{
 			OK: true, DaemonVersion: "1.2.3", HTTPPort: 5678, SubjectID: "sub-9", Status: "open",
 			Body: json.RawMessage(`{"consumer_connected":true,"consumers":{"watch":1,"watch-123":2,"watchdog":9,"channel":1}}`),
 		}
 	})
-	cmd := StatusCmd(testDeps(socket))
+	cmd := StatusCmd(testDeps(spec))
 	var out bytes.Buffer
 	cmd.SetArgs([]string{"--session", "s1", "--cwd", "/repo"})
 	cmd.SetOut(&out)
@@ -399,7 +399,7 @@ func TestStatusReportsSubject(t *testing.T) {
 
 // TestStatusNotRunning proves a stopped daemon is reported, not spawned.
 func TestStatusNotRunning(t *testing.T) {
-	deps := testDeps(filepath.Join(t.TempDir(), "absent.sock"))
+	deps := testDeps(absentSpec(t))
 	deps.EnsureCurrentIfRunning = func(context.Context) error { return daemon.ErrNoPeer }
 	cmd := StatusCmd(deps)
 	var out bytes.Buffer
@@ -413,8 +413,37 @@ func TestStatusNotRunning(t *testing.T) {
 	}
 }
 
-func TestStopUsesExactRoleController(t *testing.T) {
-	deps := testDeps("unused.sock")
+// TestStatusLegacyDaemon proves a pre-0.21 daemon reads as running-but-stranded
+// rather than as the absence its silent endpoint would otherwise look like, and
+// that status names the verb that retires it.
+func TestStatusLegacyDaemon(t *testing.T) {
+	deps := testDeps(absentSpec(t))
+	deps.EnsureCurrentIfRunning = func(context.Context) error {
+		return fmt.Errorf("%w on /tmp/legacy.sock", daemon.ErrLegacyDaemon)
+	}
+	root := &cobra.Command{Use: "cci"}
+	root.AddCommand(StatusCmd(deps))
+	var out bytes.Buffer
+	root.SetArgs([]string{"status"})
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "not running") {
+		t.Fatalf("status output = %q, want a pre-0.21 daemon reported as running", got)
+	}
+	if !strings.Contains(got, "pre-0.21") || !strings.Contains(got, `"cci stop"`) {
+		t.Fatalf("status output = %q, want the pre-0.21 state and the retiring verb", got)
+	}
+}
+
+// TestStopIsUniformOverAnAlreadyStoppedDaemon pins the postcondition daemonkit
+// now guarantees: stop reports the same success either way, because an absent
+// daemon can still have left a LaunchAgent that this call took down.
+func TestStopIsUniformOverAnAlreadyStoppedDaemon(t *testing.T) {
+	deps := testDeps(testSpec("cci-cmd-unused"))
 	called := 0
 	deps.Stop = func(context.Context) error { called++; return nil }
 	command := StopCmd(deps)
@@ -425,20 +454,6 @@ func TestStopUsesExactRoleController(t *testing.T) {
 	}
 	if called != 1 || out.String() != "daemon: stopped\n" {
 		t.Fatalf("stop calls=%d output=%q", called, out.String())
-	}
-}
-
-func TestStopReportsAbsentDaemon(t *testing.T) {
-	deps := testDeps("unused.sock")
-	deps.Stop = func(context.Context) error { return daemon.ErrNoPeer }
-	command := StopCmd(deps)
-	var out bytes.Buffer
-	command.SetOut(&out)
-	if err := command.ExecuteContext(context.Background()); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if out.String() != "daemon: not running\n" {
-		t.Fatalf("stop output=%q", out.String())
 	}
 }
 
@@ -459,10 +474,10 @@ func TestWatchStreamsUntilTerminal(t *testing.T) {
 	t.Cleanup(sse.Close)
 	ssePort := mustPort(t, sse)
 
-	socket, _ := fakeDaemon(t, func(env daemon.Envelope) daemon.Reply {
+	spec, _ := fakeDaemon(t, func(env daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: true, SubjectID: "sub-1", HTTPPort: ssePort}
 	})
-	d := testDeps(socket)
+	d := testDeps(spec)
 
 	cmd := WatchCmd(d)
 	var out bytes.Buffer
@@ -500,10 +515,10 @@ func TestWatchOnceExitsAfterFirstEvent(t *testing.T) {
 	t.Cleanup(sse.Close)
 	ssePort := mustPort(t, sse)
 
-	socket, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: true, SubjectID: "sub-1", HTTPPort: ssePort}
 	})
-	d := testDeps(socket)
+	d := testDeps(spec)
 
 	run := func() string {
 		t.Helper()

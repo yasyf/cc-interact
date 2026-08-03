@@ -11,7 +11,7 @@ import (
 	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/transcript"
-	"github.com/yasyf/daemonkit/wire"
+	"github.com/yasyf/daemonkit"
 )
 
 // AgentStartCmd is the hidden SubagentStart hook handler.
@@ -113,14 +113,13 @@ func AgentStopCmd(d Deps) *cobra.Command {
 			}
 			defer func() { _ = client.Close() }()
 			reply, err := client.Do(cmd.Context(), env)
-			if errors.Is(err, wire.ErrFrameTooLarge) {
+			if errors.Is(err, daemonkit.ErrOversize) {
 				frame, _ := json.Marshal(env)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent-stop: frame-too-large: request frame is %d bytes; allowing stop\n", len(frame))
 				return nil
 			}
 			if err != nil {
-				var callErr *daemon.CallError
-				if !errors.As(err, &callErr) {
+				if errors.Is(err, daemon.ErrMalformedReply) {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent-stop: malformed daemon reply: %v; allowing stop\n", err)
 				}
 				return nil

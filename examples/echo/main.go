@@ -19,7 +19,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -30,9 +29,8 @@ import (
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit"
 	"github.com/yasyf/daemonkit/paths"
-	"github.com/yasyf/daemonkit/service"
-	"github.com/yasyf/daemonkit/trust"
 )
 
 // appVersion is the ldflags stamp target: -X main.appVersion=<version>.
@@ -81,43 +79,37 @@ type itemBody struct {
 
 func appPaths() paths.Paths { return paths.Paths{App: appDir} }
 
-func appRoles() daemon.Roles {
-	return daemon.Roles{
-		Business: trust.UnprotectedRole, Lifecycle: "com.yasyf.cc-interact.echo.lifecycle.v1",
-		StopControl: "com.yasyf.cc-interact.echo.stop.v1",
+// appSpec is the one daemonkit identity the launcher and the daemon share.
+// Business stays on the same-EUID floor; the control lane and the serving
+// posture both name the identity the echo binary is released under, so an
+// unsigned dev build must relax both together.
+func appSpec() (daemonkit.Daemon, error) {
+	program, err := daemonkit.Stable()
+	if err != nil {
+		return daemonkit.Daemon{}, err
 	}
+	requirement := daemonkit.Requirement{TeamID: "SXKCTF23Q2", SigningIdentifier: "com.yasyf.cc-interact.echo"}
+	return daemon.Spec(daemonkit.Daemon{
+		Label:   "com.yasyf.cc-interact.echo",
+		Program: program,
+		Args:    []string{"daemon"},
+		Log:     appPaths().LogPath(),
+		Restart: daemonkit.RestartOnFailure,
+		Trust: daemonkit.Trust{
+			Control: &requirement,
+			Serving: daemonkit.ServingSigned(requirement),
+		},
+	}), nil
 }
 
-func appTrustPolicy() (trust.TrustPolicy, error) {
-	roles := appRoles()
-	requirement := trust.Requirement{TeamID: "SXKCTF23Q2", SigningIdentifier: "com.yasyf.cc-interact.echo"}
-	return trust.NewTrustPolicy(trust.TrustPolicyConfig{
-		ExpectedUID: os.Geteuid(), AllowUnprotected: true,
-		Roles:     map[trust.PeerRole]trust.Requirement{roles.Lifecycle: requirement, roles.StopControl: requirement},
-		StopRoles: []trust.PeerRole{roles.StopControl}, ReceiptRoles: []trust.PeerRole{roles.Lifecycle},
-		ReadinessRoles: []trust.PeerRole{roles.Lifecycle},
-	})
-}
-
-func newClient(ctx context.Context) (*daemon.Client, error) { return launcher().NewClient(ctx) }
+func newClient(context.Context) (*daemon.Client, error) { return launcher().NewClient() }
 
 func launcher() daemon.Launcher {
-	executable, err := os.Executable()
+	spec, err := appSpec()
 	if err != nil {
 		panic(err)
 	}
-	executable, err = filepath.EvalSymlinks(executable)
-	if err != nil {
-		panic(err)
-	}
-	return daemon.Launcher{
-		Paths: appPaths(), WireBuild: daemon.WireBuild, RuntimeBuild: appVersion,
-		Agent: service.Agent{
-			Label: "com.yasyf.cc-interact.echo", Program: executable, Args: []string{"daemon"},
-			LogPath: appPaths().LogPath(), RestartPolicy: service.RestartOnFailure,
-		},
-		Roles: appRoles(),
-	}
+	return daemon.Launcher{Daemon: spec, Paths: appPaths(), RuntimeBuild: appVersion}
 }
 
 // cwdOr resolves the scope: the explicit flag, else the process working directory.
@@ -197,17 +189,15 @@ func agentGreeting(info agent.Info) string {
 // headless is the whole point.
 func buildServer() (*daemon.Server, error) {
 	c := channel.Connectivity{}
-	policy, err := appTrustPolicy()
+	spec, err := appSpec()
 	if err != nil {
 		return nil, err
 	}
 	s, err := daemon.New(daemon.Config{
 		AppName:        appName,
 		Paths:          appPaths(),
-		WireBuild:      daemon.WireBuild,
+		Daemon:         spec,
 		RuntimeBuild:   appVersion,
-		TrustPolicy:    policy,
-		Roles:          appRoles(),
 		ActiveStatuses: []string{statusOpen},
 		// c.Type() (not c.EventType) so the SSE plane filters the same presence
 		// type the hooks emit — correct even for the Connectivity zero value.
@@ -555,13 +545,6 @@ func root() *cobra.Command {
 }
 
 func main() {
-	if handled, err := trust.RunVerifierChild(os.Args[1:], os.Stdout); handled {
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
 	if err := root().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

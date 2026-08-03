@@ -21,18 +21,14 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 		cfg.AppName = "cc-test"
 	}
 	cfg.Paths = paths.Paths{App: ".cc-interact-test"}
-	if cfg.WireBuild == "" {
-		cfg.WireBuild = WireBuild
+	if cfg.Daemon.Label == "" {
+		cfg.Daemon = testServeSpec()
 	}
 	if cfg.RuntimeBuild == "" {
 		cfg.RuntimeBuild = "v1.0.0"
 	}
 	if cfg.ActiveStatuses == nil {
 		cfg.ActiveStatuses = []string{"open"}
-	}
-	if cfg.Roles.Business == "" {
-		cfg.TrustPolicy = testTrustPolicy(t)
-		cfg.Roles = testRoles()
 	}
 	s, err := New(cfg)
 	if err != nil {
@@ -200,8 +196,8 @@ func TestDispatchStatusReportsSubject(t *testing.T) {
 func TestDispatchPublicRequiresPublishedRuntime(t *testing.T) {
 	s := newTestServer(t, Config{})
 	reply := s.Dispatch(context.Background(), Envelope{Op: OpStatus})
-	if reply.OK || !contains(reply.Error, "publication is unavailable") {
-		t.Fatalf("Dispatch before publication = %+v", reply)
+	if reply.OK || !contains(reply.Error, "not serving") {
+		t.Fatalf("Dispatch before serving = %+v", reply)
 	}
 }
 

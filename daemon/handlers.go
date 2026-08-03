@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/yasyf/cc-interact/subject"
-	"github.com/yasyf/daemonkit/wire"
+	"github.com/yasyf/daemonkit"
 )
 
 // HandlerCtx is everything a domain handler needs: the request, the window and
@@ -16,18 +16,17 @@ import (
 // tables, the persist→publish Append chokepoint, the live HTTP port, the
 // presence registry, and the per-scope lock that serializes scope-bound captures.
 type HandlerCtx struct {
-	Ctx       context.Context
-	Env       Envelope
-	Window    subject.Window
-	Scope     string
-	Subjects  subject.Resolver
-	DB        *sql.DB
-	Append    AppendFunc
-	HTTPPort  int
-	Activity  *Activity
-	RepoLock  *sync.Mutex
-	Peer      wire.Peer
-	WireBuild string
+	Ctx      context.Context
+	Env      Envelope
+	Window   subject.Window
+	Scope    string
+	Subjects subject.Resolver
+	DB       *sql.DB
+	Append   AppendFunc
+	HTTPPort int
+	Activity *Activity
+	RepoLock *sync.Mutex
+	Caller   daemonkit.Caller
 }
 
 // HandlerFunc handles one domain op and returns its reply.
@@ -100,31 +99,6 @@ func (s *Server) handleStatus(hc HandlerCtx) Reply {
 		})
 	}
 	return reply
-}
-
-func (s *Server) observeRuntimeHealth(ctx context.Context, _ wire.ObservationRequest) (wire.ObservationResponse, error) {
-	health, err := s.daemonRuntime.Health(ctx)
-	if err != nil {
-		return wire.ObservationResponse{}, err
-	}
-	state := health.State
-	if !health.Ready {
-		state = RuntimeStateStarting
-	}
-	body, err := json.Marshal(RuntimeHealth{
-		RuntimeBuild:      health.RuntimeBuild,
-		RuntimeProtocol:   health.RuntimeProtocol,
-		PID:               health.PID,
-		ProcessGeneration: health.ProcessGeneration.String(),
-		Ready:             health.Ready,
-		State:             state,
-		Draining:          health.Draining,
-		Busy:              health.Busy,
-	})
-	if err != nil {
-		return wire.ObservationResponse{}, err
-	}
-	return wire.ObservationResponse{Payload: body}, nil
 }
 
 type guardEditBody struct {

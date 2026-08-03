@@ -4,325 +4,192 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"syscall"
+	"os"
 	"time"
 
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/cc-interact/version"
+	"github.com/yasyf/daemonkit"
 	"github.com/yasyf/daemonkit/paths"
-	"github.com/yasyf/daemonkit/proc"
-	"github.com/yasyf/daemonkit/service"
-	"github.com/yasyf/daemonkit/trust"
-	"github.com/yasyf/daemonkit/version"
-	"github.com/yasyf/daemonkit/wire"
 )
 
 // UpgradeTimeout bounds an exact-build daemon transition.
 const UpgradeTimeout = 30 * time.Second
 
-// ErrNoPeer means the local runtime endpoint is provably absent.
-var ErrNoPeer = errors.New("daemon: no peer")
+// ErrNoPeer is daemonkit's proven-absence refusal: no daemon is listening.
+var ErrNoPeer = daemonkit.ErrAbsent
 
-type runtimeAction uint8
+// ErrIncumbentNewer refuses an upgrade that would put an older release back in
+// a newer one's place. daemonkit converges on Health.Build, an executable
+// digest that proves two builds differ but never which came first, so a
+// downgrade otherwise reads as an ordinary transition; the ordering rides
+// HealthDetail.RuntimeBuild instead.
+var ErrIncumbentNewer = errors.New("daemon: incumbent runs a newer release")
 
-const (
-	runtimeObserve runtimeAction = iota
-	runtimeNoop
-	runtimeSpawn
-	runtimeStopUpgrade
-	runtimeStopRestart
-)
+// ErrLegacyDaemon reports a pre-0.21 daemon still listening on the state
+// directory rather than the label-derived endpoint. Nothing in this build
+// speaks its wire era, so the socket file is the whole of the evidence: it can
+// be neither probed nor upgraded in place, only stopped.
+var ErrLegacyDaemon = errors.New("daemon: a pre-0.21 daemon is running")
 
-// Launcher starts, version-gates, and connects to one cc-interact daemon.
+// Launcher starts, converges, and connects to one cc-interact daemon. Every
+// field is the value the serving half reads from Config: Daemon is the shared
+// identity built through Spec, Paths locates what a pre-0.21 daemon left in
+// the state directory, and RuntimeBuild is the release this launcher orders
+// itself by.
 type Launcher struct {
+	Daemon       daemonkit.Daemon
 	Paths        paths.Paths
-	WireBuild    string
 	RuntimeBuild string
-	Agent        service.Agent
-	Roles        Roles
 }
 
-// NewClient connects to the exact business protocol selected by this launcher.
-func (l Launcher) NewClient(ctx context.Context) (*Client, error) {
+// NewClient opens the business lane of the launcher's daemon.
+func (l Launcher) NewClient() (*Client, error) {
 	if err := l.validate(); err != nil {
 		return nil, err
 	}
-	return NewClient(ctx, ClientConfig{Socket: l.Paths.SocketPath(), WireBuild: l.WireBuild, Role: l.Roles.Business})
+	return NewClient(l.Daemon)
 }
 
-// EnsureCurrent starts or upgrades the daemon and waits for exact product readiness.
-func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) (err error) {
-	if err := l.prepare(); err != nil {
+// EnsureCurrent makes the daemon be the exact build of this launcher's own
+// Program, ready and serving, cold-starting one when none runs. A newer
+// incumbent refuses with ErrIncumbentNewer instead of being rolled back.
+func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) error {
+	client, err := l.open()
+	if err != nil {
 		return err
 	}
 	operationCtx, cancel := boundedContext(ctx, timeout)
 	defer cancel()
-	return l.withStartLock(operationCtx, timeout, func() error {
-		return l.withController(operationCtx, func(controller *service.Controller) error {
-			health, probeErr := l.runtimeHealth(operationCtx)
-			if errors.Is(probeErr, ErrNoPeer) {
-				return l.start(operationCtx, controller, timeout)
-			}
-			if probeErr != nil {
-				return probeErr
-			}
-			health, action, err := l.settleRuntime(operationCtx, timeout, health, l.runtimeHealth)
-			if err != nil {
-				return err
-			}
-			switch action {
-			case runtimeNoop:
-				return nil
-			case runtimeSpawn:
-				return l.start(operationCtx, controller, timeout)
-			case runtimeStopUpgrade:
-				if err := l.stopRuntime(operationCtx, controller, health); err != nil {
-					return err
-				}
-			case runtimeStopRestart:
-				if err := l.stopRuntime(operationCtx, controller, health); err != nil {
-					return err
-				}
-			default:
-				return fmt.Errorf("daemon: invalid runtime action %d for generation %s", action, health.ProcessGeneration)
-			}
-			if err := controller.Converge(operationCtx, nil); err != nil {
-				return fmt.Errorf("daemon: settle prior service: %w", err)
-			}
-			if err := l.start(operationCtx, controller, timeout); err != nil {
-				if health, probeErr := l.runtimeHealth(operationCtx); probeErr == nil && version.Newer(health.RuntimeBuild, l.RuntimeBuild) {
-					return fmt.Errorf("daemon runtime build %s is newer than client build %s", health.RuntimeBuild, l.RuntimeBuild)
-				}
-				return err
-			}
-			return nil
-		})
-	})
-}
-
-func (l Launcher) start(ctx context.Context, controller *service.Controller, timeout time.Duration) error {
-	if err := controller.Converge(ctx, []service.Agent{l.Agent}); err != nil {
-		return fmt.Errorf("daemon: converge service: %w", err)
-	}
-	_, err := wire.AcquireReadyRuntime(ctx, l.runtimeClientConfig(l.Roles.Lifecycle, timeout), l.RuntimeBuild)
-	return err
-}
-
-// EnsureCurrentIfRunning upgrades a running daemon without cold-starting one.
-func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
-	if err := l.validate(); err != nil {
+	switch err := l.probeIncumbent(operationCtx, client); {
+	case err == nil, errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining):
+	default:
 		return err
 	}
-	health, err := l.runtimeHealth(ctx)
-	if errors.Is(err, ErrNoPeer) {
-		return ErrNoPeer
-	}
-	if err == nil {
-		if version.Newer(health.RuntimeBuild, l.RuntimeBuild) {
-			return fmt.Errorf("daemon runtime build %s is newer than client build %s", health.RuntimeBuild, l.RuntimeBuild)
-		}
-		if l.ready(health) {
-			return nil
-		}
-	}
-	return l.EnsureCurrent(ctx, UpgradeTimeout)
-}
-
-// Stop returns ErrNoPeer for proven absence or performs daemonkit's durable,
-// receipt-authenticated stop before removing the service.
-func (l Launcher) Stop(ctx context.Context, timeout time.Duration) error {
-	if err := l.prepare(); err != nil {
-		return err
-	}
-	controlCtx, cancel := boundedContext(ctx, timeout)
-	defer cancel()
-	return l.withStartLock(controlCtx, timeout, func() error {
-		health, err := l.runtimeHealth(controlCtx)
-		if errors.Is(err, ErrNoPeer) {
-			return err
-		}
-		if err != nil {
-			return err
-		}
-		return l.withController(controlCtx, func(controller *service.Controller) error {
-			if err := l.stopRuntime(controlCtx, controller, health); err != nil {
-				return err
-			}
-			return controller.Converge(controlCtx, nil)
-		})
-	})
-}
-
-func (l Launcher) stopRuntime(
-	ctx context.Context,
-	controller *service.Controller,
-	health RuntimeHealth,
-) error {
-	_, err := controller.StopRuntime(ctx, service.StopRuntimeRequest{
-		OperationID:          fmt.Sprintf("%s.stop.v1:%s", l.Agent.Label, health.ProcessGeneration),
-		RuntimeClientConfig:  l.runtimeClientConfig(l.Roles.StopControl, UpgradeTimeout),
-		ExpectedRuntimeBuild: health.RuntimeBuild,
-		ControlRole:          l.Roles.StopControl,
-	})
-	return err
-}
-
-func (l Launcher) runtimeHealth(ctx context.Context) (health RuntimeHealth, err error) {
-	client, err := NewClient(ctx, ClientConfig{Socket: l.Paths.SocketPath(), WireBuild: l.WireBuild, Role: l.Roles.Business})
-	if err != nil {
-		if provesNoRuntime(err) {
-			return RuntimeHealth{}, fmt.Errorf("daemon runtime health: %w", ErrNoPeer)
-		}
-		return RuntimeHealth{}, err
-	}
-	defer func() { err = errors.Join(err, client.Close()) }()
-	return client.RuntimeHealth(ctx)
-}
-
-func (l Launcher) settleRuntime(
-	ctx context.Context,
-	timeout time.Duration,
-	health RuntimeHealth,
-	observe func(context.Context) (RuntimeHealth, error),
-) (RuntimeHealth, runtimeAction, error) {
-	observeCtx, cancel := boundedContext(ctx, timeout)
-	defer cancel()
-	for {
-		action, err := l.runtimeAction(health)
-		if err != nil || action != runtimeObserve {
-			return health, action, err
-		}
-		timer := time.NewTimer(25 * time.Millisecond)
-		select {
-		case <-observeCtx.Done():
-			timer.Stop()
-			return health, runtimeStopRestart, nil
-		case <-timer.C:
-		}
-		next, err := observe(observeCtx)
-		if errors.Is(err, ErrNoPeer) {
-			return RuntimeHealth{}, runtimeSpawn, nil
-		}
-		if err != nil {
-			return health, runtimeObserve, err
-		}
-		health = next
-	}
-}
-
-func (l Launcher) runtimeAction(health RuntimeHealth) (runtimeAction, error) {
-	if version.Newer(health.RuntimeBuild, l.RuntimeBuild) {
-		return runtimeObserve, fmt.Errorf("daemon runtime build %s is newer than client build %s", health.RuntimeBuild, l.RuntimeBuild)
-	}
-	if health.RuntimeBuild == "" || health.RuntimeProtocol != int(wire.ProtocolVersion) || health.ProcessGeneration == "" {
-		return runtimeObserve, fmt.Errorf(
-			"daemon runtime identity is incomplete: build=%q protocol=%d generation=%q",
-			health.RuntimeBuild, health.RuntimeProtocol, health.ProcessGeneration,
-		)
-	}
-	if health.RuntimeBuild != l.RuntimeBuild {
-		return runtimeStopUpgrade, nil
-	}
-	if health.Draining {
-		return runtimeObserve, nil
-	}
-	if !health.Ready {
-		if health.State == dkdaemon.StateFailed {
-			return runtimeStopRestart, nil
-		}
-		return runtimeObserve, nil
-	}
-	if health.State == dkdaemon.StateHealthy {
-		return runtimeNoop, nil
-	}
-	if health.State != dkdaemon.StateFailed && health.Busy {
-		return runtimeObserve, nil
-	}
-	return runtimeStopRestart, nil
-}
-
-func provesNoRuntime(err error) bool {
-	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
-}
-
-func processStore(p paths.Paths) *proc.FileStore {
-	return &proc.FileStore{Path: filepath.Join(p.StateDir(), "processes.db")}
-}
-
-func stopProcessStore(p paths.Paths) *proc.FileStore {
-	return &proc.FileStore{Path: filepath.Join(p.StateDir(), "stop-processes.db")}
-}
-
-func (l Launcher) withController(ctx context.Context, run func(*service.Controller) error) (err error) {
-	controller, err := service.NewController(ctx, service.ControllerConfig{
-		StatePath:   filepath.Join(l.Paths.StateDir(), "services.db"),
-		ProcessPath: stopProcessStore(l.Paths).Path,
-		WorkerLimit: 1,
-	})
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, controller.Close(context.WithoutCancel(ctx))) }()
-	return run(controller)
-}
-
-func (l Launcher) runtimeClientConfig(role trust.PeerRole, timeout time.Duration) wire.RuntimeClientConfig {
-	return wire.RuntimeClientConfig{
-		Client: wire.ClientConfig{
-			Dial: wire.UnixDialer(l.Paths.SocketPath()), WireBuild: l.WireBuild,
-			Role: role, MaxFrame: maxFrameBytes,
-		},
-		NoProgressTimeout: timeout,
-	}
-}
-
-func (l Launcher) ready(health RuntimeHealth) bool {
-	return health.RuntimeBuild == l.RuntimeBuild &&
-		health.RuntimeProtocol == int(wire.ProtocolVersion) &&
-		health.ProcessGeneration != "" &&
-		health.Ready &&
-		health.State == dkdaemon.StateHealthy && !health.Draining
-}
-
-func (l Launcher) prepare() error {
-	if err := l.validate(); err != nil {
-		return err
-	}
-	if err := l.Paths.EnsureStateDir(); err != nil {
-		return err
-	}
-	return l.Paths.EnsureLockDir()
-}
-
-func (l Launcher) validate() error {
-	if l.WireBuild != WireBuild {
-		return fmt.Errorf("daemon: wire build %q, want exactly %q", l.WireBuild, WireBuild)
-	}
-	if l.RuntimeBuild == "" {
-		return errors.New("daemon: runtime build is required")
-	}
-	if _, err := l.Agent.Plist(); err != nil {
-		return fmt.Errorf("daemon: validate service agent: %w", err)
-	}
-	if l.Roles.Business == "" || l.Roles.Lifecycle == "" || l.Roles.StopControl == "" {
-		return errors.New("daemon: launcher roles are required")
+	if _, err := client.Ensure(operationCtx); err != nil {
+		return fmt.Errorf("daemon: ensure: %w", err)
 	}
 	return nil
 }
 
-func (l Launcher) withStartLock(ctx context.Context, timeout time.Duration, run func() error) (err error) {
-	deadline := timeout
-	if deadline <= 0 {
-		deadline = 5 * time.Second
-	}
-	lock, err := (proc.FileLockSpec{
-		Path: l.Paths.StartLockPath(), Mode: proc.FileLockExclusive, Deadline: deadline,
-	}).Acquire(ctx)
+// EnsureCurrentIfRunning upgrades a running daemon without cold-starting one,
+// returning ErrNoPeer for proven absence and ErrLegacyDaemon when the absence
+// is only this era's. An incumbent that is already leaving is running, not
+// absent: Ensure's own drain-observation ladder settles it and starts the
+// wanted build in its place. A newer incumbent refuses with ErrIncumbentNewer.
+func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
+	client, err := l.open()
 	if err != nil {
-		return fmt.Errorf("acquire start lock %s: %w", l.Paths.StartLockPath(), err)
+		return err
 	}
-	defer func() { err = errors.Join(err, lock.Close()) }()
-	return run()
+	operationCtx, cancel := boundedContext(ctx, UpgradeTimeout)
+	defer cancel()
+	switch err := l.probeIncumbent(operationCtx, client); {
+	case err == nil, errors.Is(err, daemonkit.ErrDraining):
+	case errors.Is(err, daemonkit.ErrAbsent):
+		return l.classifyAbsence()
+	default:
+		return err
+	}
+	if _, err := client.Ensure(operationCtx); err != nil {
+		return fmt.Errorf("daemon: ensure: %w", err)
+	}
+	return nil
+}
+
+// probeIncumbent passes daemonkit's ErrAbsent and ErrDraining back unwrapped,
+// so each ensure path classifies an absence on its own terms.
+func (l Launcher) probeIncumbent(ctx context.Context, client *daemonkit.Client) error {
+	control, err := client.Control(ctx)
+	switch {
+	case err == nil:
+	case errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining):
+		return err
+	default:
+		return fmt.Errorf("daemon: probe incumbent: %w", err)
+	}
+	defer func() { _ = control.Close(ctx) }()
+	health, err := control.Health(ctx)
+	if err != nil {
+		return fmt.Errorf("daemon: read incumbent health: %w", err)
+	}
+	return l.refuseRollback(health)
+}
+
+// refuseRollback refuses only a rollback this launcher can prove. Detail that
+// is absent, unreadable, or carries no release names a daemon whose ordering
+// this build cannot establish — a pre-0.21 incumbent among them — and ordering
+// it by assumption would strand the very upgrade that introduces the channel.
+func (l Launcher) refuseRollback(health daemonkit.Health) error {
+	incumbent, ok := reportedBuild(health.Detail)
+	if !ok {
+		return nil
+	}
+	if version.Newer(incumbent, l.RuntimeBuild) {
+		return fmt.Errorf("%w: %s supersedes this build %s", ErrIncumbentNewer, incumbent, l.RuntimeBuild)
+	}
+	return nil
+}
+
+func reportedBuild(detail []byte) (string, bool) {
+	if len(detail) == 0 {
+		return "", false
+	}
+	var reported HealthDetail
+	if err := decodeStrict(detail, &reported); err != nil {
+		return "", false
+	}
+	return reported.RuntimeBuild, reported.RuntimeBuild != ""
+}
+
+// classifyAbsence names what an absence on the label-derived endpoint means. A
+// pre-0.21 daemon listens on the state directory instead and answers no
+// handshake this build can speak, so its socket file is the only evidence of it
+// left to read.
+func (l Launcher) classifyAbsence() error {
+	legacy := l.Paths.SocketPath()
+	if _, err := os.Stat(legacy); err != nil {
+		return ErrNoPeer
+	}
+	return fmt.Errorf("%w on %s", ErrLegacyDaemon, legacy)
+}
+
+// Stop leaves nothing serving at this daemon's label and no LaunchAgent behind
+// it, a pre-0.21 markerless one included. daemonkit runs the whole sequence
+// under the start lock Ensure holds, so a concurrent ensure can neither
+// re-apply the agent this call removed nor lose its own replacement to it, and
+// the agent comes down only once departure is proven. Stopping an already
+// stopped daemon succeeds.
+func (l Launcher) Stop(ctx context.Context, timeout time.Duration) error {
+	client, err := l.open()
+	if err != nil {
+		return err
+	}
+	stopCtx, cancel := boundedContext(ctx, timeout)
+	defer cancel()
+	if err := client.Stop(stopCtx); err != nil {
+		return fmt.Errorf("daemon: stop: %w", err)
+	}
+	return nil
+}
+
+func (l Launcher) open() (*daemonkit.Client, error) {
+	if err := l.validate(); err != nil {
+		return nil, err
+	}
+	return daemonkit.Open(l.Daemon)
+}
+
+func (l Launcher) validate() error {
+	if err := validateSchemas(l.Daemon); err != nil {
+		return err
+	}
+	if l.Paths.App == "" {
+		return errors.New("daemon: launcher paths are required")
+	}
+	if l.RuntimeBuild == "" {
+		return errors.New("daemon: runtime build is required")
+	}
+	return l.Daemon.ValidateForClient()
 }
 
 func boundedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

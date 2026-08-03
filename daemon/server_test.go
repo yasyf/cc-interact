@@ -8,9 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,55 +16,17 @@ import (
 	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/cc-interact/store"
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/daemonkit"
 	"github.com/yasyf/daemonkit/paths"
-	"github.com/yasyf/daemonkit/proc"
-	"github.com/yasyf/daemonkit/service"
-	"github.com/yasyf/daemonkit/trust"
-	"github.com/yasyf/daemonkit/wire"
 )
 
 func testPaths() paths.Paths { return paths.Paths{App: ".cc-interact-test"} }
 
-func testRoles() Roles {
-	return Roles{
-		Business: trust.UnprotectedRole, Lifecycle: "com.yasyf.cc-interact.test.lifecycle.v1",
-		StopControl: "com.yasyf.cc-interact.test.stop.v1",
-	}
-}
-
-func testTrustPolicy(t *testing.T) trust.TrustPolicy {
-	t.Helper()
-	roles := testRoles()
-	policy, err := trust.NewTrustPolicy(trust.TrustPolicyConfig{
-		ExpectedUID: os.Geteuid(), AllowUnprotected: true,
-		Roles: map[trust.PeerRole]trust.Requirement{
-			roles.Lifecycle:   {TeamID: "TESTTEAM", SigningIdentifier: "com.yasyf.cc-interact.test.lifecycle"},
-			roles.StopControl: {TeamID: "TESTTEAM", SigningIdentifier: "com.yasyf.cc-interact.test.stop"},
-		},
-		StopRoles: []trust.PeerRole{roles.StopControl}, ReceiptRoles: []trust.PeerRole{roles.Lifecycle},
-		ReadinessRoles: []trust.PeerRole{roles.Lifecycle},
+func testServeSpec() daemonkit.Daemon {
+	return Spec(daemonkit.Daemon{
+		Label: "cci-server-test",
+		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return policy
-}
-
-func testAgent(t *testing.T) service.Agent {
-	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	executable, err = filepath.EvalSymlinks(executable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return service.Agent{
-		Label: "com.yasyf.cc-interact.test", Program: executable, Args: []string{"daemon"},
-		LogPath: filepath.Join(t.TempDir(), "daemon.log"), RestartPolicy: service.RestartOnFailure,
-	}
 }
 
 // isolateStateDir points the test state dir at a fresh temp HOME so each case
@@ -106,54 +66,53 @@ func shortHome(t *testing.T) {
 	testhome.Set(t, dir)
 }
 
-func TestNewRequiresTrustPolicyAndRoles(t *testing.T) {
-	if _, err := New(Config{WireBuild: WireBuild, RuntimeBuild: "0.0.1"}); err == nil {
-		t.Fatal("New accepted a missing daemon role")
+// awaitBusiness polls the business lane until the served daemon dispatches,
+// returning a connected client.
+func awaitBusiness(t *testing.T, spec daemonkit.Daemon) *Client {
+	t.Helper()
+	client, err := NewClient(spec)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		reply, probeErr := client.Do(probeCtx, Envelope{Op: OpStatus, Scope: "/not/a/repo"})
+		probeCancel()
+		if probeErr == nil && reply.OK {
+			return client
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon did not become ready: %v", probeErr)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func TestLauncherRequiresAgentAndRoles(t *testing.T) {
-	if _, err := (Launcher{
-		WireBuild: WireBuild, RuntimeBuild: "0.0.1",
-	}).NewClient(context.Background()); err == nil {
-		t.Fatal("Launcher.NewClient accepted missing agent and roles")
+func TestNewRequiresDaemonIdentity(t *testing.T) {
+	if _, err := New(Config{RuntimeBuild: "0.0.1"}); err == nil {
+		t.Fatal("New accepted a missing daemon identity")
+	}
+}
+
+func TestLauncherRequiresDaemonIdentity(t *testing.T) {
+	if _, err := (Launcher{}).NewClient(); err == nil {
+		t.Fatal("Launcher.NewClient accepted a missing daemon identity")
+	}
+}
+
+func TestNewRefusesASchemaBesideWireBuild(t *testing.T) {
+	spec := testServeSpec()
+	spec.Schemas = []daemonkit.Schema{WireBuild, "legacy"}
+	if _, err := New(Config{Daemon: spec, RuntimeBuild: "0.0.1"}); err == nil {
+		t.Fatal("New accepted a prior era beside the exact wire build")
 	}
 }
 
 func TestRuntimeBuildIsRequired(t *testing.T) {
-	if _, err := New(Config{WireBuild: WireBuild, TrustPolicy: testTrustPolicy(t), Roles: testRoles()}); err == nil {
+	if _, err := New(Config{Daemon: testServeSpec()}); err == nil {
 		t.Fatal("New accepted a missing runtime build")
-	}
-	if _, err := (Launcher{
-		WireBuild: WireBuild, Agent: testAgent(t), Roles: testRoles(),
-	}).NewClient(context.Background()); err == nil {
-		t.Fatal("Launcher.NewClient accepted a missing runtime build")
-	}
-}
-
-func TestLauncherAndServerShareExactRoles(t *testing.T) {
-	shortHome(t)
-	roles := testRoles()
-	launcher := Launcher{
-		Paths: testPaths(), WireBuild: WireBuild, RuntimeBuild: "0.0.1",
-		Agent: testAgent(t), Roles: roles,
-	}
-	if got := launcher.runtimeClientConfig(roles.Lifecycle, time.Second).Client.Role; got != roles.Lifecycle {
-		t.Fatalf("lifecycle role = %q, want %q", got, roles.Lifecycle)
-	}
-	s, err := New(Config{
-		AppName: "cc-interact-test", Paths: testPaths(), WireBuild: WireBuild, RuntimeBuild: "0.0.1",
-		TrustPolicy: testTrustPolicy(t), Roles: roles, ActiveStatuses: []string{"open"},
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	wireServer, _, err := s.runtime()
-	if err != nil {
-		t.Fatalf("runtime: %v", err)
-	}
-	if wireServer.WireBuild != WireBuild {
-		t.Fatalf("wire build = %q", wireServer.WireBuild)
 	}
 }
 
@@ -163,10 +122,8 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 	s, err := New(Config{
 		AppName:        "cc-interact-test",
 		Paths:          p,
-		WireBuild:      WireBuild,
+		Daemon:         testServeSpec(),
 		RuntimeBuild:   "0.0.1",
-		TrustPolicy:    testTrustPolicy(t),
-		Roles:          testRoles(),
 		ActiveStatuses: []string{"open"},
 		StoreSchema:    store.Schema{DDL: `CREATE TABLE activation_probe (id TEXT PRIMARY KEY);`},
 	})
@@ -195,46 +152,16 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 		}
 	})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		client, connectErr := NewClient(probeCtx, ClientConfig{Socket: testPaths().SocketPath(), WireBuild: WireBuild, Role: trust.UnprotectedRole})
-		if connectErr == nil {
-			health, healthErr := client.RuntimeHealth(probeCtx)
-			closeErr := client.Close()
-			probeCancel()
-			if closeErr != nil {
-				t.Fatalf("close readiness client: %v", closeErr)
-			}
-			if healthErr == nil && health.Ready {
-				break
-			}
-			connectErr = healthErr
-		}
-		probeCancel()
-		if time.Now().After(deadline) {
-			t.Fatalf("daemon did not become ready: %v", connectErr)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	client := awaitBusiness(t, testServeSpec())
 	if s.DB() == nil {
-		t.Fatal("state was not activated before readiness")
+		t.Fatal("state was not activated before dispatch")
 	}
 	if _, err := s.DB().Exec(`INSERT INTO activation_probe(id) VALUES('ready')`); err != nil {
 		t.Fatalf("exact consumer schema unavailable after readiness: %v", err)
 	}
-	client, err := NewClient(context.Background(), ClientConfig{
-		Socket: testPaths().SocketPath(), WireBuild: WireBuild, Role: trust.UnprotectedRole,
-	})
-	if err != nil {
-		t.Fatalf("connect business client: %v", err)
-	}
 	reply, err := client.Do(context.Background(), Envelope{Op: OpStatus, Scope: "/not/a/repo"})
 	if err != nil || !reply.OK {
 		t.Fatalf("admitted business request = %+v, %v", reply, err)
-	}
-	if err := client.Close(); err != nil {
-		t.Fatalf("close business client: %v", err)
 	}
 	bridgeReply := s.Dispatch(context.Background(), Envelope{Op: OpStatus, Scope: "/not/a/repo"})
 	if !bridgeReply.OK {
@@ -242,14 +169,30 @@ func TestStoreOpensOnlyAfterRuntimeOwnsListener(t *testing.T) {
 	}
 }
 
-func TestRuntimeHealthWaitsForProductReadiness(t *testing.T) {
+func TestDispatchRefusesBeforeServe(t *testing.T) {
+	shortHome(t)
+	s, err := New(Config{
+		AppName:        "cc-interact-test",
+		Paths:          testPaths(),
+		Daemon:         testServeSpec(),
+		RuntimeBuild:   "0.0.1",
+		ActiveStatuses: []string{"open"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if reply := s.Dispatch(context.Background(), Envelope{Op: OpStatus}); reply.OK {
+		t.Fatalf("Dispatch before Serve = %+v, want refusal", reply)
+	}
+}
+
+func TestDispatchWaitsForBootReconcile(t *testing.T) {
 	shortHome(t)
 	bootEntered := make(chan struct{})
 	releaseBoot := make(chan struct{})
 	s, err := New(Config{
 		AppName: "cc-interact-test", Paths: testPaths(),
-		WireBuild: WireBuild, RuntimeBuild: "0.0.1",
-		TrustPolicy: testTrustPolicy(t), Roles: testRoles(), ActiveStatuses: []string{"open"},
+		Daemon: testServeSpec(), RuntimeBuild: "0.0.1", ActiveStatuses: []string{"open"},
 		BootReconcile: func(context.Context, *Server) error {
 			close(bootEntered)
 			<-releaseBoot
@@ -278,37 +221,86 @@ func TestRuntimeHealthWaitsForProductReadiness(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("readiness bootstrap did not start")
 	}
-	client, err := NewClient(context.Background(), ClientConfig{
-		Socket: testPaths().SocketPath(), WireBuild: WireBuild, Role: trust.UnprotectedRole,
-	})
+	client, err := NewClient(testServeSpec())
 	if err != nil {
 		t.Fatalf("NewClient before readiness: %v", err)
 	}
-	defer client.Close()
-	_, err = client.RuntimeHealth(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "runtime is starting") {
+	defer func() { _ = client.Close() }()
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	_, err = client.Do(probeCtx, Envelope{Op: OpStatus})
+	probeCancel()
+	if err == nil {
 		close(releaseBoot)
-		t.Fatalf("RuntimeHealth before readiness = %v, want starting rejection", err)
+		t.Fatal("business dispatch answered before BootReconcile finished")
+	}
+	if reply := s.Dispatch(context.Background(), Envelope{Op: OpStatus}); reply.OK {
+		close(releaseBoot)
+		t.Fatalf("bridge dispatch answered before BootReconcile finished: %+v", reply)
 	}
 	close(releaseBoot)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		health, healthErr := client.RuntimeHealth(context.Background())
-		if healthErr == nil && health.Ready {
-			generation, generationErr := proc.ProcessGeneration()
-			if generationErr != nil {
-				t.Fatal(generationErr)
-			}
-			if health.RuntimeBuild != "0.0.1" || health.RuntimeProtocol != int(wire.ProtocolVersion) || !health.Ready ||
-				health.ProcessGeneration != generation.String() || health.State != dkdaemon.StateHealthy {
-				t.Fatalf("RuntimeHealth = %+v", health)
-			}
-			break
+	awaitBusiness(t, testServeSpec())
+	if reply := s.Dispatch(context.Background(), Envelope{Op: OpStatus}); !reply.OK {
+		t.Fatalf("bridge dispatch after readiness = %+v, want admitted", reply)
+	}
+}
+
+// TestDispatchHoldsTheDrainOpen proves an admitted bridge request pins product
+// settlement: the drain waits for the handler rather than closing the store
+// under it.
+func TestDispatchHoldsTheDrainOpen(t *testing.T) {
+	shortHome(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	s, err := New(Config{
+		AppName: "cc-interact-test", Paths: testPaths(),
+		Daemon: testServeSpec(), RuntimeBuild: "0.0.1", ActiveStatuses: []string{"open"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Register("slow", func(hc HandlerCtx) Reply {
+		close(entered)
+		<-release
+		if err := hc.DB.PingContext(hc.Ctx); err != nil {
+			return errReply(err.Error())
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("RuntimeHealth did not become ready: %+v, %v", health, healthErr)
+		return Reply{OK: true}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- s.Serve(ctx) }()
+	awaitBusiness(t, testServeSpec())
+
+	dispatched := make(chan Reply, 1)
+	go func() { dispatched <- s.Dispatch(context.Background(), Envelope{Op: "slow"}) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bridge handler did not start")
+	}
+	cancel()
+	select {
+	case err := <-served:
+		close(release)
+		t.Fatalf("Serve returned while a bridge request was in flight: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case reply := <-dispatched:
+		if !reply.OK {
+			t.Fatalf("in-flight bridge request = %+v, want the store still open", reply)
 		}
-		time.Sleep(10 * time.Millisecond)
+	case <-time.After(5 * time.Second):
+		t.Fatal("bridge request did not finish")
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return")
 	}
 }
 
@@ -317,10 +309,8 @@ func TestBackgroundWaitedBeforeServeReturns(t *testing.T) {
 	s, err := New(Config{
 		AppName:        "cc-interact-test",
 		Paths:          testPaths(),
-		WireBuild:      WireBuild,
+		Daemon:         testServeSpec(),
 		RuntimeBuild:   "0.0.1",
-		TrustPolicy:    testTrustPolicy(t),
-		Roles:          testRoles(),
 		ActiveStatuses: []string{"open"},
 	})
 	if err != nil {
@@ -331,27 +321,7 @@ func TestBackgroundWaitedBeforeServeReturns(t *testing.T) {
 	served := make(chan error, 1)
 	go func() { served <- s.Serve(ctx) }()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		probeCtx, probeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		client, connectErr := NewClient(probeCtx, ClientConfig{
-			Socket: testPaths().SocketPath(), WireBuild: WireBuild, Role: trust.UnprotectedRole,
-		})
-		if connectErr == nil {
-			health, healthErr := client.RuntimeHealth(probeCtx)
-			_ = client.Close()
-			probeCancel()
-			if healthErr == nil && health.RuntimeProtocol == int(wire.ProtocolVersion) {
-				break
-			}
-		} else {
-			probeCancel()
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("daemon did not come up")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	awaitBusiness(t, testServeSpec())
 
 	var finished atomic.Bool
 	s.Background(func(ctx context.Context) {
@@ -392,10 +362,8 @@ func TestServeDrainsBackgroundBeforeStoreCloseOnHTTPStartupFailure(t *testing.T)
 	s, err := New(Config{
 		AppName:        "cc-interact-test",
 		Paths:          testPaths(),
-		WireBuild:      WireBuild,
+		Daemon:         testServeSpec(),
 		RuntimeBuild:   "0.0.1",
-		TrustPolicy:    testTrustPolicy(t),
-		Roles:          testRoles(),
 		ActiveStatuses: []string{"open"},
 		FixedPort:      boundPort(t, holder),
 		StoreSchema:    store.Schema{DDL: `CREATE TABLE shutdown_probe(id TEXT PRIMARY KEY, hits INTEGER NOT NULL);`},
@@ -576,13 +544,13 @@ func TestListenHTTPPortReuse(t *testing.T) {
 }
 
 func TestNewRefusesUnauthenticatedBind(t *testing.T) {
-	if _, err := New(Config{WireBuild: WireBuild, RuntimeBuild: "0.0.1", BindAddr: "0.0.0.0", TrustPolicy: testTrustPolicy(t), Roles: testRoles()}); !errors.Is(err, ErrUnauthenticatedBind) {
+	if _, err := New(Config{Daemon: testServeSpec(), RuntimeBuild: "0.0.1", BindAddr: "0.0.0.0"}); !errors.Is(err, ErrUnauthenticatedBind) {
 		t.Fatalf("New err = %v, want ErrUnauthenticatedBind", err)
 	}
 }
 
 func TestNewRefusesUnauthenticatedExtraListeners(t *testing.T) {
-	cfg := Config{WireBuild: WireBuild, RuntimeBuild: "0.0.1", TrustPolicy: testTrustPolicy(t), Roles: testRoles(), ExtraHTTPListeners: []func(context.Context) (net.Listener, error){
+	cfg := Config{Daemon: testServeSpec(), RuntimeBuild: "0.0.1", ExtraHTTPListeners: []func(context.Context) (net.Listener, error){
 		func(context.Context) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
 	}}
 	if _, err := New(cfg); !errors.Is(err, ErrUnauthenticatedBind) {

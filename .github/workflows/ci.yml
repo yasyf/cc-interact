@@ -5,12 +5,41 @@ on:
     branches: [main]
   pull_request:
 
+# PRs only: cancelling on main leaves a landed commit with no CI verdict.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
+# Timeouts kill a wedged test in minutes instead of GitHub's 6-hour cap.
 jobs:
-  build:
+  # macOS only: daemonkit v0.21 is a macOS library with no !darwin stubs, so
+  # the daemon half no longer compiles — let alone runs — on a linux runner.
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+  # The React client is independent of the Go tree, so it stays on a cheap
+  # linux runner instead of billing macOS minutes 10x.
+  web:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -21,19 +50,29 @@ jobs:
           bun install
           bun run build
 
+  # Static analysis type-checks the tree, so it runs for darwin. GOOS/GOARCH
+  # keep it on a linux runner; the install step clears them so the tool builds
+  # for the host.
+  vuln:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOOS: darwin
+      GOARCH: arm64
+    steps:
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          check-latest: true
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: go test
-        run: go test -race ./...
+          cache: true
+      - name: govulncheck
+        run: |
+          GOOS= GOARCH= go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
   pack:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 

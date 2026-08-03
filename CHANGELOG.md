@@ -6,6 +6,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-03
+
+### Added
+
+- A rollback guard on the upgrade path. daemonkit converges on an executable
+  digest, which proves two builds differ but never which came first, so an
+  older binary's `EnsureCurrent` used to put itself back in a newer daemon's
+  place with nothing marking the downgrade. The daemon now publishes its release as its daemonkit product
+  report (`daemon.HealthDetail`, carried verbatim in `Health.Detail`), the
+  launcher reads it back off the control lane, and an incumbent whose release
+  is newer refuses with `daemon.ErrIncumbentNewer`. Only a proven rollback
+  refuses: a report that is absent, unreadable, or names no release orders
+  nothing, so a daemon from before the channel existed still upgrades.
+- `daemon.ErrLegacyDaemon`. A pre-0.21 daemon listens on
+  `Paths.SocketPath()` while a v0.21 launcher probes the label-derived
+  endpoint, so it used to read as simple absence and hooks skipped the upgrade
+  in silence. `EnsureCurrentIfRunning` now stats the legacy socket before
+  reporting `ErrNoPeer` and names what it finds; `status` reports it as running
+  and points at the verb that retires it. Nothing in this build speaks the old
+  wire era, so the socket file is the whole of the evidence available.
+
+### Changed
+
+- Pin daemonkit v0.21.1. Ten daemonkit packages are gone, so the daemon half is
+  a refactor rather than a version bump. One `daemonkit.Daemon` value now
+  carries the whole identity — label, program, args, schema, trust lanes,
+  restart policy, frame size — and both halves read it: `daemon.Spec(d)` stamps
+  cc-interact's wire schema, its frame default, and `RestartAlways` onto a
+  consumer's identity, `Config.Daemon` replaces `Config.WireBuild`,
+  `Config.TrustPolicy`, `Config.Roles`, and `Config.MaxFrameBytes`, and
+  `Launcher.Daemon` replaces `Launcher.WireBuild`, `.Agent`, and `.Roles`.
+  `Launcher.Paths` and `Launcher.RuntimeBuild` survive the collapse and are
+  now required, because the launcher half has two questions the identity alone
+  cannot answer: where a pre-0.21 daemon left its socket, and which release
+  this build is when ordering itself against a running one. Both take the same
+  value the serving half already reads from `Config`.
+- `daemon.NewClient(daemonkit.Daemon)` replaces
+  `daemon.NewClient(ctx, daemon.ClientConfig)`, and `Launcher.NewClient()`
+  drops its context parameter. Both refuse an identity whose schema set is not
+  exactly cc-interact's wire build. The lane verifies the accepting process's
+  kernel-held code identity against `Trust.Serving` on every session
+  acquisition, before the handshake is written.
+- `daemon.ErrNoPeer` is an alias of `daemonkit.ErrAbsent`, so `errors.Is`
+  against either sentinel matches.
+- `HandlerCtx.Peer` and `HandlerCtx.WireBuild` become `HandlerCtx.Caller`
+  (`daemonkit.Caller`: the peer's PID and UID).
+- The wire schema identity revs — the runtime-health route left
+  `interaction.schema.json` — so a client and a daemon of different builds no
+  longer speak to each other.
+- `Config.Daemon.MaxFrame` is sized from the guard-edit payload rather than set
+  to it: a session base64s its body beside a 4 KiB envelope reserve, so a frame
+  set to 64 MiB carried only ~48 MiB and the gate silently stopped seeing whole
+  Write payloads above that. `daemonkit.MaxDetail` pins the real ceiling in the
+  suite.
+- `Server.Dispatch`, the consumer HTTP bridge, is refused until the product is
+  ready — state open, boot reconciliation done, HTTP bound — and once the drain
+  begins; an admitted request holds the drain open until its handler returns,
+  so it can no longer outlive settlement and reach a closed store.
+- `Launcher.Stop` is `daemonkit.Client.Stop`, so the drain, the departure
+  proof, and the LaunchAgent removal all run under the same start lock
+  `Ensure` holds. An ensure racing a stop can no longer re-apply the agent the
+  stop just removed, nor lose its own replacement to it. Two things follow:
+  a v0.20-era markerless plist comes down through daemonkit's own legacy
+  fallback rather than refusing with `launchd.ErrNotOwned`, and the
+  postcondition is uniform — nothing serving, no agent — so stopping an
+  already stopped daemon succeeds and `stop` reports `daemon: stopped` where
+  it used to report `daemon: not running`. That is not a cosmetic change: on a
+  machine upgraded from v0.20 the second case is exactly the one that still
+  has an agent to take down.
+- `Launcher.EnsureCurrentIfRunning` treats an incumbent that is already
+  leaving as present rather than as a failure, handing it to `Ensure`'s
+  drain-observation ladder.
+- `store` and `consume` write through `daemonkit/durable` — `durable.WriteFile`
+  for the SSE cursor, `durable.AcquireLock` for the store-archive lock.
+- CI's Go job runs on macos-latest: daemonkit v0.21 ships no `!darwin` stubs,
+  so the daemon half no longer compiles on a linux runner. The React client
+  build stays on linux, and govulncheck runs there cross-targeting
+  darwin/arm64.
+
+### Removed
+
+- `daemon.Roles`, `daemon.RuntimeHealth`, `daemon.RuntimeStateStarting`,
+  `daemon.OpRuntimeHealth`, and `Client.RuntimeHealth`. Lifecycle observation
+  is daemonkit's control lane (`daemonkit.Client.Control`, `.Settle`), not a
+  cc-interact business op.
+- `daemon.ClientConfig`, `daemon.CallError`, and `daemon.ErrClientClosed`. A
+  reply this build cannot decode is `daemon.ErrMalformedReply`; a lane that
+  will not acquire another session is `daemonkit.ErrLaneClosed`.
+- Trust roles. Business, lifecycle, and stop-control roles collapse into
+  `Daemon.Trust` (`Serving`, `Control`, `Business`), and every consumer states
+  a serving posture explicitly — `ServingSigned(requirement)` or the named
+  waiver `ServingSameUser()`. There is no default.
+
 ## [0.31.1] - 2026-07-27
 
 ### Changed

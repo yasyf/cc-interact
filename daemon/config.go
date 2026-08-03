@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
@@ -12,9 +13,37 @@ import (
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
+	"github.com/yasyf/daemonkit"
 	"github.com/yasyf/daemonkit/paths"
-	"github.com/yasyf/daemonkit/trust"
 )
+
+// Spec stamps cc-interact's exact wire schema, frame default, and relaunch
+// policy onto the consumer's daemon identity. The launcher and the daemon read
+// this same value, so the schema and every trust lane are declared exactly
+// once. An unstated Restart becomes RestartAlways — a cc-interact daemon
+// launchd never relaunches leaves every hook and CLI cold-starting it — and a
+// consumer that states RestartOnFailure keeps it.
+func Spec(d daemonkit.Daemon) daemonkit.Daemon {
+	d.Schemas = []daemonkit.Schema{WireBuild}
+	if d.MaxFrame == 0 {
+		d.MaxFrame = maxFrameBytes
+	}
+	if d.Restart == daemonkit.RestartNever {
+		d.Restart = daemonkit.RestartAlways
+	}
+	return d
+}
+
+// validateSchemas requires the identity to speak cc-interact's one wire schema
+// and nothing else. The protocol is an exact-build hard cut, so a prior era
+// listed beside WireBuild would admit a client this build cannot answer. Every
+// boundary that takes a daemonkit.Daemon — NewClient, New, Launcher — runs it.
+func validateSchemas(d daemonkit.Daemon) error {
+	if len(d.Schemas) != 1 || d.Schemas[0] != WireBuild {
+		return fmt.Errorf("daemon: schemas %v, want exactly [%q] (build the identity through Spec)", d.Schemas, WireBuild)
+	}
+	return nil
+}
 
 // AppendFunc persists an event then publishes its subject's wakeup — the single
 // persist→publish chokepoint. Handlers receive it via HandlerCtx; lifecycle
@@ -48,23 +77,17 @@ type AgentGreetingFunc func(info agent.Info) string
 type SubscribeFunc func(s subject.Subject, info agent.Info) []string
 
 // Config builds a Server. The zero value is not runnable; AppName, Paths,
-// WireBuild, RuntimeBuild, TrustPolicy, Roles, and ActiveStatuses are the load-bearing inputs.
+// Daemon, RuntimeBuild, and ActiveStatuses are the load-bearing inputs.
 type Config struct {
 	// AppName labels logs and user-facing daemon messages (cc-review: "cc-review").
 	AppName string
-	// Paths is the state-directory layout (socket, db, http handshake, locks).
+	// Paths is the state-directory layout (db, http handshake, cursors).
 	Paths paths.Paths
-	// WireBuild is the shared exact interaction-schema identity.
-	WireBuild string
-	// RuntimeBuild is the daemon release identity used for readiness and convergence.
+	// Daemon is the shared daemonkit identity — label, program, trust lanes —
+	// built once through Spec and read by the launcher half too.
+	Daemon daemonkit.Daemon
+	// RuntimeBuild is the daemon release identity reported by status.
 	RuntimeBuild string
-	// TrustPolicy is the immutable signed-peer policy for the runtime.
-	TrustPolicy trust.TrustPolicy
-	// Roles names the exact business, lifecycle, and stop authorities.
-	Roles Roles
-	// MaxFrameBytes overrides the control server's request-frame limit. Zero uses
-	// the 64 MiB default.
-	MaxFrameBytes int
 
 	// ActiveStatuses is the subject status set Policy.Active treats as live and
 	// resumable across session rotation (cc-review: {"open"}).

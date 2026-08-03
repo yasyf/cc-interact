@@ -21,7 +21,7 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/internal/statepath"
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/daemonkit/durable"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -318,7 +318,7 @@ func readCursor(path string) (int64, error) {
 // writeCursor persists the cursor atomically and durably through a uniquely
 // named temporary file so concurrent writers never share rename state.
 func writeCursor(path string, cursor int64) error {
-	if err := dkdaemon.WriteFileDurable(path, []byte(strconv.FormatInt(cursor, 10)), 0o600); err != nil {
+	if err := durable.WriteFile(path, []byte(strconv.FormatInt(cursor, 10)), 0o600); err != nil {
 		return fmt.Errorf("persist cursor %s: %w", path, err)
 	}
 	return nil

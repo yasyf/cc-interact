@@ -9,8 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-interact/daemon"
-	"github.com/yasyf/daemonkit/proc"
-	"github.com/yasyf/daemonkit/wire"
+	"github.com/yasyf/daemonkit"
 )
 
 // DaemonCmd is the hidden entry point the launchd service runs until its
@@ -22,9 +21,9 @@ func DaemonCmd(d Deps) *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Detached child (proc.Spawn contract): sweep inherited non-CLOEXEC fds
-			// before opening anything, so no parent lease fd stays pinned for life.
-			if err := proc.CloseInheritedFDs(); err != nil {
+			// Detached child: sweep inherited non-CLOEXEC fds before opening
+			// anything, so no parent lease fd stays pinned for life.
+			if err := daemonkit.CloseInheritedFDs(); err != nil {
 				return err
 			}
 			return d.Serve(cmd.Context())
@@ -121,7 +120,7 @@ func GuardEditCmd(d Deps) *cobra.Command {
 			}
 			defer func() { _ = client.Close() }()
 			reply, err := client.Do(cmd.Context(), env)
-			if errors.Is(err, wire.ErrFrameTooLarge) {
+			if errors.Is(err, daemonkit.ErrOversize) {
 				frame, _ := json.Marshal(env)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "guard-edit: frame-too-large: request frame is %d bytes; allowing edit\n", len(frame))
 				return nil

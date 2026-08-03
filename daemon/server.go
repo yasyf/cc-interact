@@ -16,18 +16,15 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
-	dkdaemon "github.com/yasyf/daemonkit/daemon"
+	"github.com/yasyf/daemonkit"
 	"github.com/yasyf/daemonkit/paths"
-	"github.com/yasyf/daemonkit/proc"
-	"github.com/yasyf/daemonkit/trust"
-	"github.com/yasyf/daemonkit/wire"
-	"github.com/yasyf/daemonkit/worker"
 )
 
 // handleTimeout bounds a single control RPC. It is generous because a domain
@@ -35,9 +32,14 @@ import (
 // sub-second.
 const handleTimeout = 35 * time.Second
 
-// maxFrameBytes caps one request frame at 64 MiB so a guard-edit carrying a
-// whole Write payload remains visible to the gate.
-const maxFrameBytes = 64 << 20
+// maxPayloadBytes keeps a guard-edit carrying a whole 64 MiB Write payload
+// visible to the gate; maxFrameBytes is the smallest frame whose base64 body
+// budget (daemonkit.MaxDetail, which spends 4 bytes of frame per 3 of payload
+// beside a 4 KiB envelope reserve) still carries it.
+const (
+	maxPayloadBytes = 64 << 20
+	maxFrameBytes   = (maxPayloadBytes*4+2)/3 + 4<<10
+)
 
 // attachGrace is how recently a subject's last SSE attachment must have dropped
 // for it to still report as connected in status.
@@ -51,20 +53,16 @@ const subscriberPresenceWindow = 90 * time.Second
 // Server is the running daemon: the control-plane unix-socket server plus the
 // realtime HTTP/SSE plane it boots. It implements sse.Backend.
 type Server struct {
-	appName       string
-	wireBuild     string
-	runtimeBuild  string
-	trustPolicy   trust.TrustPolicy
-	roles         Roles
-	daemonRuntime *dkdaemon.Runtime
-	publication   *dkdaemon.PublicationSlot[*Server]
-	stateMu       sync.RWMutex
-	store         *store.Store
-	db            *sql.DB
-	bus           *event.Bus
-	activity      *Activity
-	subjects      subject.Resolver
-	sse           *sse.Server
+	appName      string
+	daemon       daemonkit.Daemon
+	runtimeBuild string
+	stateMu      sync.RWMutex
+	store        *store.Store
+	db           *sql.DB
+	bus          *event.Bus
+	activity     *Activity
+	subjects     subject.Resolver
+	sse          *sse.Server
 
 	scopeResolve      func(ctx context.Context, raw string) string
 	gate              GateFunc
@@ -85,10 +83,8 @@ type Server struct {
 	parks               *parkRegistry
 	gateBlocks          *gateBlockCounter
 
-	paths         paths.Paths
-	socket        string
-	maxFrameBytes int
-	log           *log.Logger
+	paths paths.Paths
+	log   *log.Logger
 
 	handlersMu          sync.RWMutex
 	handlers            map[Op]HandlerFunc
@@ -115,20 +111,25 @@ type Server struct {
 	serveCtx    context.Context
 	serveCancel context.CancelFunc
 	workers     *workerGroup
+	// serving is the public dispatch fence: raised once the product is built —
+	// state open, boot reconciliation done, HTTP bound — and lowered the moment
+	// the drain begins, so Dispatch admits exactly the window the socket lane
+	// does. Requests past it hold a worker slot, which the drain waits on.
+	serving atomic.Bool
 }
 
 // New builds the daemon composition without acquiring generation-owned state.
 // Consumers may register domain ops and mount routes before Serve; the store is
 // opened only after the runtime owns the listener.
 func New(cfg Config) (*Server, error) {
-	if cfg.WireBuild != WireBuild {
-		return nil, fmt.Errorf("daemon: wire build %q, want exactly %q", cfg.WireBuild, WireBuild)
+	if err := cfg.Daemon.ValidateForServe(); err != nil {
+		return nil, fmt.Errorf("daemon: validate daemon identity: %w", err)
+	}
+	if err := validateSchemas(cfg.Daemon); err != nil {
+		return nil, err
 	}
 	if cfg.RuntimeBuild == "" {
 		return nil, errors.New("daemon: runtime build is required")
-	}
-	if err := cfg.Roles.validate(cfg.TrustPolicy); err != nil {
-		return nil, err
 	}
 	if err := cfg.StoreSchema.Validate(); err != nil {
 		return nil, err
@@ -140,16 +141,10 @@ func New(cfg Config) (*Server, error) {
 	if scopeResolve == nil {
 		scopeResolve = func(_ context.Context, raw string) string { return raw }
 	}
-	frameBytes := cfg.MaxFrameBytes
-	if frameBytes == 0 {
-		frameBytes = maxFrameBytes
-	}
 	s := &Server{
 		appName:             cfg.AppName,
-		wireBuild:           cfg.WireBuild,
+		daemon:              cfg.Daemon,
 		runtimeBuild:        cfg.RuntimeBuild,
-		trustPolicy:         cfg.TrustPolicy,
-		roles:               cfg.Roles,
 		bus:                 event.NewBus(),
 		activity:            NewActivity(),
 		scopeResolve:        scopeResolve,
@@ -169,8 +164,6 @@ func New(cfg Config) (*Server, error) {
 		parks:               newParkRegistry(),
 		gateBlocks:          newGateBlockCounter(),
 		paths:               cfg.Paths,
-		socket:              cfg.Paths.SocketPath(),
-		maxFrameBytes:       frameBytes,
 		log:                 log.New(os.Stderr, "["+cfg.AppName+"] ", log.LstdFlags),
 		handlers:            make(map[Op]HandlerFunc),
 		fixedPort:           cfg.FixedPort,
@@ -253,59 +246,37 @@ func (s *Server) Background(fn func(context.Context)) {
 	}
 }
 
-// Serve runs the exact daemonkit lifecycle and persistent control session.
+// Serve runs the exact daemonkit lifecycle: flock, owner record, bind, product
+// start, ready, serve, drain. It returns once the drain settles.
 func (s *Server) Serve(parent context.Context) error {
-	_, runtime, err := s.runtime()
-	if err != nil {
-		_ = s.closeState()
-		return err
+	s.freezeHandlers()
+	start := func(c daemonkit.Ctx) (daemonkit.Product, error) {
+		if err := s.activateState(c.Context); err != nil {
+			return nil, err
+		}
+		if err := s.activateServing(c.Context); err != nil {
+			return nil, errors.Join(err, s.settleFailedStart())
+		}
+		s.serving.Store(true)
+		c.Report(s.healthDetail())
+		return product{s}, nil
 	}
-	activation, err := runtime.Begin(parent)
-	if err != nil {
-		return errors.Join(err, runtime.Wait(context.Background()), s.closeState())
-	}
-	settlement, err := activation.ClaimProductSettlement()
-	if err != nil {
-		_ = activation.Fail(err)
-		return errors.Join(err, runtime.Wait(context.Background()), s.closeState())
-	}
-	settled := make(chan error, 1)
-	go func() {
-		<-activation.Context().Done()
-		settled <- s.settleProduct(settlement)
-	}()
-	if err := s.activateState(activation.Context()); err != nil {
-		_ = activation.Fail(err)
-		return errors.Join(err, runtime.Wait(context.Background()), <-settled)
-	}
-	if err := s.activateServing(activation.Context()); err != nil {
-		_ = activation.Fail(err)
-		return errors.Join(err, runtime.Wait(context.Background()), <-settled)
-	}
-	publication, err := s.publication.Stage(activation, s)
-	if err != nil {
-		_ = activation.Fail(err)
-		return errors.Join(err, runtime.Wait(context.Background()), <-settled)
-	}
-	if err := activation.CommitReady(publication); err != nil {
-		_ = activation.Fail(err)
-		return errors.Join(err, runtime.Wait(context.Background()), <-settled)
-	}
-	stopContext := context.AfterFunc(parent, func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = runtime.Shutdown(shutdownCtx)
-	})
-	defer stopContext()
-	err = errors.Join(runtime.Wait(context.Background()), <-settled)
+	_, err := daemonkit.Serve(parent, s.daemon, start)
 	s.log.Printf("daemon stopped")
-	if parent.Err() != nil && errors.Is(err, parent.Err()) {
-		return nil
-	}
 	return err
 }
 
-func (s *Server) settleProduct(settlement dkdaemon.ProductSettlement) error {
+// healthDetail is what the launcher reads back off daemonkit's health verb to
+// order this daemon against its own build.
+func (s *Server) healthDetail() []byte {
+	detail, _ := json.Marshal(HealthDetail{RuntimeBuild: s.runtimeBuild})
+	return detail
+}
+
+// settleFailedStart drains whatever a partial activation started — Background
+// workers before the store they write, exactly as the ordinary Drain/Close
+// ladder orders them.
+func (s *Server) settleFailedStart() error {
 	s.serveCtxMu.Lock()
 	cancel := s.serveCancel
 	s.serveCtxMu.Unlock()
@@ -315,7 +286,43 @@ func (s *Server) settleProduct(settlement dkdaemon.ProductSettlement) error {
 	s.workers.Close()
 	settleCtx, settleCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer settleCancel()
-	return errors.Join(s.workers.Wait(settleCtx), s.closeState(), settlement.Complete())
+	return errors.Join(s.workers.Wait(settleCtx), s.closeState())
+}
+
+// product is the Server's daemonkit face: dispatch plus the two shutdown stages.
+type product struct{ s *Server }
+
+func (p product) Handle(ctx context.Context, req daemonkit.Request) (daemonkit.Reply, error) {
+	env, err := decodeEnvelope(req.Body)
+	if err != nil {
+		return daemonkit.Reply{}, err
+	}
+	env.Op = Op(req.Op)
+	reply := p.s.dispatchCaller(ctx, env, req.Caller)
+	body, err := json.Marshal(reply)
+	if err != nil {
+		return daemonkit.Reply{}, fmt.Errorf("daemon: encode %s reply: %w", env.Op, err)
+	}
+	return daemonkit.Reply{Body: body}, nil
+}
+
+func (p product) Drain(b daemonkit.Budget) error {
+	s := p.s
+	s.serving.Store(false)
+	s.serveCtxMu.Lock()
+	cancel := s.serveCancel
+	s.serveCtxMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.workers.Close()
+	ctx, done := b.Context(context.Background())
+	defer done()
+	return s.workers.Wait(ctx)
+}
+
+func (p product) Close(daemonkit.Budget) error {
+	return p.s.closeState()
 }
 
 func (s *Server) activateState(startup context.Context) error {
@@ -359,7 +366,8 @@ func (s *Server) activateServing(lifetime context.Context) error {
 	if err := s.startHTTP(workerCtx); err != nil {
 		return err
 	}
-	s.log.Printf("daemon %s started; socket=%s http=%s", s.runtimeBuild, s.socket, net.JoinHostPort(s.bindHost(), strconv.Itoa(s.httpPort)))
+	socket, _ := paths.Socket(string(s.daemon.Label))
+	s.log.Printf("daemon %s started; socket=%s http=%s", s.runtimeBuild, socket, net.JoinHostPort(s.bindHost(), strconv.Itoa(s.httpPort)))
 	return nil
 }
 
@@ -542,10 +550,10 @@ func (s *Server) repoLock(scope string) *sync.Mutex {
 }
 
 func (s *Server) dispatch(ctx context.Context, env Envelope) Reply {
-	return s.dispatchPeer(ctx, env, wire.Peer{}, "")
+	return s.dispatchCaller(ctx, env, daemonkit.Caller{})
 }
 
-func (s *Server) dispatchPeer(ctx context.Context, env Envelope, peer wire.Peer, wireBuild string) Reply {
+func (s *Server) dispatchCaller(ctx context.Context, env Envelope, caller daemonkit.Caller) Reply {
 	s.handlersMu.RLock()
 	handler, ok := s.handlers[env.Op]
 	s.handlersMu.RUnlock()
@@ -554,108 +562,41 @@ func (s *Server) dispatchPeer(ctx context.Context, env Envelope, peer wire.Peer,
 	}
 	scope := s.scopeResolve(ctx, env.Scope)
 	return handler(HandlerCtx{
-		Ctx:       ctx,
-		Env:       env,
-		Window:    subject.Window{Session: env.Session, ClaudePID: env.ClaudePID},
-		Scope:     scope,
-		Subjects:  s.subjects,
-		DB:        s.db,
-		Append:    s.Append,
-		HTTPPort:  s.httpPort,
-		Activity:  s.activity,
-		RepoLock:  s.repoLock(scope),
-		Peer:      peer,
-		WireBuild: wireBuild,
+		Ctx:      ctx,
+		Env:      env,
+		Window:   subject.Window{Session: env.Session, ClaudePID: env.ClaudePID},
+		Scope:    scope,
+		Subjects: s.subjects,
+		DB:       s.db,
+		Append:   s.Append,
+		HTTPPort: s.httpPort,
+		Activity: s.activity,
+		RepoLock: s.repoLock(scope),
+		Caller:   caller,
 	})
 }
 
 // Dispatch answers a single envelope through the daemon's op table, exactly as a
 // socket connection would. It exists for consumer-mounted HTTP bridges; callers
-// stamp Session, ClaudePID, and Scope themselves.
+// stamp Session, ClaudePID, and Scope themselves. It is refused before the
+// product is ready and once the drain has begun, and an admitted call holds the
+// drain open until its handler returns, so it never reaches a closed store.
 func (s *Server) Dispatch(ctx context.Context, env Envelope) Reply {
-	published, release, err := s.publication.Acquire()
+	if !s.serving.Load() {
+		return errReply("daemon: not serving")
+	}
+	release, err := s.workers.Admit()
 	if err != nil {
-		return errReply(err.Error())
+		return errReply("daemon: not serving")
 	}
 	defer release()
-	return published.dispatch(ctx, env)
+	return s.dispatchCaller(ctx, env, daemonkit.Caller{})
 }
 
-func (s *Server) runtime() (*wire.Server, *dkdaemon.Runtime, error) {
-	handlers := s.freezeHandlers()
-	serverDeadlines := make(map[wire.Op]time.Duration, len(handlers)+1)
-	clientDeadlines := make(map[wire.Op]time.Duration, len(handlers)+1)
-	for op := range handlers {
-		serverDeadlines[wire.Op(op)] = handleTimeout
-		clientDeadlines[wire.Op(op)] = handleTimeout + time.Second
-	}
-	serverDeadlines[wire.Op(OpRuntimeHealth)] = time.Second
-	clientDeadlines[wire.Op(OpRuntimeHealth)] = 2 * time.Second
-	ladder, err := wire.NewLadder(serverDeadlines, clientDeadlines)
-	if err != nil {
-		return nil, nil, err
-	}
-	wireServer := &wire.Server{
-		WireBuild: s.wireBuild, MaxFrame: s.maxFrameBytes, Ladder: ladder,
-	}
-	for op := range handlers {
-		op := op
-		wireServer.Register(wire.HandlerSpec{Op: wire.Op(op), Concurrent: true, Handler: func(ctx context.Context, req wire.Request) (any, error) {
-			published, err := s.publication.Value(req.Publication)
-			if err != nil {
-				return nil, err
-			}
-			env, err := decodeEnvelope(req.Payload)
-			if err != nil {
-				return nil, err
-			}
-			env.Op = op
-			return published.dispatchPeer(ctx, env, req.Peer, req.WireBuild), nil
-		}})
-	}
-	generation, err := proc.ProcessGeneration()
-	if err != nil {
-		return nil, nil, fmt.Errorf("daemon: process generation: %w", err)
-	}
-	reaper := &proc.Reaper{Store: processStore(s.paths), Generation: generation}
-	children, err := proc.NewManager(64, reaper)
-	if err != nil {
-		return nil, nil, err
-	}
-	disposable, err := worker.NewPool(worker.Config{
-		Capacity: 1, QueueCapacity: 0, MaxTotalRun: handleTimeout,
-		MaxStdinBytes: 1, MaxStdoutBytes: 1, MaxStderrBytes: 1,
-	}, reaper)
-	if err != nil {
-		return nil, nil, err
-	}
-	runtime, err := wire.NewRuntime(wire.RuntimeConfig{
-		Socket: s.socket, RuntimeBuild: s.runtimeBuild, RuntimeProtocol: int(wire.ProtocolVersion),
-		Wire: wireServer, TrustPolicy: s.trustPolicy,
-		StopControlStore: stopProcessStore(s.paths),
-		Observations: []wire.ObservationRoute{{
-			Op: wire.Op(OpRuntimeHealth), MaxResponseBytes: min(s.maxFrameBytes, 1024),
-			Handler: s.observeRuntimeHealth,
-		}},
-		Workers: disposable, Children: children, ShutdownTimeout: 30 * time.Second,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	s.daemonRuntime = runtime
-	s.publication = dkdaemon.NewPublicationSlot[*Server](runtime)
-	return wireServer, runtime, nil
-}
-
-func (s *Server) freezeHandlers() map[Op]HandlerFunc {
+func (s *Server) freezeHandlers() {
 	s.handlersMu.Lock()
 	defer s.handlersMu.Unlock()
 	s.registrationsClosed = true
-	handlers := make(map[Op]HandlerFunc, len(s.handlers))
-	for op, handler := range s.handlers {
-		handlers[op] = handler
-	}
-	return handlers
 }
 
 func decodeEnvelope(payload []byte) (Envelope, error) {

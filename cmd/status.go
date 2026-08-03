@@ -23,10 +23,17 @@ func StatusCmd(d Deps) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			if err := d.EnsureCurrentIfRunning(ctx); errors.Is(err, daemon.ErrNoPeer) {
+			switch err := d.EnsureCurrentIfRunning(ctx); {
+			case errors.Is(err, daemon.ErrNoPeer):
 				fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
 				return nil
-			} else if err != nil {
+			case errors.Is(err, daemon.ErrLegacyDaemon):
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"daemon: a pre-0.21 daemon is running and cannot be upgraded in place; "+
+						"run %q, then any command that starts it\n",
+					cmd.Root().Name()+" stop")
+				return nil
+			case err != nil:
 				return err
 			}
 			client, err := d.NewClient(ctx)
@@ -71,17 +78,17 @@ func StatusCmd(d Deps) *cobra.Command {
 	return cmd
 }
 
-// StopCmd runs the exact-role stop controller for a running daemon.
+// StopCmd stops the background daemon and takes down its LaunchAgent. The
+// postcondition is uniform — nothing serving, no agent — so a daemon that was
+// already stopped reports the same success, having still had any agent it left
+// behind removed.
 func StopCmd(d Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
 		Short: "Stop the background daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := d.Stop(cmd.Context()); errors.Is(err, daemon.ErrNoPeer) {
-				fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
-				return nil
-			} else if err != nil {
+			if err := d.Stop(cmd.Context()); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "daemon: stopped")

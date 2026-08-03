@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/internal/statepath"
+	"github.com/yasyf/daemonkit/durable"
 	"github.com/yasyf/daemonkit/paths"
-	"github.com/yasyf/daemonkit/proc"
 
 	_ "modernc.org/sqlite"
 )
@@ -199,11 +199,9 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 // store. Holding the lock across the whole detect→archive→create sequence lets a
 // concurrent opener that acquires the lock afterward find and ride the fresh store.
 func resetUnderLock(ctx context.Context, dbPath string, extension Schema, fingerprint, sqliteSchemaFingerprint string) (*Store, error) {
-	lock, err := (proc.FileLockSpec{
-		Path:     dbPath + archiveLockSuffix,
-		Mode:     proc.FileLockExclusive,
-		Deadline: archiveLockTimeout,
-	}).Acquire(ctx)
+	lockCtx, cancel := context.WithTimeout(ctx, archiveLockTimeout)
+	defer cancel()
+	lock, err := durable.AcquireLock(lockCtx, dbPath+archiveLockSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("store: acquire archive lock: %w", err)
 	}

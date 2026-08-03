@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -37,8 +36,8 @@ func envelopeCount(rec *recorder) int {
 }
 
 func TestAgentStartSendsEnvelope(t *testing.T) {
-	socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
-	d := testDeps(socket)
+	spec, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
+	d := testDeps(spec)
 	ensured := 0
 	d.EnsureCurrentIfRunning = func(context.Context) error { ensured++; return nil }
 	stdout, stderr := executeAgentHook(t, AgentStartCmd(d), `{
@@ -68,8 +67,8 @@ func TestAgentStartSendsEnvelope(t *testing.T) {
 }
 
 func TestAgentStartWithoutSessionTranscriptLeavesAgentPathEmpty(t *testing.T) {
-	socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
-	stdout, stderr := executeAgentHook(t, AgentStartCmd(testDeps(socket)), `{
+	spec, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
+	stdout, stderr := executeAgentHook(t, AgentStartCmd(testDeps(spec)), `{
 		"session_id":"s1","cwd":"/repo","agent_id":"a1","agent_type":"Explore"
 	}`)
 	if stdout != "" || stderr != "" {
@@ -94,10 +93,10 @@ func TestAgentInjectEmitsExactAdditionalContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: true, Body: replyBody}
 	})
-	d := testDeps(socket)
+	d := testDeps(spec)
 	ensureCalls := 0
 	d.EnsureCurrentIfRunning = func(context.Context) error {
 		ensureCalls++
@@ -133,20 +132,20 @@ func TestAgentInjectEmitsExactAdditionalContext(t *testing.T) {
 }
 
 func TestAgentInjectEmptyDrainIsSilent(t *testing.T) {
-	socket, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: true, Body: json.RawMessage(`{"directives":[]}`)}
 	})
-	stdout, stderr := executeAgentHook(t, AgentInjectCmd(testDeps(socket)), `{"session_id":"s1","agent_id":"a1"}`)
+	stdout, stderr := executeAgentHook(t, AgentInjectCmd(testDeps(spec)), `{"session_id":"s1","agent_id":"a1"}`)
 	if stdout != "" || stderr != "" {
 		t.Fatalf("output = stdout %q stderr %q, want silent", stdout, stderr)
 	}
 }
 
 func TestAgentStopAllowSendsEnvelope(t *testing.T) {
-	socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: true, Allow: true}
 	})
-	stdout, stderr := executeAgentHook(t, AgentStopCmd(testDeps(socket)), `{
+	stdout, stderr := executeAgentHook(t, AgentStopCmd(testDeps(spec)), `{
 		"session_id":"s1","cwd":"/repo","agent_id":"a1",
 		"last_assistant_message":"done","agent_transcript_path":"/tmp/a1.jsonl"
 	}`)
@@ -169,10 +168,10 @@ func TestAgentStopAllowSendsEnvelope(t *testing.T) {
 }
 
 func TestAgentStopBlockWritesExactDecision(t *testing.T) {
-	socket, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: true, Allow: false, Reason: "finish the requested check"}
 	})
-	stdout, stderr := executeAgentHook(t, AgentStopCmd(testDeps(socket)), `{"session_id":"s1","agent_id":"a1"}`)
+	stdout, stderr := executeAgentHook(t, AgentStopCmd(testDeps(spec)), `{"session_id":"s1","agent_id":"a1"}`)
 	const want = "{\"decision\":\"block\",\"reason\":\"finish the requested check\"}\n"
 	if stdout != want || stderr != "" {
 		t.Fatalf("output = stdout %q stderr %q, want stdout %q and silent stderr", stdout, stderr, want)
@@ -180,8 +179,8 @@ func TestAgentStopBlockWritesExactDecision(t *testing.T) {
 }
 
 func TestAgentReportPassesRawObservation(t *testing.T) {
-	socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
-	stdout, stderr := executeAgentHook(t, AgentReportCmd(testDeps(socket)), `{
+	spec, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
+	stdout, stderr := executeAgentHook(t, AgentReportCmd(testDeps(spec)), `{
 		"session_id":"s1","cwd":"/repo","tool_name":"Task","tool_use_id":"tool-7",
 		"tool_input":{"prompt":"inspect"},
 		"tool_response":{"agentId":"a1","outputFile":"/tmp/a1.out","nested":{"opaque":true}}
@@ -220,7 +219,7 @@ func TestAgentHookDialFailuresFailOpen(t *testing.T) {
 		{name: "report", cmd: AgentReportCmd},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			d := testDeps(filepath.Join(t.TempDir(), "absent.sock"))
+			d := testDeps(absentSpec(t))
 			stdout, stderr := executeAgentHook(t, tc.cmd(d), input)
 			if stdout != "" || stderr != "" {
 				t.Fatalf("output = stdout %q stderr %q, want silent fail-open", stdout, stderr)
@@ -230,7 +229,7 @@ func TestAgentHookDialFailuresFailOpen(t *testing.T) {
 }
 
 func TestAgentHookDaemonErrorsFailOpen(t *testing.T) {
-	socket, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
+	spec, _ := fakeDaemon(t, func(daemon.Envelope) daemon.Reply {
 		return daemon.Reply{OK: false, Error: "subject resolution failed"}
 	})
 	input := `{"session_id":"s1","cwd":"/repo","agent_id":"a1","tool_name":"Task"}`
@@ -244,7 +243,7 @@ func TestAgentHookDaemonErrorsFailOpen(t *testing.T) {
 		{name: "report", cmd: AgentReportCmd},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stdout, stderr := executeAgentHook(t, tc.cmd(testDeps(socket)), input)
+			stdout, stderr := executeAgentHook(t, tc.cmd(testDeps(spec)), input)
 			if stdout != "" || stderr != "" {
 				t.Fatalf("output = stdout %q stderr %q, want silent fail-open", stdout, stderr)
 			}
@@ -253,10 +252,9 @@ func TestAgentHookDaemonErrorsFailOpen(t *testing.T) {
 }
 
 func TestAgentStopOversizeLogsAndAllows(t *testing.T) {
-	const maxFrameBytes = 256
-	socket := liveDaemon(t, maxFrameBytes)
-	input := `{"session_id":"s1","cwd":"/repo","agent_id":"a1","last_assistant_message":"` + strings.Repeat("x", 512) + `"}`
-	d := testDepsWithMaxFrame(socket, maxFrameBytes)
+	spec := liveDaemon(t, 8<<10)
+	input := `{"session_id":"s1","cwd":"/repo","agent_id":"a1","last_assistant_message":"` + strings.Repeat("x", 4096) + `"}`
+	d := testDeps(spec)
 	stdout, stderr := executeAgentHook(t, AgentStopCmd(d), input)
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want allow without block output", stdout)
@@ -296,7 +294,7 @@ func TestAgentHookMalformedInputAllows(t *testing.T) {
 		{name: "report", cmd: AgentReportCmd},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			d := testDeps(filepath.Join(t.TempDir(), "absent.sock"))
+			d := testDeps(absentSpec(t))
 			stdout, stderr := executeAgentHook(t, tc.cmd(d), "{")
 			if stdout != "" || stderr != "" {
 				t.Fatalf("output = stdout %q stderr %q, want silent allow", stdout, stderr)
@@ -316,8 +314,8 @@ func TestAgentEmptyIDShortCircuitsStartAndStop(t *testing.T) {
 		{name: "stop empty agent", input: `{"session_id":"s1"}`, cmd: AgentStopCmd},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			socket, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
-			stdout, stderr := executeAgentHook(t, tc.cmd(testDeps(socket)), tc.input)
+			spec, rec := fakeDaemon(t, func(daemon.Envelope) daemon.Reply { return daemon.Reply{OK: true} })
+			stdout, stderr := executeAgentHook(t, tc.cmd(testDeps(spec)), tc.input)
 			if stdout != "" || stderr != "" || envelopeCount(rec) != 0 {
 				t.Fatalf("stdout %q stderr %q envelopes %d, want silent short-circuit", stdout, stderr, envelopeCount(rec))
 			}

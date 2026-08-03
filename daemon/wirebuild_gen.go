@@ -3,4 +3,4 @@
 package daemon
 
 // WireBuild is the exact shared cc-interact interaction-schema identity.
-const WireBuild = "com.yasyf.cc-interact.interaction/022f2ae95776fa2171ec24b2168ded0fd0833b525154026707575f28a50dfb14/v1"
+const WireBuild = "com.yasyf.cc-interact.interaction/2f18d8a1998d253f57d67e6ec6c549b32aa230676f9dd9b439a2ae63b3ea07d8/v1"

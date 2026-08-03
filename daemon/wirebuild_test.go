@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/daemonkit"
 )
 
 //go:embed interaction.schema.json
@@ -47,9 +49,8 @@ func TestCanonicalSchemaMatchesProtocolStructs(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := map[string]reflect.Type{
-		"Envelope":      reflect.TypeFor[Envelope](),
-		"Reply":         reflect.TypeFor[Reply](),
-		"RuntimeHealth": reflect.TypeFor[RuntimeHealth](),
+		"Envelope": reflect.TypeFor[Envelope](),
+		"Reply":    reflect.TypeFor[Reply](),
 	}
 	for name, protocolType := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -74,13 +75,15 @@ func TestCanonicalSchemaMatchesProtocolStructs(t *testing.T) {
 }
 
 func TestWireBuildHardCutRejectsAnotherSchema(t *testing.T) {
-	if _, err := NewClient(t.Context(), ClientConfig{WireBuild: "legacy"}); err == nil {
-		t.Fatal("NewClient accepted another wire schema")
+	legacy := daemonkit.Daemon{
+		Label:   "cci-legacy",
+		Schemas: []daemonkit.Schema{"legacy"},
+		Trust:   daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	}
-	if _, err := New(Config{WireBuild: "legacy"}); err == nil {
+	if _, err := New(Config{Daemon: legacy, RuntimeBuild: "v1.0.0"}); err == nil {
 		t.Fatal("New accepted another wire schema")
 	}
-	if _, err := (Launcher{WireBuild: "legacy"}).NewClient(t.Context()); err == nil {
+	if _, err := (Launcher{Daemon: legacy}).NewClient(); err == nil {
 		t.Fatal("Launcher accepted another wire schema")
 	}
 }

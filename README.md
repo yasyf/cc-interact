@@ -97,7 +97,10 @@ Mount `sse.StaticHandler` on the daemon and the React package's stream and query
 
 ## State
 
-`daemon.sock`, `http.json`, and `daemon.log` live directly under `~/.<app>/`.
+`http.json` and `daemon.log` live directly under `~/.<app>/`. The daemon's own
+runtime files — the socket, the owner record, the start lock — live under
+`~/<Daemon.Label>/`, which daemonkit derives from the label alone so the
+launcher and the daemon cannot disagree about where to find each other.
 The derived database and consumer cursors live under the exact
 `~/.<app>/cc-interact-v1/` namespace. A consumer supplies declarative
 `StoreSchema` DDL; the store creates it once and thereafter requires both
