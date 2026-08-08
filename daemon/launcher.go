@@ -159,8 +159,19 @@ func (l Launcher) classifyAbsence() error {
 // re-apply the agent this call removed nor lose its own replacement to it, and
 // the agent comes down only once departure is proven. Stopping an already
 // stopped daemon succeeds.
+//
+// It stops through a Daemon that states no Program, daemonkit's own contract:
+// Stop renders no LaunchAgent and places nothing, so a stated Program only
+// hands its absence proof an executable Ensure alone ever places — and on a
+// machine that never ensured this era, resolving that unplaced path fails
+// before the agent is ever removed.
 func (l Launcher) Stop(ctx context.Context, timeout time.Duration) error {
-	client, err := l.open()
+	if err := l.validate(); err != nil {
+		return err
+	}
+	stopping := l.Daemon
+	stopping.Program = daemonkit.Program{}
+	client, err := daemonkit.Open(stopping)
 	if err != nil {
 		return err
 	}

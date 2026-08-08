@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `stop` left its LaunchAgent installed. `Launcher.Stop` reused the
+  Program-bearing identity `Ensure` converges on, so daemonkit's absence proof
+  resolved `~/.daemonkit/bin/<label>` — a copy only `Ensure` ever places. On a
+  machine that never ensured this era the resolve failed, `Stop` returned
+  before the removal, and the surviving plist relaunched the daemon. Stop now
+  runs through a `daemonkit.Daemon` that states no `Program`, which is
+  daemonkit's own contract for the verb: it renders no LaunchAgent and places
+  nothing.
+
+### Changed
+
+- Pin daemonkit v0.21.4. v0.21.2 splits Stop's observation off launchd state
+  and holds its inventory gate vacuously for an unstated `Program`; on v0.21.1
+  the same call panicked.
+
 ## [0.32.0] - 2026-08-03
 
 ### Added

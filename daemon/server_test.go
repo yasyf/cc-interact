@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -55,7 +56,8 @@ func settleTestWorkers(t *testing.T, s *Server) {
 }
 
 // shortHome points HOME at a short-prefix temp dir so the daemon's unix socket
-// path stays under the sun_path length limit.
+// path stays under the sun_path length limit. The path is symlink-free —
+// launchd refuses a program tree with a symlinked component, and /tmp is one.
 func shortHome(t *testing.T) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "cci-test-")
@@ -63,7 +65,11 @@ func shortHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	testhome.Set(t, dir)
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testhome.Set(t, resolved)
 }
 
 // awaitBusiness polls the business lane until the served daemon dispatches,
