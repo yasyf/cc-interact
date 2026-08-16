@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pin daemonkit v0.21.4. v0.21.2 splits Stop's observation off launchd state
   and holds its inventory gate vacuously for an unstated `Program`; on v0.21.1
   the same call panicked.
+- Build with `toolchain go1.26.6`. Five standard-library advisories land in
+  code this module actually calls — `http.Server.Serve`, `http.Client.Do`,
+  `asn1.Unmarshal` under `daemonkit.Client.Control` — and all five are fixed in
+  go1.26.6. The `go` directive stays at 1.26.5, so consumers are not forced up.
 
 ## [0.32.0] - 2026-08-03
 
