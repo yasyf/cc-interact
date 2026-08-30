@@ -27,12 +27,6 @@ func StatusCmd(d Deps) *cobra.Command {
 			case errors.Is(err, daemon.ErrNoPeer):
 				fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
 				return nil
-			case errors.Is(err, daemon.ErrLegacyDaemon):
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"daemon: a pre-0.21 daemon is running and cannot be upgraded in place; "+
-						"run %q, then any command that starts it\n",
-					cmd.Root().Name()+" stop")
-				return nil
 			case err != nil:
 				return err
 			}

@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `daemon.ErrLegacyDaemon`, and the pre-0.21 daemon detection behind it. A
+  v0.21 launcher probes the label-derived endpoint, so `EnsureCurrentIfRunning`
+  used to stat `Paths.SocketPath()` on absence and name a daemon still
+  listening where v0.20 put one. Every upgrade is a clean reinstall, so no
+  install predating that move survives and the branch could only ever be dead.
+  Absence reads as plain `ErrNoPeer`, and `status` reports it as not running.
+
 ## [0.32.1] - 2026-08-16
 
 ### Fixed

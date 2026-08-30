@@ -16,8 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/daemonkit"
@@ -410,32 +408,6 @@ func TestStatusNotRunning(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "daemon: not running") {
 		t.Fatalf("status output = %q", out.String())
-	}
-}
-
-// TestStatusLegacyDaemon proves a pre-0.21 daemon reads as running-but-stranded
-// rather than as the absence its silent endpoint would otherwise look like, and
-// that status names the verb that retires it.
-func TestStatusLegacyDaemon(t *testing.T) {
-	deps := testDeps(absentSpec(t))
-	deps.EnsureCurrentIfRunning = func(context.Context) error {
-		return fmt.Errorf("%w on /tmp/legacy.sock", daemon.ErrLegacyDaemon)
-	}
-	root := &cobra.Command{Use: "cci"}
-	root.AddCommand(StatusCmd(deps))
-	var out bytes.Buffer
-	root.SetArgs([]string{"status"})
-	root.SetOut(&out)
-	root.SetErr(&bytes.Buffer{})
-	if err := root.ExecuteContext(context.Background()); err != nil {
-		t.Fatalf("status: %v", err)
-	}
-	got := out.String()
-	if strings.Contains(got, "not running") {
-		t.Fatalf("status output = %q, want a pre-0.21 daemon reported as running", got)
-	}
-	if !strings.Contains(got, "pre-0.21") || !strings.Contains(got, `"cci stop"`) {
-		t.Fatalf("status output = %q, want the pre-0.21 state and the retiring verb", got)
 	}
 }
 

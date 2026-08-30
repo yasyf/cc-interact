@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -165,44 +164,13 @@ func TestRefuseRollbackOrdersOnlyOnAReadableRelease(t *testing.T) {
 	}
 }
 
-func TestClassifyAbsenceNamesAPre021Daemon(t *testing.T) {
+// TestEnsureCurrentIfRunningRefusesAnAbsentDaemon pins the hook path's
+// contract: nothing listening is reported as ErrNoPeer, never cold-started.
+func TestEnsureCurrentIfRunningRefusesAnAbsentDaemon(t *testing.T) {
 	shortHome(t)
-	launcher := exactLauncher(testLauncherSpec("cci-launcher-absence"))
-	if err := launcher.classifyAbsence(); !errors.Is(err, ErrNoPeer) {
-		t.Fatalf("classifyAbsence with no legacy socket = %v, want ErrNoPeer", err)
-	}
-	writeLegacySocket(t, launcher.Paths)
-	err := launcher.classifyAbsence()
-	if !errors.Is(err, ErrLegacyDaemon) {
-		t.Fatalf("classifyAbsence beside a legacy socket = %v, want ErrLegacyDaemon", err)
-	}
-	if !strings.Contains(err.Error(), launcher.Paths.SocketPath()) {
-		t.Fatalf("refusal %q does not name the legacy socket", err)
-	}
-}
-
-// TestEnsureCurrentIfRunningReportsALegacyDaemon pins the one thing this build
-// can still learn about a pre-0.21 daemon: its socket exists, so absence on the
-// label-derived endpoint is this era's absence and not the daemon's.
-func TestEnsureCurrentIfRunningReportsALegacyDaemon(t *testing.T) {
-	shortHome(t)
-	launcher := exactLauncher(testLauncherSpec("cci-launcher-legacy"))
+	launcher := exactLauncher(testLauncherSpec("cci-launcher-absent"))
 	if err := launcher.EnsureCurrentIfRunning(context.Background()); !errors.Is(err, ErrNoPeer) {
 		t.Fatalf("EnsureCurrentIfRunning with nothing running = %v, want ErrNoPeer", err)
-	}
-	writeLegacySocket(t, launcher.Paths)
-	if err := launcher.EnsureCurrentIfRunning(context.Background()); !errors.Is(err, ErrLegacyDaemon) {
-		t.Fatalf("EnsureCurrentIfRunning beside a legacy socket = %v, want ErrLegacyDaemon", err)
-	}
-}
-
-func writeLegacySocket(t *testing.T, p paths.Paths) {
-	t.Helper()
-	if err := p.EnsureStateDir(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p.SocketPath(), nil, 0o600); err != nil {
-		t.Fatal(err)
 	}
 }
 
