@@ -58,10 +58,13 @@ func newGitScratch(ctx context.Context, repoRoot, scratchDir string) (gitScratch
 	if err := os.MkdirAll(objects, 0o755); err != nil {
 		return gitScratch{}, fmt.Errorf("create scratch objects dir: %w", err)
 	}
-	// --git-path resolves through gitfiles, so worktrees get the right paths.
-	repoObjects, err := git(ctx, repoRoot, nil, "rev-parse", "--path-format=absolute", "--git-path", "objects")
-	if err != nil {
-		return gitScratch{}, fmt.Errorf("locate repo objects: %w", err)
+	repoObjects, ok := repoObjectsDir(repoRoot)
+	if !ok {
+		out, err := git(ctx, repoRoot, nil, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+		if err != nil {
+			return gitScratch{}, fmt.Errorf("locate repo objects: %w", err)
+		}
+		repoObjects = strings.TrimSpace(out)
 	}
 	index := filepath.Join(scratchDir, "index")
 	return gitScratch{
@@ -70,9 +73,48 @@ func newGitScratch(ctx context.Context, repoRoot, scratchDir string) (gitScratch
 		env: []string{
 			"GIT_INDEX_FILE=" + index,
 			"GIT_OBJECT_DIRECTORY=" + objects,
-			"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + strings.TrimSpace(repoObjects),
+			"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + repoObjects,
 		},
 	}, nil
+}
+
+// repoObjectsDir reads the repository's object store off the filesystem,
+// following a worktree or submodule gitfile and then its commondir, so the
+// warm snapshot path spends no exec on `rev-parse --git-path objects`. ok is
+// false when the layout yields no directory and only git can answer.
+func repoObjectsDir(repoRoot string) (string, bool) {
+	gitPath := filepath.Join(repoRoot, ".git")
+	fi, err := os.Stat(gitPath)
+	if err != nil {
+		return "", false
+	}
+	gitDir := gitPath
+	if !fi.IsDir() {
+		data, err := os.ReadFile(gitPath)
+		if err != nil {
+			return "", false
+		}
+		target, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+		if !ok {
+			return "", false
+		}
+		gitDir = resolveAgainst(repoRoot, strings.TrimSpace(target))
+	}
+	if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+		gitDir = resolveAgainst(gitDir, strings.TrimSpace(string(data)))
+	}
+	objects := filepath.Join(gitDir, "objects")
+	if fi, err := os.Stat(objects); err != nil || !fi.IsDir() {
+		return "", false
+	}
+	return objects, true
+}
+
+func resolveAgainst(base, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(base, path)
 }
 
 // seedIndex copies the repo's real index into the scratch index so the first

@@ -214,3 +214,179 @@ func TestListTurnsByIDs(t *testing.T) {
 		t.Fatalf("empty ids: turns=%+v err=%v, want none", turns, err)
 	}
 }
+
+func setStartedAt(t *testing.T, s *TurnStore, id, ms int64) {
+	t.Helper()
+	if _, err := s.db.ExecContext(context.Background(), `UPDATE turns SET started_at=? WHERE id=?`, ms, id); err != nil {
+		t.Fatalf("restamp turn %d: %v", id, err)
+	}
+}
+
+func closeTurn(t *testing.T, s *TurnStore, id int64, treeEnd string) {
+	t.Helper()
+	if err := s.CloseTurn(context.Background(), id, treeEnd, "closed"); err != nil {
+		t.Fatalf("close turn %d: %v", id, err)
+	}
+}
+
+func TestLatestClosedTurn(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, s *TurnStore) int64
+		since int64
+	}{
+		{
+			name:  "an empty ledger chains nothing",
+			setup: func(t *testing.T, s *TurnStore) int64 { return 0 },
+		},
+		{
+			name: "an open turn has no closing tree",
+			setup: func(t *testing.T, s *TurnStore) int64 {
+				createTurn(t, s, "/repo", 100, "tree-a")
+				return 0
+			},
+		},
+		{
+			name: "an interrupted turn has no closing tree",
+			setup: func(t *testing.T, s *TurnStore) int64 {
+				createTurn(t, s, "/repo", 100, "tree-a")
+				if err := s.CloseOpenTurnsForWindow(context.Background(), "/repo", 100); err != nil {
+					t.Fatalf("interrupt: %v", err)
+				}
+				return 0
+			},
+		},
+		{
+			name: "the newest closed turn is the tip",
+			setup: func(t *testing.T, s *TurnStore) int64 {
+				first := createTurn(t, s, "/repo", 100, "tree-a")
+				second := createTurn(t, s, "/repo", 200, "tree-b")
+				closeTurn(t, s, first.ID, "end-a")
+				closeTurn(t, s, second.ID, "end-b")
+				return second.ID
+			},
+		},
+		{
+			name: "a turn older than the window is out of reach",
+			setup: func(t *testing.T, s *TurnStore) int64 {
+				turn := createTurn(t, s, "/repo", 100, "tree-a")
+				closeTurn(t, s, turn.ID, "end-a")
+				setStartedAt(t, s, turn.ID, 100)
+				return 0
+			},
+			since: 200,
+		},
+		{
+			name: "another repository's turn never chains",
+			setup: func(t *testing.T, s *TurnStore) int64 {
+				turn := createTurn(t, s, "/other", 100, "tree-a")
+				closeTurn(t, s, turn.ID, "end-a")
+				return 0
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := openTestTurnStore(t)
+			wantID := tt.setup(t, s)
+
+			got, ok, err := s.LatestClosedTurn(context.Background(), "/repo", tt.since)
+			if err != nil {
+				t.Fatalf("latest closed: %v", err)
+			}
+			if ok != (wantID != 0) {
+				t.Fatalf("ok = %v (turn %d), want %v", ok, got.ID, wantID != 0)
+			}
+			if !ok {
+				return
+			}
+			if got.ID != wantID {
+				t.Fatalf("turn = %d, want %d", got.ID, wantID)
+			}
+			if got.TreeEnd != "end-b" {
+				t.Fatalf("tree_end = %q, want %q", got.TreeEnd, "end-b")
+			}
+		})
+	}
+}
+
+func TestLatestOpenTurnBefore(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, s *TurnStore, first, second Turn)
+		repo    string
+		pid     int
+		before  int64
+		want    func(first, second Turn) int64
+	}{
+		{
+			name:   "a stamp between the turns closes the older",
+			repo:   "/repo",
+			pid:    100,
+			before: 150,
+			want:   func(first, _ Turn) int64 { return first.ID },
+		},
+		{
+			name:   "a stamp at the newer turn takes the newest",
+			repo:   "/repo",
+			pid:    100,
+			before: 200,
+			want:   func(_, second Turn) int64 { return second.ID },
+		},
+		{
+			name:   "a stamp older than every turn finds none",
+			repo:   "/repo",
+			pid:    100,
+			before: 99,
+			want:   func(_, _ Turn) int64 { return 0 },
+		},
+		{
+			name: "an already closed turn is skipped",
+			prepare: func(t *testing.T, s *TurnStore, first, _ Turn) {
+				closeTurn(t, s, first.ID, "end-a")
+			},
+			repo:   "/repo",
+			pid:    100,
+			before: 150,
+			want:   func(_, _ Turn) int64 { return 0 },
+		},
+		{
+			name:   "another Claude window is out of scope",
+			repo:   "/repo",
+			pid:    999,
+			before: 300,
+			want:   func(_, _ Turn) int64 { return 0 },
+		},
+		{
+			name:   "another repository is out of scope",
+			repo:   "/other",
+			pid:    100,
+			before: 300,
+			want:   func(_, _ Turn) int64 { return 0 },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := openTestTurnStore(t)
+			first := createTurn(t, s, "/repo", 100, "tree-a")
+			second := createTurn(t, s, "/repo", 100, "tree-b")
+			setStartedAt(t, s, first.ID, 100)
+			setStartedAt(t, s, second.ID, 200)
+			if tt.prepare != nil {
+				tt.prepare(t, s, first, second)
+			}
+			wantID := tt.want(first, second)
+
+			got, ok, err := s.LatestOpenTurnBefore(context.Background(), tt.repo, tt.pid, tt.before)
+			if err != nil {
+				t.Fatalf("latest open before: %v", err)
+			}
+			if ok != (wantID != 0) {
+				t.Fatalf("ok = %v (turn %d), want %v", ok, got.ID, wantID != 0)
+			}
+			if ok && got.ID != wantID {
+				t.Fatalf("turn = %d, want %d", got.ID, wantID)
+			}
+		})
+	}
+}

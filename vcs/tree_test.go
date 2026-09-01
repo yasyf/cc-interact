@@ -2,9 +2,12 @@ package vcs
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -132,5 +135,122 @@ func TestJJTreeSnapshotAndDiff(t *testing.T) {
 	}
 	if !strings.Contains(patch, "+two") {
 		t.Fatalf("patch missing edit:\n%s", patch)
+	}
+}
+
+func resolved(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func gitObjectsPath(t *testing.T, dir string) string {
+	t.Helper()
+	return strings.TrimSpace(gitInit(t, dir, "rev-parse", "--path-format=absolute", "--git-path", "objects"))
+}
+
+func TestRepoObjectsDir(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) (root, wantObjects string)
+	}{
+		{
+			name: "plain repository",
+			setup: func(t *testing.T) (string, string) {
+				root := resolved(t, newRepo(t))
+				return root, gitObjectsPath(t, root)
+			},
+		},
+		{
+			name: "linked worktree resolves through commondir",
+			setup: func(t *testing.T) (string, string) {
+				repo := newRepo(t)
+				write(t, repo, "a.txt", "1\n")
+				gitInit(t, repo, "add", "-A")
+				gitInit(t, repo, "commit", "-qm", "c1")
+				wt := filepath.Join(t.TempDir(), "wt")
+				gitInit(t, repo, "worktree", "add", "-q", wt)
+				root := resolved(t, wt)
+				return root, gitObjectsPath(t, root)
+			},
+		},
+		{
+			name: "submodule gitfile without a commondir",
+			setup: func(t *testing.T) (string, string) {
+				super := t.TempDir()
+				gitDir := filepath.Join(super, ".git", "modules", "sub")
+				sub := filepath.Join(super, "sub")
+				for _, dir := range []string{filepath.Join(gitDir, "objects"), sub} {
+					if err := os.MkdirAll(dir, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				write(t, sub, ".git", "gitdir: ../.git/modules/sub\n")
+				return sub, filepath.Join(gitDir, "objects")
+			},
+		},
+		{
+			name: "gitfile pointing nowhere falls back",
+			setup: func(t *testing.T) (string, string) {
+				repo := filepath.Join(t.TempDir(), "repo")
+				if err := os.MkdirAll(repo, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				write(t, repo, ".git", "gitdir: ../nowhere\n")
+				return repo, ""
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, wantObjects := tt.setup(t)
+			got, ok := repoObjectsDir(root)
+			if ok != (wantObjects != "") {
+				t.Fatalf("ok = %v (%q), want %v", ok, got, wantObjects != "")
+			}
+			if got != wantObjects {
+				t.Fatalf("objects dir = %q, want %q", got, wantObjects)
+			}
+		})
+	}
+}
+
+func TestSnapshotTreeWarmRunsTwoGitCommands(t *testing.T) {
+	dir := resolved(t, newRepo(t))
+	write(t, dir, "a.go", "package a\n")
+	gitInit(t, dir, "add", "-A")
+	gitInit(t, dir, "commit", "-qm", "init")
+	scratch := t.TempDir()
+	snapshotTree(t, dir, scratch)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := t.TempDir()
+	log := filepath.Join(stub, "git.log")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\nexec %q \"$@\"\n", log, realGit)
+	if err := os.WriteFile(filepath.Join(stub, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	write(t, dir, "a.go", "package a\nvar X int\n")
+	snapshotTree(t, dir, scratch)
+
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read git log: %v", err)
+	}
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		got = append(got, strings.TrimPrefix(line, "-C "+dir+" "))
+	}
+	want := []string{"add -A", "write-tree"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("warm snapshot ran git %q, want %q", got, want)
 	}
 }
