@@ -94,8 +94,15 @@ func TestCloseOpenTurnsForWindowScopedToPID(t *testing.T) {
 	other := createTurn(t, s, "/repo", 200, "t2")
 	elsewhere := createTurn(t, s, "/other", 100, "t3")
 
-	if err := s.CloseOpenTurnsForWindow(ctx, "/repo", 100); err != nil {
+	interrupted, err := s.CloseOpenTurnsForWindow(ctx, "/repo", 100)
+	if err != nil {
 		t.Fatalf("close open turns: %v", err)
+	}
+	if interrupted != 1 {
+		t.Fatalf("interrupted = %d, want 1", interrupted)
+	}
+	if again, err := s.CloseOpenTurnsForWindow(ctx, "/repo", 100); err != nil || again != 0 {
+		t.Fatalf("second close = %d (err %v), want 0", again, err)
 	}
 
 	turns, err := s.ListTurnsByIDs(ctx, []int64{mine.ID, other.ID, elsewhere.ID})
@@ -250,7 +257,7 @@ func TestLatestClosedTurn(t *testing.T) {
 			name: "an interrupted turn has no closing tree",
 			setup: func(t *testing.T, s *TurnStore) int64 {
 				createTurn(t, s, "/repo", 100, "tree-a")
-				if err := s.CloseOpenTurnsForWindow(context.Background(), "/repo", 100); err != nil {
+				if _, err := s.CloseOpenTurnsForWindow(context.Background(), "/repo", 100); err != nil {
 					t.Fatalf("interrupt: %v", err)
 				}
 				return 0
@@ -310,82 +317,59 @@ func TestLatestClosedTurn(t *testing.T) {
 	}
 }
 
-func TestLatestOpenTurnBefore(t *testing.T) {
+func TestOpenTurnCount(t *testing.T) {
 	tests := []struct {
-		name    string
-		prepare func(t *testing.T, s *TurnStore, first, second Turn)
-		repo    string
-		pid     int
-		before  int64
-		want    func(first, second Turn) int64
+		name  string
+		setup func(t *testing.T, s *TurnStore)
+		want  int
 	}{
 		{
-			name:   "a stamp between the turns closes the older",
-			repo:   "/repo",
-			pid:    100,
-			before: 150,
-			want:   func(first, _ Turn) int64 { return first.ID },
+			name:  "an empty ledger counts none",
+			setup: func(t *testing.T, s *TurnStore) {},
 		},
 		{
-			name:   "a stamp at the newer turn takes the newest",
-			repo:   "/repo",
-			pid:    100,
-			before: 200,
-			want:   func(_, second Turn) int64 { return second.ID },
-		},
-		{
-			name:   "a stamp older than every turn finds none",
-			repo:   "/repo",
-			pid:    100,
-			before: 99,
-			want:   func(_, _ Turn) int64 { return 0 },
-		},
-		{
-			name: "an already closed turn is skipped",
-			prepare: func(t *testing.T, s *TurnStore, first, _ Turn) {
-				closeTurn(t, s, first.ID, "end-a")
+			name: "open turns of two windows both count",
+			setup: func(t *testing.T, s *TurnStore) {
+				createTurn(t, s, "/repo", 100, "tree-a")
+				createTurn(t, s, "/repo", 200, "tree-b")
 			},
-			repo:   "/repo",
-			pid:    100,
-			before: 150,
-			want:   func(_, _ Turn) int64 { return 0 },
+			want: 2,
 		},
 		{
-			name:   "another Claude window is out of scope",
-			repo:   "/repo",
-			pid:    999,
-			before: 300,
-			want:   func(_, _ Turn) int64 { return 0 },
+			name: "a closed turn stops counting",
+			setup: func(t *testing.T, s *TurnStore) {
+				closeTurn(t, s, createTurn(t, s, "/repo", 100, "tree-a").ID, "end-a")
+				createTurn(t, s, "/repo", 100, "tree-b")
+			},
+			want: 1,
 		},
 		{
-			name:   "another repository is out of scope",
-			repo:   "/other",
-			pid:    100,
-			before: 300,
-			want:   func(_, _ Turn) int64 { return 0 },
+			name: "an interrupted turn stops counting",
+			setup: func(t *testing.T, s *TurnStore) {
+				createTurn(t, s, "/repo", 100, "tree-a")
+				if _, err := s.CloseOpenTurnsForWindow(context.Background(), "/repo", 100); err != nil {
+					t.Fatalf("interrupt: %v", err)
+				}
+			},
+		},
+		{
+			name: "another repository's open turn is out of scope",
+			setup: func(t *testing.T, s *TurnStore) {
+				createTurn(t, s, "/other", 100, "tree-a")
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := openTestTurnStore(t)
-			first := createTurn(t, s, "/repo", 100, "tree-a")
-			second := createTurn(t, s, "/repo", 100, "tree-b")
-			setStartedAt(t, s, first.ID, 100)
-			setStartedAt(t, s, second.ID, 200)
-			if tt.prepare != nil {
-				tt.prepare(t, s, first, second)
-			}
-			wantID := tt.want(first, second)
+			tt.setup(t, s)
 
-			got, ok, err := s.LatestOpenTurnBefore(context.Background(), tt.repo, tt.pid, tt.before)
+			got, err := s.OpenTurnCount(context.Background(), "/repo")
 			if err != nil {
-				t.Fatalf("latest open before: %v", err)
+				t.Fatalf("open turn count: %v", err)
 			}
-			if ok != (wantID != 0) {
-				t.Fatalf("ok = %v (turn %d), want %v", ok, got.ID, wantID != 0)
-			}
-			if ok && got.ID != wantID {
-				t.Fatalf("turn = %d, want %d", got.ID, wantID)
+			if got != tt.want {
+				t.Fatalf("open turns = %d, want %d", got, tt.want)
 			}
 		})
 	}

@@ -3,6 +3,7 @@ package vcs
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,6 +108,21 @@ func TestRootMatchesGitToplevel(t *testing.T) {
 			},
 		},
 		{
+			name: "symlink escaping into another repository",
+			setup: func(t *testing.T) string {
+				outer, inner := newRepo(t), newRepo(t)
+				nested := filepath.Join(inner, "nested")
+				if err := os.MkdirAll(nested, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				link := filepath.Join(outer, "escape")
+				if err := os.Symlink(nested, link); err != nil {
+					t.Fatal(err)
+				}
+				return link
+			},
+		},
+		{
 			name: "symlinked path",
 			setup: func(t *testing.T) string {
 				repo := newRepo(t)
@@ -195,5 +211,20 @@ func TestBackend(t *testing.T) {
 				t.Fatalf("backend = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRootRefusesStaleGitfile(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, repo, ".git", "gitdir: ../nowhere\n")
+
+	if out, err := exec.Command("git", "-C", repo, "rev-parse", "--show-toplevel").CombinedOutput(); err == nil {
+		t.Fatalf("git resolved a stale gitfile as %q; the premise of this test is that it refuses", out)
+	}
+	if root, err := Root(context.Background(), repo); err == nil {
+		t.Fatalf("root = %q, want an error on a gitfile whose gitdir is gone", root)
 	}
 }

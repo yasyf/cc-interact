@@ -22,6 +22,40 @@ func gitRoot(ctx context.Context, cwd string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// gitDir resolves a working tree's git directory: the `.git` directory itself,
+// or the target of a `.git` gitfile. A gitfile naming a directory that is gone
+// is the stale state git itself refuses, and it errors here too.
+func gitDir(repoRoot string) (string, error) {
+	marker := filepath.Join(repoRoot, ".git")
+	fi, err := os.Stat(marker)
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", marker, err)
+	}
+	if fi.IsDir() {
+		return marker, nil
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", marker, err)
+	}
+	target, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+	if !ok {
+		return "", fmt.Errorf("%s names no gitdir", marker)
+	}
+	dir := resolveAgainst(repoRoot, strings.TrimSpace(target))
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("gitdir %s named by %s is not a directory", dir, marker)
+	}
+	return dir, nil
+}
+
+func resolveAgainst(base, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(base, path)
+}
+
 // gitCapture snapshots the working tree (tracked + staged + untracked, minus
 // ignored). baseRef == "" diffs against HEAD — or the empty tree when there is
 // no commit yet — falling back to the trunk fork point when that diff is empty;

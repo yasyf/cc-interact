@@ -254,3 +254,41 @@ func TestSnapshotTreeWarmRunsTwoGitCommands(t *testing.T) {
 		t.Fatalf("warm snapshot ran git %q, want %q", got, want)
 	}
 }
+
+func TestRepoObjectsDirDefersToGitOnEnvOverride(t *testing.T) {
+	for _, key := range gitLayoutEnv {
+		t.Run(key, func(t *testing.T) {
+			root := resolved(t, newRepo(t))
+			if _, ok := repoObjectsDir(root); !ok {
+				t.Fatal("derivation failed before the override was set")
+			}
+			t.Setenv(key, t.TempDir())
+
+			if got, ok := repoObjectsDir(root); ok {
+				t.Fatalf("objects dir = %q with %s set, want the git fallback", got, key)
+			}
+		})
+	}
+}
+
+func TestSnapshotTreeAcceptsRelativeRepoRoot(t *testing.T) {
+	dir := resolved(t, newRepo(t))
+	write(t, dir, "a.go", "package a\n")
+	gitInit(t, dir, "add", "-A")
+	gitInit(t, dir, "commit", "-qm", "init")
+	absolute := snapshotTree(t, dir, t.TempDir())
+
+	t.Chdir(filepath.Dir(dir))
+	rel := filepath.Base(dir)
+
+	objects, ok := repoObjectsDir(rel)
+	if !ok {
+		t.Fatal("a relative repo root yielded no objects dir")
+	}
+	if !filepath.IsAbs(objects) {
+		t.Fatalf("objects dir = %q, want an absolute path git -C can normalise", objects)
+	}
+	if relative := snapshotTree(t, rel, t.TempDir()); relative.OID != absolute.OID {
+		t.Fatalf("relative-root OID = %q, want %q", relative.OID, absolute.OID)
+	}
+}

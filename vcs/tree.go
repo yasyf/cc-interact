@@ -78,43 +78,36 @@ func newGitScratch(ctx context.Context, repoRoot, scratchDir string) (gitScratch
 	}, nil
 }
 
+// gitLayoutEnv are the variables that relocate a repository's directories out
+// from under the on-disk layout, leaving git the only thing that can say where
+// the objects went.
+var gitLayoutEnv = []string{"GIT_DIR", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_WORK_TREE"}
+
 // repoObjectsDir reads the repository's object store off the filesystem,
 // following a worktree or submodule gitfile and then its commondir, so the
 // warm snapshot path spends no exec on `rev-parse --git-path objects`. ok is
 // false when the layout yields no directory and only git can answer.
 func repoObjectsDir(repoRoot string) (string, bool) {
-	gitPath := filepath.Join(repoRoot, ".git")
-	fi, err := os.Stat(gitPath)
+	for _, key := range gitLayoutEnv {
+		if os.Getenv(key) != "" {
+			return "", false
+		}
+	}
+	dir, err := gitDir(repoRoot)
 	if err != nil {
 		return "", false
 	}
-	gitDir := gitPath
-	if !fi.IsDir() {
-		data, err := os.ReadFile(gitPath)
-		if err != nil {
-			return "", false
-		}
-		target, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
-		if !ok {
-			return "", false
-		}
-		gitDir = resolveAgainst(repoRoot, strings.TrimSpace(target))
+	if data, err := os.ReadFile(filepath.Join(dir, "commondir")); err == nil {
+		dir = resolveAgainst(dir, strings.TrimSpace(string(data)))
 	}
-	if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
-		gitDir = resolveAgainst(gitDir, strings.TrimSpace(string(data)))
+	objects, err := filepath.Abs(filepath.Join(dir, "objects"))
+	if err != nil {
+		return "", false
 	}
-	objects := filepath.Join(gitDir, "objects")
 	if fi, err := os.Stat(objects); err != nil || !fi.IsDir() {
 		return "", false
 	}
 	return objects, true
-}
-
-func resolveAgainst(base, path string) string {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
-	}
-	return filepath.Join(base, path)
 }
 
 // seedIndex copies the repo's real index into the scratch index so the first
