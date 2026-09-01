@@ -128,6 +128,36 @@ func (s *TurnStore) LatestOpenTurn(ctx context.Context, repoRoot string, claudeP
 	return t, err == nil, err
 }
 
+// LatestOpenTurnBefore returns the newest open turn of a Claude window (repo +
+// pid) that started at or before startedBeforeMs, so a stop hook stamped at
+// that instant closes its own turn rather than one opened while it was in
+// flight. ok is false when none is open in that window.
+func (s *TurnStore) LatestOpenTurnBefore(ctx context.Context, repoRoot string, claudePID int, startedBeforeMs int64) (Turn, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+turnCols+` FROM turns WHERE repo_root=? AND claude_pid=? AND status='open' AND started_at<=? ORDER BY id DESC LIMIT 1`,
+		repoRoot, claudePID, startedBeforeMs)
+	t, err := scanTurn(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Turn{}, false, nil
+	}
+	return t, err == nil, err
+}
+
+// LatestClosedTurn returns the newest turn of a repo that started at or after
+// sinceMs and carries a closing snapshot — the tip a following turn chains its
+// start tree onto. An interrupted turn has no tree_end and never qualifies. ok
+// is false when the window holds no such turn.
+func (s *TurnStore) LatestClosedTurn(ctx context.Context, repoRoot string, sinceMs int64) (Turn, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+turnCols+` FROM turns WHERE repo_root=? AND started_at>=? AND tree_end<>'' ORDER BY id DESC LIMIT 1`,
+		repoRoot, sinceMs)
+	t, err := scanTurn(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Turn{}, false, nil
+	}
+	return t, err == nil, err
+}
+
 // GetTurn returns the turn by id, or ErrTurnNotFound.
 func (s *TurnStore) GetTurn(ctx context.Context, id int64) (Turn, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+turnCols+` FROM turns WHERE id=?`, id)

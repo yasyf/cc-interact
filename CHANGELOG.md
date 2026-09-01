@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `vcs.Backend`, naming the version-control system managing a directory
+  ("git" or "jj") off the same subprocess-free walk `Root` uses. A consumer
+  that records a turn without snapshotting still has to stamp the backend the
+  eventual diff will be read with.
+- `TurnStore.LatestClosedTurn` and `TurnStore.LatestOpenTurnBefore`. The first
+  returns a repo's newest turn carrying a closing tree within an attribution
+  window, so a following turn can chain its start tree onto that tip instead of
+  taking a snapshot; the second scopes `LatestOpenTurn` to turns that started at
+  or before a caller-supplied instant, so an asynchronous stop hook closes the
+  turn it was stamped in rather than one opened while it was in flight.
+
+### Changed
+
+- `vcs.Root` resolves a git working tree off the filesystem —
+  `filepath.EvalSymlinks` over the directory holding `.git` — instead of
+  spawning `git rev-parse --show-toplevel`. Under an EDR that charges ~265 ms
+  per exec, a call that sits on a hook's critical path is worth the walk. The
+  result is unchanged for every working tree, physical path and all; it
+  diverges only where no working tree contains the directory, so a bare
+  repository or a `GIT_DIR`/`GIT_WORK_TREE` override now reports the directory
+  the marker sits in.
+- `SnapshotTree` and `NewTreeDiffer` derive the repository's object store from
+  the filesystem, following a worktree or submodule gitfile and then its
+  `commondir`, and fall back to `rev-parse --git-path objects` only when that
+  yields no directory. A warm snapshot is down to two git commands, `add -A`
+  and `write-tree`.
+
 ### Removed
 
 - `daemon.ErrLegacyDaemon`, and the pre-0.21 daemon detection behind it. A

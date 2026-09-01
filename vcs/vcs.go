@@ -45,7 +45,10 @@ type Snapshot struct {
 }
 
 // Root resolves the repository root containing cwd, without taking a full
-// snapshot.
+// snapshot and without spawning a subprocess. For a git working tree the
+// result equals `git rev-parse --show-toplevel`, physical path and all; it
+// diverges only where no working tree contains cwd — a bare repository, or a
+// GIT_DIR/GIT_WORK_TREE override.
 func Root(ctx context.Context, cwd string) (string, error) {
 	kind, dir, err := detect(cwd)
 	if err != nil {
@@ -54,7 +57,24 @@ func Root(ctx context.Context, cwd string) (string, error) {
 	if kind == backendJJ {
 		return dir, nil
 	}
-	return gitRoot(ctx, cwd)
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve repo root %s: %w", dir, err)
+	}
+	return root, nil
+}
+
+// Backend names the version-control system managing cwd's repository, "git"
+// or "jj", matching the tag SnapshotTree stamps on a TreeRef.
+func Backend(cwd string) (string, error) {
+	kind, _, err := detect(cwd)
+	if err != nil {
+		return "", err
+	}
+	if kind == backendJJ {
+		return "jj", nil
+	}
+	return "git", nil
 }
 
 // Capture snapshots cwd's pending changes. With base == "" the diff is
