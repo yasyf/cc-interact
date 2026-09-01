@@ -104,15 +104,21 @@ func (s *TurnStore) CloseTurn(ctx context.Context, id int64, treeEnd, status str
 }
 
 // CloseOpenTurnsForWindow marks every open turn of a Claude window (repo +
-// pid) interrupted; tree_end stays empty because no closing snapshot exists.
-func (s *TurnStore) CloseOpenTurnsForWindow(ctx context.Context, repoRoot string, claudePID int) error {
-	_, err := s.db.ExecContext(ctx,
+// pid) interrupted and reports how many it interrupted; tree_end stays empty
+// because no closing snapshot exists. A non-zero count means edits were left
+// unattributed, so the next turn must snapshot rather than chain.
+func (s *TurnStore) CloseOpenTurnsForWindow(ctx context.Context, repoRoot string, claudePID int) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE turns SET status='interrupted', ended_at=? WHERE repo_root=? AND claude_pid=? AND status='open'`,
 		time.Now().UnixMilli(), repoRoot, claudePID)
 	if err != nil {
-		return fmt.Errorf("close open turns: %w", err)
+		return 0, fmt.Errorf("close open turns: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("close open turns: %w", err)
+	}
+	return n, nil
 }
 
 // LatestOpenTurn returns the newest open turn of a Claude window (repo + pid).
@@ -128,19 +134,18 @@ func (s *TurnStore) LatestOpenTurn(ctx context.Context, repoRoot string, claudeP
 	return t, err == nil, err
 }
 
-// LatestOpenTurnBefore returns the newest open turn of a Claude window (repo +
-// pid) that started at or before startedBeforeMs, so a stop hook stamped at
-// that instant closes its own turn rather than one opened while it was in
-// flight. ok is false when none is open in that window.
-func (s *TurnStore) LatestOpenTurnBefore(ctx context.Context, repoRoot string, claudePID int, startedBeforeMs int64) (Turn, bool, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+turnCols+` FROM turns WHERE repo_root=? AND claude_pid=? AND status='open' AND started_at<=? ORDER BY id DESC LIMIT 1`,
-		repoRoot, claudePID, startedBeforeMs)
-	t, err := scanTurn(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Turn{}, false, nil
+// OpenTurnCount reports how many turns are open in a repo, across every Claude
+// window. A second window's turn is why: two chains forked from one tree steal
+// each other's attribution, so a caller with more than its own turn open
+// snapshots instead.
+func (s *TurnStore) OpenTurnCount(ctx context.Context, repoRoot string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM turns WHERE repo_root=? AND status='open'`, repoRoot).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count open turns: %w", err)
 	}
-	return t, err == nil, err
+	return n, nil
 }
 
 // LatestClosedTurn returns the newest turn of a repo that started at or after

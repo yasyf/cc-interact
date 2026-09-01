@@ -57,9 +57,12 @@ func Root(ctx context.Context, cwd string) (string, error) {
 	if kind == backendJJ {
 		return dir, nil
 	}
-	root, err := filepath.EvalSymlinks(dir)
+	root, err := gitWorkTree(cwd)
 	if err != nil {
-		return "", fmt.Errorf("resolve repo root %s: %w", dir, err)
+		return "", err
+	}
+	if _, err := gitDir(root); err != nil {
+		return "", err
 	}
 	return root, nil
 }
@@ -74,7 +77,25 @@ func Backend(cwd string) (string, error) {
 	if kind == backendJJ {
 		return "jj", nil
 	}
+	if _, err := gitWorkTree(cwd); err != nil {
+		return "", err
+	}
 	return "git", nil
+}
+
+// gitWorkTree walks up from the physically resolved cwd, the path git itself
+// sees through getcwd, so a symlink escaping one repository into another
+// answers with the repository holding the link's target.
+func gitWorkTree(cwd string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", cwd, err)
+	}
+	_, dir, err := detect(resolved)
+	if err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 // Capture snapshots cwd's pending changes. With base == "" the diff is

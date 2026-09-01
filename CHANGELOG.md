@@ -12,28 +12,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("git" or "jj") off the same subprocess-free walk `Root` uses. A consumer
   that records a turn without snapshotting still has to stamp the backend the
   eventual diff will be read with.
-- `TurnStore.LatestClosedTurn` and `TurnStore.LatestOpenTurnBefore`. The first
-  returns a repo's newest turn carrying a closing tree within an attribution
-  window, so a following turn can chain its start tree onto that tip instead of
-  taking a snapshot; the second scopes `LatestOpenTurn` to turns that started at
-  or before a caller-supplied instant, so an asynchronous stop hook closes the
-  turn it was stamped in rather than one opened while it was in flight.
+- `TurnStore.LatestClosedTurn` and `TurnStore.OpenTurnCount`. The first returns
+  a repo's newest turn carrying a closing tree within an attribution window,
+  the tip a following turn can chain its start tree onto instead of taking a
+  snapshot. The second counts a repo's open turns across every Claude window,
+  one of the conditions that forbids that chain: two windows chaining from one
+  tree steal each other's attribution.
 
 ### Changed
 
-- `vcs.Root` resolves a git working tree off the filesystem —
-  `filepath.EvalSymlinks` over the directory holding `.git` — instead of
-  spawning `git rev-parse --show-toplevel`. Under an EDR that charges ~265 ms
-  per exec, a call that sits on a hook's critical path is worth the walk. The
-  result is unchanged for every working tree, physical path and all; it
-  diverges only where no working tree contains the directory, so a bare
-  repository or a `GIT_DIR`/`GIT_WORK_TREE` override now reports the directory
-  the marker sits in.
+- `vcs.Root` resolves a git working tree off the filesystem instead of spawning
+  `git rev-parse --show-toplevel`, walking up from `filepath.EvalSymlinks(cwd)`
+  — the path git itself sees through getcwd, so a symlink escaping one
+  repository into another answers with the repository holding the target.
+  Under an EDR that charges ~265 ms per exec, a call on a hook's critical path
+  is worth the walk. The answer matches git for every working tree, physical
+  path and all, and a `.git` gitfile whose target is gone errors here as it
+  does there. It diverges only where no working tree contains the directory,
+  so a bare repository or a `GIT_DIR`/`GIT_WORK_TREE` override now reports the
+  directory the marker sits in.
+- `TurnStore.CloseOpenTurnsForWindow` returns how many turns it interrupted
+  alongside its error. An interrupted turn's edits are unattributed, so a
+  caller that just interrupted one snapshots rather than chaining onto the
+  previous turn's end tree, and the count is how it knows.
 - `SnapshotTree` and `NewTreeDiffer` derive the repository's object store from
   the filesystem, following a worktree or submodule gitfile and then its
-  `commondir`, and fall back to `rev-parse --git-path objects` only when that
-  yields no directory. A warm snapshot is down to two git commands, `add -A`
-  and `write-tree`.
+  `commondir`, and absolutize what they find. They defer to `rev-parse
+  --git-path objects` when the layout yields no directory, and when `GIT_DIR`,
+  `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, or `GIT_WORK_TREE` moves the store
+  out from under the on-disk layout. A warm snapshot is down to two git
+  commands, `add -A` and `write-tree`.
 
 ### Removed
 
