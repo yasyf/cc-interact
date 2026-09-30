@@ -6,11 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-30
+
 ### Changed
 
-- Builds on linux. daemonkit moves from v0.23.0 to the `idle-session` head
-  (`a8ebd31ef160`), whose root package no longer imports `launchd` there, so
-  every package now compiles for `GOOS=linux` with `CGO_ENABLED=0`. On linux,
+- Builds on Linux with daemonkit v0.32.0. Every package compiles for
+  `GOOS=linux` with `CGO_ENABLED=0`. On Linux,
   `Launcher.EnsureCurrent` starts the daemon through a running
   `daemonkit.Supervise` for its label and refuses with
   `supervise.ErrNoSupervisor` when none runs; the consumer binary owns that
@@ -21,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   daemonkit's ownership marker: daemonkit refuses one since v0.25, and every
   plist it has written since v0.21 carries the marker.
 - CI runs vet and the race-enabled suite on ubuntu beside macOS.
+- Linux trusts processes with the same user ID; use it only in private
+  single-user VMs, where every process running as you can control or impersonate
+  the daemon.
 
 ## [0.34.0] - 2026-09-01
 
