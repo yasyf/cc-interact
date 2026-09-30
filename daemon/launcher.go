@@ -135,11 +135,10 @@ func reportedBuild(detail []byte) (string, bool) {
 }
 
 // Stop leaves nothing serving at this daemon's label and no LaunchAgent behind
-// it, a pre-0.21 markerless one included. daemonkit runs the whole sequence
-// under the start lock Ensure holds, so a concurrent ensure can neither
-// re-apply the agent this call removed nor lose its own replacement to it, and
-// the agent comes down only once departure is proven. Stopping an already
-// stopped daemon succeeds.
+// it. daemonkit runs the whole sequence under the start lock Ensure holds, so
+// a concurrent ensure can neither re-apply the agent this call removed nor lose
+// its own replacement to it, and the agent comes down only once departure is
+// proven. Stopping an already stopped daemon succeeds.
 //
 // It stops through a Daemon that states no Program, daemonkit's own contract:
 // Stop renders no LaunchAgent and places nothing, so a stated Program only

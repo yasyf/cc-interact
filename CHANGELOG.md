@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Builds on linux. daemonkit moves from v0.23.0 to the `idle-session` head
+  (`a8ebd31ef160`), whose root package no longer imports `launchd` there, so
+  every package now compiles for `GOOS=linux` with `CGO_ENABLED=0`. On linux,
+  `Launcher.EnsureCurrent` starts the daemon through a running
+  `daemonkit.Supervise` for its label and refuses with
+  `supervise.ErrNoSupervisor` when none runs; the consumer binary owns that
+  supervisor. `Launcher.Stop` needs no supervisor: with none running it removes
+  the persisted service record itself. Only `ServingSameUser` trust serves on linux: a `ServingSigned`
+  spec fails at `Open` with `daemonkit.ErrNoVerifier`.
+- `Launcher.Stop` no longer takes down a LaunchAgent plist that lacks
+  daemonkit's ownership marker: daemonkit refuses one since v0.25, and every
+  plist it has written since v0.21 carries the marker.
+- CI runs vet and the race-enabled suite on ubuntu beside macOS.
+
 ## [0.34.0] - 2026-09-01
 
 ### Added
