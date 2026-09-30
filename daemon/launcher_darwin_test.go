@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yasyf/daemonkit"
+	"github.com/yasyf/daemonkit/launchd"
 )
 
 // TestStopRemovesTheAgentWithoutAPlacedProgram drives the interleaving every
@@ -28,7 +29,7 @@ func TestStopRemovesTheAgentWithoutAPlacedProgram(t *testing.T) {
 		Program: program,
 		Trust:   daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	}))
-	plist := writeMarkerlessAgent(t, label)
+	plist := writeMarkedAgent(t, label)
 	if _, err := os.Stat(programPath(label)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("program leaf exists before any Ensure: err = %v", err)
 	}
@@ -44,9 +45,9 @@ func programPath(label string) string {
 	return filepath.Join(os.Getenv("HOME"), ".daemonkit", "bin", label)
 }
 
-// writeMarkerlessAgent installs the plist shape every pre-0.21 install left
-// behind: no ownership marker, the one Stop's removal must still take down.
-func writeMarkerlessAgent(t *testing.T, label string) string {
+// writeMarkedAgent installs a plist carrying daemonkit's ownership marker, the
+// only shape Stop's removal takes down.
+func writeMarkedAgent(t *testing.T, label string) string {
 	t.Helper()
 	dir := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -54,7 +55,8 @@ func writeMarkerlessAgent(t *testing.T, label string) string {
 	}
 	path := filepath.Join(dir, label+".plist")
 	body := `<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict><key>Label</key><string>` + label + `</string></dict></plist>
+<plist version="1.0"><dict><key>Label</key><string>` + label + `</string>
+<key>EnvironmentVariables</key><dict><key>` + launchd.OwnerEnvKey + `</key><string>` + label + `</string></dict></dict></plist>
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
