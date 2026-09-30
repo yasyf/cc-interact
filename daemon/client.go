@@ -21,6 +21,7 @@ var ErrMalformedReply = errors.New("daemon: malformed reply")
 // replaying. Session establishment, retirement, and trust verification are
 // daemonkit's; this type owns only the Envelope/Reply encoding.
 type Client struct {
+	daemon   *daemonkit.Client
 	business *daemonkit.Business
 
 	closeMu  sync.Mutex
@@ -40,7 +41,15 @@ func NewClient(d daemonkit.Daemon) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{business: dk.Business()}, nil
+	return &Client{daemon: dk, business: dk.Business()}, nil
+}
+
+// Reopen opens a fresh business lane on the identity c was opened with, closed
+// or not, so a poller that releases its session each attempt never rebuilds
+// that identity. Every session the new lane acquires still verifies
+// Trust.Serving.
+func (c *Client) Reopen() *Client {
+	return &Client{daemon: c.daemon, business: c.daemon.Business()}
 }
 
 // Close releases the business lane; every later Do is refused. The first

@@ -59,6 +59,21 @@ func waitForSubject(ctx context.Context, connect func(context.Context) (*daemon.
 	}
 }
 
+func reuseIdentity(connect func(context.Context) (*daemon.Client, error)) func(context.Context) (*daemon.Client, error) {
+	var identity *daemon.Client
+	return func(ctx context.Context) (*daemon.Client, error) {
+		if identity != nil {
+			return identity.Reopen(), nil
+		}
+		client, err := connect(ctx)
+		if err != nil {
+			return nil, err
+		}
+		identity = client
+		return client, nil
+	}
+}
+
 // refreshHandshake returns a consume.StreamSource.Refresh that re-resolves the
 // daemon's current HTTP port, so a stream survives an exact-build daemon
 // replacement.

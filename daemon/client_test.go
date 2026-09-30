@@ -239,3 +239,40 @@ func TestDoAbsentDaemonIsProvenAbsent(t *testing.T) {
 		t.Fatalf("Do error = %v, want ErrNoPeer", err)
 	}
 }
+
+// TestReopenSharesIdentityNotLane pins Reopen: the reopened lane reaches the
+// daemon while the closed client it came from still refuses, it shares that
+// client's identity, and a second NewClient resolves its own.
+func TestReopenSharesIdentityNotLane(t *testing.T) {
+	spec := serveStub(t, func(context.Context, daemonkit.Request) (daemonkit.Reply, error) {
+		return daemonkit.Reply{Body: []byte(`{"ok":true}`)}, nil
+	})
+	client, err := NewClient(spec)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened := client.Reopen()
+	t.Cleanup(func() { _ = reopened.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.Do(ctx, Envelope{Op: OpResolve}); !errors.Is(err, daemonkit.ErrLaneClosed) {
+		t.Fatalf("closed client Do = %v, want ErrLaneClosed", err)
+	}
+	if _, err := reopened.Do(ctx, Envelope{Op: OpResolve}); err != nil {
+		t.Fatalf("reopened Do: %v", err)
+	}
+	if reopened.daemon != client.daemon {
+		t.Fatal("Reopen rebuilt the identity")
+	}
+	other, err := NewClient(spec)
+	if err != nil {
+		t.Fatalf("second NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	if other.daemon == client.daemon {
+		t.Fatal("a second NewClient shared the first client's identity")
+	}
+}
