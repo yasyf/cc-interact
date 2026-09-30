@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Builds on linux. daemonkit moves from v0.23.0 to the `linux-runtime` head
+  (`a3d1b3d46a14`), whose root package no longer imports `launchd` there, so
+  every package now compiles for `GOOS=linux` with `CGO_ENABLED=0`. On linux,
+  `Launcher.EnsureCurrent` and `Launcher.Stop` converge the daemon through a
+  running `daemonkit.Supervise` for its label and refuse with
+  `supervise.ErrNoSupervisor` when none runs; the consumer binary owns that
+  supervisor. Only `ServingSameUser` trust serves on linux: a `ServingSigned`
+  spec fails at `Open` with `daemonkit.ErrNoVerifier`.
+- CI runs vet and the race-enabled suite on ubuntu beside macOS.
+
 ## [0.34.0] - 2026-09-01
 
 ### Added

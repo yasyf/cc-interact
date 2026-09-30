@@ -15,8 +15,6 @@ permissions:
 
 # Timeouts kill a wedged test in minutes instead of GitHub's 6-hour cap.
 jobs:
-  # macOS only: daemonkit v0.21 is a macOS library with no !darwin stubs, so
-  # the daemon half no longer compiles — let alone runs — on a linux runner.
   test:
     runs-on: macos-latest
     timeout-minutes: 15
@@ -28,6 +26,27 @@ jobs:
           go-version-file: go.mod
           check-latest: true
           cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+  test-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: go build (static)
+        run: CGO_ENABLED=0 go build ./...
 
       - name: go vet
         run: go vet ./...
