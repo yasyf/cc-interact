@@ -4,8 +4,6 @@ from captain_hook import BaseHookEvent, Event, on
 
 from . import common
 
-# Delete this file if the plugin has no per-turn state.
-
 
 @on(Event.UserPromptSubmit)
 def turn_start(evt: BaseHookEvent) -> None:

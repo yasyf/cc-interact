@@ -12,14 +12,4 @@ BIN = PLUGIN_ROOT / "bin" / "{{BINARY_NAME}}"
 
 
 def call_bin(evt: BaseHookEvent, sub: str, *, timeout: int = 10) -> str | None:
-    if not BIN.exists():
-        return None
-    try:
-        return evt.ctx.call_cli(
-            [str(BIN), sub],
-            input=json.dumps(evt._raw),
-            timeout=timeout,
-            throw=False,
-        )
-    except UnicodeDecodeError:
-        return None
+    return evt.ctx.call_cli([str(BIN), sub], input=json.dumps(evt._raw), timeout=timeout, throw=False)
