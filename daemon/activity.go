@@ -106,6 +106,10 @@ func (a *Activity) NotePoll(scope, consumer string, pid int) {
 	a.polls[pollKey(scope, consumer, pid)] = a.now()
 }
 
+// ResolvePollCeiling is the longest a channel waiting for its subject goes
+// between resolve polls, so a PolledSince window must exceed it.
+const ResolvePollCeiling = 5 * time.Second
+
 // PolledSince reports whether the consumer in that window polled for this scope
 // within window.
 func (a *Activity) PolledSince(scope, consumer string, pid int, window time.Duration) bool {

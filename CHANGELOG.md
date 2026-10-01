@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.2] - 2026-10-01
+
+### Fixed
+
+- `Spec` defaults `Concurrency` to 64. daemonkit's default of 8 business
+  sessions filled whenever enough windows had a channel waiting for a subject,
+  and CLI calls failed with `wire: session capacity exhausted`.
+- A channel waiting for its subject backs off from one resolve poll a second to
+  one every `daemon.ResolvePollCeiling` (5s). Each poll is a fresh daemon
+  session, so 130 idle windows had been opening 130 sessions a second.
+  Presence windows read through `Activity.PolledSince` must exceed the ceiling.
+
 ## [0.35.0] - 2026-09-30
 
 ### Changed

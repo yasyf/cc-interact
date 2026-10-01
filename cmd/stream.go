@@ -34,9 +34,11 @@ func resolveSubject(ctx context.Context, client *daemon.Client, session, scope s
 
 // waitForSubject polls until a subject exists, tolerating a missing daemon — the
 // channel server loads at session start, before either the daemon or the subject
-// is guaranteed up, and lives for the whole window. It returns ("", 0) only when
-// ctx is cancelled.
+// is guaranteed up, and lives for the whole window. Each poll is a fresh daemon
+// session and most windows never start a subject, so the interval doubles up to
+// daemon.ResolvePollCeiling. It returns ("", 0) only when ctx is cancelled.
 func waitForSubject(ctx context.Context, connect func(context.Context) (*daemon.Client, error), session, scope string, claudePID int, consumer string) (subjectID string, port int) {
+	delay := time.Second
 	for {
 		if ctx.Err() != nil {
 			return "", 0
@@ -54,9 +56,14 @@ func waitForSubject(ctx context.Context, connect func(context.Context) (*daemon.
 		select {
 		case <-ctx.Done():
 			return "", 0
-		case <-time.After(time.Second):
+		case <-time.After(delay):
 		}
+		delay = nextResolveDelay(delay)
 	}
+}
+
+func nextResolveDelay(delay time.Duration) time.Duration {
+	return min(2*delay, daemon.ResolvePollCeiling)
 }
 
 func reuseIdentity(connect func(context.Context) (*daemon.Client, error)) func(context.Context) (*daemon.Client, error) {

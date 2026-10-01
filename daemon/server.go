@@ -39,6 +39,7 @@ const handleTimeout = 35 * time.Second
 const (
 	maxPayloadBytes = 64 << 20
 	maxFrameBytes   = (maxPayloadBytes*4+2)/3 + 4<<10
+	maxSessions     = 64
 )
 
 // attachGrace is how recently a subject's last SSE attachment must have dropped

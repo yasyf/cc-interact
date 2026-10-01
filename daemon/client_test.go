@@ -276,3 +276,46 @@ func TestReopenSharesIdentityNotLane(t *testing.T) {
 		t.Fatal("a second NewClient shared the first client's identity")
 	}
 }
+
+// TestSpecAdmitsMoreSessionsThanDaemonkitDefault holds more concurrent client
+// sessions than daemonkit's default of 8 business sessions; under that default
+// the ninth attach fails with ErrSessionCapacity, which is what every idle
+// window's resolve poll did to the CLI.
+func TestSpecAdmitsMoreSessionsThanDaemonkitDefault(t *testing.T) {
+	const sessions = 16
+	var arrived sync.WaitGroup
+	arrived.Add(sessions)
+	allHeld := make(chan struct{})
+	go func() { arrived.Wait(); close(allHeld) }()
+	spec := serveStub(t, func(ctx context.Context, req daemonkit.Request) (daemonkit.Reply, error) {
+		if Op(req.Op) == "hold" {
+			arrived.Done()
+			select {
+			case <-allHeld:
+			case <-ctx.Done():
+				return daemonkit.Reply{}, ctx.Err()
+			}
+		}
+		return daemonkit.Reply{Body: []byte(`{"ok":true}`)}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	errs := make(chan error, sessions)
+	for range sessions {
+		go func() {
+			client, err := NewClient(spec)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer func() { _ = client.Close() }()
+			_, err = client.Do(ctx, Envelope{Op: "hold"})
+			errs <- err
+		}()
+	}
+	for range sessions {
+		if err := <-errs; err != nil {
+			t.Fatalf("hold with %d concurrent sessions: %v", sessions, err)
+		}
+	}
+}
