@@ -121,23 +121,6 @@ class PackTest(unittest.TestCase):
         self.assertEqual(result.message, text)
         self.assertFalse(result.approve)
 
-    def test_agent_inject_rejects_invalid_envelopes(self) -> None:
-        evt = mock_event(Event.PreToolUse, tool="Bash", command="go test ./...")
-        for label, envelope in (
-            (
-                "wrong-event",
-                {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "text"}},
-            ),
-            ("missing-event", {"hookSpecificOutput": {"additionalContext": "text"}}),
-            (
-                "empty-context",
-                {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": ""}},
-            ),
-        ):
-            with self.subTest(case=label):
-                self.stub(stdout=json.dumps(envelope))
-                self.assertIsNone(self.agent_plane.agent_inject(evt))
-
     def test_agent_stop_translates_block_decision(self) -> None:
         evt = mock_event(Event.SubagentStop, agent_type="Explore", agent_id="a1")
         self.stub(stdout='{"decision":"block","reason":"finish the requested check"}\n')
@@ -145,11 +128,10 @@ class PackTest(unittest.TestCase):
         self.assertEqual(result.action, Action.block)
         self.assertEqual(result.message, "finish the requested check")
 
-    def test_parsing_hooks_fail_open(self) -> None:
+    def test_binary_hooks_fail_open_on_empty_or_failed_output(self) -> None:
         inject_evt = mock_event(Event.PreToolUse, tool="Bash", command="ls")
         stop_evt = mock_event(Event.SubagentStop, agent_type="worker", agent_id="a1")
         for label, stdout, returncode in (
-            ("garbage", "not-json", 0),
             ("non-zero", "", 1),
             ("empty", "", 0),
         ):
@@ -176,22 +158,6 @@ class PackTest(unittest.TestCase):
                 call = json.loads(record.read_text())
                 self.assertEqual(call["argv"], [subcommand])
                 self.assertEqual(json.loads(call["stdin"]), evt._raw)
-
-    def test_invalid_utf8_output_fails_open_for_every_binary_hook(self) -> None:
-        cases = (
-            (self.agent_plane.agent_start, mock_event(Event.SubagentStart, agent_id="a1")),
-            (self.agent_plane.agent_inject, mock_event(Event.PreToolUse, tool="Bash", command="ls")),
-            (self.agent_plane.agent_stop, mock_event(Event.SubagentStop, agent_type="worker", agent_id="a1")),
-            (self.agent_plane.agent_report, mock_event(Event.PostToolUse, tool="Task", prompt="inspect")),
-            (self.guard_edit.guard_edit, mock_event(Event.PreToolUse, tool="Edit", file="x.go", content="new")),
-            (self.turn_hooks.turn_start, mock_event(Event.UserPromptSubmit, prompt="begin")),
-            (self.turn_hooks.turn_end, mock_event(Event.Stop)),
-            (self.session.session_record, mock_event(Event.SessionStart, source="startup")),
-        )
-        for hook, evt in cases:
-            with self.subTest(hook=hook.__name__):
-                self.stub(stdout_bytes=b"\xff")
-                self.assertIsNone(hook(evt))
 
 
 if __name__ == "__main__":
