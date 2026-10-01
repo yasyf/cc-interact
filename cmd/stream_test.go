@@ -142,3 +142,18 @@ func TestReuseIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveDelayDoublesToTheCeiling(t *testing.T) {
+	delay := time.Second
+	var got []time.Duration
+	for range 5 {
+		delay = nextResolveDelay(delay)
+		got = append(got, delay)
+	}
+	want := []time.Duration{2 * time.Second, 4 * time.Second, daemon.ResolvePollCeiling, daemon.ResolvePollCeiling, daemon.ResolvePollCeiling}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("delays = %v, want %v", got, want)
+		}
+	}
+}

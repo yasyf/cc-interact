@@ -73,12 +73,18 @@ func TestSpecStampsSchemaAndFrameDefault(t *testing.T) {
 	if spec.Restart != daemonkit.RestartAlways {
 		t.Fatalf("Restart = %v, want RestartAlways for an unstated policy", spec.Restart)
 	}
-	pinned := Spec(daemonkit.Daemon{Label: "cci-spec-test", MaxFrame: 256, Restart: daemonkit.RestartOnFailure})
+	if spec.Concurrency != maxSessions {
+		t.Fatalf("Concurrency = %d, want %d", spec.Concurrency, maxSessions)
+	}
+	pinned := Spec(daemonkit.Daemon{Label: "cci-spec-test", MaxFrame: 256, Restart: daemonkit.RestartOnFailure, Concurrency: 4})
 	if pinned.MaxFrame != 256 {
 		t.Fatalf("MaxFrame = %d, want the caller's 256", pinned.MaxFrame)
 	}
 	if pinned.Restart != daemonkit.RestartOnFailure {
 		t.Fatalf("Restart = %v, want the caller's RestartOnFailure", pinned.Restart)
+	}
+	if pinned.Concurrency != 4 {
+		t.Fatalf("Concurrency = %d, want the caller's 4", pinned.Concurrency)
 	}
 }
 

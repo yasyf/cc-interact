@@ -22,11 +22,17 @@ import (
 // this same value, so the schema and every trust lane are declared exactly
 // once. An unstated Restart becomes RestartAlways — a cc-interact daemon
 // launchd never relaunches leaves every hook and CLI cold-starting it — and a
-// consumer that states RestartOnFailure keeps it.
+// consumer that states RestartOnFailure keeps it. An unstated Concurrency
+// becomes maxSessions: every window's channel dials the daemon while it waits
+// for a subject, and daemonkit's default of 8 business sessions lets those dials
+// crowd every CLI call out with ErrSessionCapacity.
 func Spec(d daemonkit.Daemon) daemonkit.Daemon {
 	d.Schemas = []daemonkit.Schema{WireBuild}
 	if d.MaxFrame == 0 {
 		d.MaxFrame = maxFrameBytes
+	}
+	if d.Concurrency == 0 {
+		d.Concurrency = maxSessions
 	}
 	if d.Restart == daemonkit.RestartNever {
 		d.Restart = daemonkit.RestartAlways
