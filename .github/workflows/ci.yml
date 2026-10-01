@@ -104,7 +104,7 @@ jobs:
             RELEASE_REPO=yasyf/echo-demo MCP_SUBCOMMAND=channel SKILL_NAME=start
 
       - name: Validate and test hook pack
-        run: uvx --isolated --from 'capt-hook>=12.72.0' capt-hook pack test "$RUNNER_TEMP/pack-smoke"
+        run: uvx --isolated --from 'capt-hook>=12.74.0' capt-hook pack test "$RUNNER_TEMP/pack-smoke"
 
       - name: Test hook contracts
         run: uv run "$RUNNER_TEMP/pack-smoke/capt-hook/hooks/tests/test_pack.py"
