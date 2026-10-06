@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.3] - 2026-10-06
+
 ### Fixed
 
 - A fresh `Resolver.Start` closes and detaches only the subject bound to its
