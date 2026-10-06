@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A fresh `Resolver.Start` closes and detaches only the subject bound to its
+  exact (session, scope). It had fallen back to the window pid, so a subagent's
+  `start --new` under a throwaway session id closed the parent window's open
+  review and left the parent's session resolving to the subagent's subject.
+
 ## [0.35.2] - 2026-10-01
 
 ### Fixed

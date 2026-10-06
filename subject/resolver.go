@@ -33,11 +33,13 @@ func (rs Resolver) Find(ctx context.Context, w Window, scope string) (Subject, b
 //
 // A start never adopts another window's subject: ownership is per-window, so a
 // review a different session opened is left untouched. fresh=true closes (status
-// lc.Closed) and detaches the window's own subject (rows 1–2), then creates. slug
-// is the precomputed name a freshly created subject takes.
+// lc.Closed) and detaches only the exact (session, scope) binding (row 1), then
+// creates: a fresh start under another session id never closes the subject its
+// pid shares, such as a parent window's open review. slug is the precomputed name
+// a freshly created subject takes.
 func (rs Resolver) Start(ctx context.Context, w Window, scope, slug string, lc Lifecycle, fresh bool) (Subject, bool, error) {
 	if fresh {
-		if s, ok, err := rs.Find(ctx, w, scope); err != nil {
+		if s, ok, err := rs.Store.FindBySessionScope(ctx, w.Session, scope); err != nil {
 			return Subject{}, false, err
 		} else if ok {
 			if err := rs.Store.SetStatus(ctx, s.ID, lc.Closed); err != nil {

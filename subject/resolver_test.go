@@ -281,6 +281,28 @@ func TestStart(t *testing.T) {
 			},
 		},
 		{
+			name: "fresh under another session id never closes the pid's open review",
+			seed: func(t *testing.T, ctx context.Context, _ Resolver, f *fakeStore) Subject {
+				return seedSubject(t, ctx, f, "sParent", 100, "open")
+			},
+			w:     Window{Session: "sChild", ClaudePID: 100},
+			fresh: true,
+			after: func(t *testing.T, ctx context.Context, f *fakeStore, seeded, got Subject) {
+				if s, _ := f.Get(ctx, seeded.ID); s.Status != "open" {
+					t.Fatalf("parent status = %q, want open", s.Status)
+				}
+				if sess, pid := bindingOf(t, ctx, f, seeded.ID); sess != "sParent" || pid != 100 {
+					t.Fatalf("parent binding = %s/%d, want sParent/100", sess, pid)
+				}
+				if s, ok, _ := f.FindBySessionScope(ctx, "sParent", repo); !ok || s.ID != seeded.ID {
+					t.Fatal("parent session no longer resolves to its review")
+				}
+				if got.SessionID != "sChild" || got.ClaudePID != 100 {
+					t.Fatalf("created %s/%d, want sChild/100", got.SessionID, got.ClaudePID)
+				}
+			},
+		},
+		{
 			name: "fresh with another window's open review still creates its own",
 			seed: func(t *testing.T, ctx context.Context, _ Resolver, f *fakeStore) Subject {
 				return seedSubject(t, ctx, f, "sA", 100, "open")
