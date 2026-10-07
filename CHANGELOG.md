@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `vcs.DiffRange` diffs two commits in a worktree or bare repository and parses
+  the changed files into a `StackSection`. In a blobless partial clone, git
+  fetches only the changed files' blobs. `CaptureStack` builds each branch
+  section with it.
+
 ## [0.35.3] - 2026-10-06
 
 ### Fixed
