@@ -42,7 +42,7 @@ daemon.Config{
 }
 ```
 
-The `guard-edit` hook routes every edit the Claude session attempts through this verdict. While the subject is open, Claude sees your reason instead of a completed write. Errors reading the subject fail closed (`GateErrorReason`), and a missing daemon fails open, so a crashed daemon never bricks the session.
+The `guard-edit` hook routes every edit the Claude session attempts through this verdict. It finds the subject in the scope of the file being edited, not the session's working directory, so an open subject blocks edits inside its own scope and leaves files elsewhere alone. While the subject is open, Claude sees your reason instead of a completed write. Errors reading the subject fail closed (`GateErrorReason`), and a missing daemon fails open, so a crashed daemon never bricks the session.
 
 ### Feed one gap-free event log to the browser and the agent alike
 

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/yasyf/cc-interact/subject"
@@ -28,12 +29,10 @@ func gateConfig(observed *[]bool) Config {
 func TestGuardEditBlocksOpenSubject(t *testing.T) {
 	var observed []bool
 	s := newTestServer(t, gateConfig(&observed))
-	seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 4242, "open")
+	scopeA := t.TempDir()
+	seedSubject(t, s, "id1", "slug1", "sess1", scopeA, 4242, "open")
 
-	body, _ := json.Marshal(guardEditBody{ToolName: "Edit", ToolInput: json.RawMessage(`{"file_path":"x.go"}`)})
-	r := s.dispatch(context.Background(), Envelope{
-		Op: OpGuardEdit, Scope: "scopeA", Session: "sess1", ClaudePID: 4242, Body: body,
-	})
+	r := s.dispatch(context.Background(), guardEnv(scopeA, "Edit", filepath.Join(scopeA, "x.go")))
 	if !r.OK || r.Allow || r.Reason == "" {
 		t.Fatalf("guard-edit on open subject = %+v, want block with reason", r)
 	}
@@ -83,5 +82,50 @@ func TestGuardEditFailsClosedOnResolveError(t *testing.T) {
 	})
 	if !r.OK || r.Allow || r.Reason != "fail-closed: status unreadable" {
 		t.Fatalf("guard-edit on resolve error = %+v, want fail-closed block", r)
+	}
+}
+
+func guardEnv(cwd, tool, path string) Envelope {
+	input, _ := json.Marshal(map[string]string{"file_path": path})
+	body, _ := json.Marshal(guardEditBody{ToolName: tool, ToolInput: input})
+	return Envelope{Op: OpGuardEdit, Scope: cwd, Session: "sess1", ClaudePID: 4242, Body: body}
+}
+
+func TestGuardEditScopesToEditedFile(t *testing.T) {
+	var observed []bool
+	s := newTestServer(t, gateConfig(&observed))
+	scopeA, scopeB := t.TempDir(), t.TempDir()
+	seedSubject(t, s, "id1", "slug1", "sess1", scopeA, 4242, "open")
+	ctx := context.Background()
+
+	if r := s.dispatch(ctx, guardEnv(scopeA, "Write", filepath.Join(scopeB, "x.go"))); !r.OK || !r.Allow {
+		t.Fatalf("write outside the subject's scope = %+v, want allow", r)
+	}
+	if r := s.dispatch(ctx, guardEnv(scopeB, "Write", filepath.Join(scopeA, "x.go"))); r.Allow {
+		t.Fatalf("write into the subject's scope from another cwd = %+v, want block", r)
+	}
+	if r := s.dispatch(ctx, guardEnv(scopeA, "Write", filepath.Join(scopeA, "new", "deep", "x.go"))); r.Allow {
+		t.Fatalf("write into a new directory under the subject's scope = %+v, want block", r)
+	}
+	if len(observed) != 2 {
+		t.Fatalf("GateObserve = %v, want two blocks and nothing for the out-of-scope write", observed)
+	}
+}
+
+func TestEditDir(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{`{"file_path":"` + filepath.Join(root, "x.go") + `"}`, root},
+		{`{"file_path":"` + filepath.Join(root, "a", "b", "x.go") + `"}`, root},
+		{`{"notebook_path":"` + filepath.Join(root, "n.ipynb") + `"}`, root},
+		{`{"command":"ls"}`, ""},
+	}
+	for _, c := range cases {
+		if got := EditDir(json.RawMessage(c.input)); got != c.want {
+			t.Errorf("EditDir(%s) = %q, want %q", c.input, got, c.want)
+		}
 	}
 }
