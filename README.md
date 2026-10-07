@@ -84,6 +84,7 @@ One process model, shipped. A launchd-managed daemon owns a single-writer SQLite
 | `subject` | ownership, one subject per window and scope, stable across `/clear` and compaction |
 | `paths` | the `~/.<app>` state layout of socket, DB, HTTP handshake, and locks |
 | `vcs` | optional git/jj working-copy snapshots and the per-prompt turn ledger |
+| `tailnet` | optional serving on the daemon's own tailnet addresses, with synckit mesh trust, `tailscale cert` TLS, and printable tailnet URLs |
 
 ## The browser UI is opt-in
 
