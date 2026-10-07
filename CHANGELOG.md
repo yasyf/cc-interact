@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-10-07
+
+### Added
+
+- `tailnet.NewServer` builds a daemon that serves its HTTP plane on the
+  machine's own tailnet addresses when given a `meshtrust.Provider`. It trusts
+  synckit mesh peers and the daemon's own MagicDNS origins, serves TLS and
+  plaintext on one port per address, mints a `tailscale cert` under the state
+  dir, and binds addresses that appear after boot. A nil provider builds the
+  daemon unchanged.
+- `Tailnet.URLs` renders the tailnet URLs for a path on the daemon: https on
+  the cert domain once minted, else http on the machine label or raw
+  addresses. The code moves here from cc-present so cc-review can share it.
+
 ## [0.35.4] - 2026-10-06
 
 ### Added
