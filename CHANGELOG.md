@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.2] - 2026-10-07
+
+### Fixed
+
+- Captured patches keep `a/` and `b/` headers and repo-relative paths whatever
+  your git config sets. `Capture`, `CaptureAt`, `CaptureStack`,
+  `DiffRange`, and the git `TreeDiffer` pass `--src-prefix=a/ --dst-prefix=b/
+  --no-relative --no-textconv --no-ext-diff --no-color` and override
+  `diff.suppressBlankEmpty`. Before, `diff.mnemonicPrefix` produced `c/` and `i/`
+  headers, `diff.noprefix` dropped the prefixes, and `diff.relative` cut paths
+  down to the working directory, so diff parsers rejected or misplaced the
+  files.
+
 ## [0.36.1] - 2026-10-07
 
 ### Fixed

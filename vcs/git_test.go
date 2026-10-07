@@ -369,3 +369,103 @@ func TestCaptureAt(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNoChanges when the worktree matches the pin", err)
 	}
 }
+
+const hostileDiffConfig = `[diff]
+	mnemonicPrefix = true
+	noprefix = true
+	relative = true
+	suppressBlankEmpty = true
+	external = false
+[diff "upper"]
+	textconv = tr a-z A-Z
+[color]
+	ui = always
+	diff = always
+`
+
+func hostileGitConfig(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(path, []byte(hostileDiffConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", path)
+}
+
+func assertPinnedPatch(t *testing.T, patch string) {
+	t.Helper()
+	if strings.Contains(patch, "\x1b[") {
+		t.Fatalf("patch carries color escapes:\n%q", patch)
+	}
+	headers := 0
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			headers++
+			if !strings.HasPrefix(line, "diff --git a/") || !strings.Contains(line, " b/") {
+				t.Fatalf("header %q lacks a/ b/ prefixes:\n%s", line, patch)
+			}
+		case strings.HasPrefix(line, "--- "):
+			if !strings.HasPrefix(line, "--- a/") && line != "--- /dev/null" {
+				t.Fatalf("old-file line %q lacks the a/ prefix:\n%s", line, patch)
+			}
+		case strings.HasPrefix(line, "+++ "):
+			if !strings.HasPrefix(line, "+++ b/") && line != "+++ /dev/null" {
+				t.Fatalf("new-file line %q lacks the b/ prefix:\n%s", line, patch)
+			}
+		}
+	}
+	if headers == 0 {
+		t.Fatalf("patch has no diff --git headers:\n%s", patch)
+	}
+}
+
+func TestPatchesIgnoreUserDiffConfig(t *testing.T) {
+	hostileGitConfig(t)
+	dir := newRepo(t)
+	if got := strings.TrimSpace(gitInit(t, dir, "config", "--get", "diff.mnemonicPrefix")); got != "true" {
+		t.Fatalf("diff.mnemonicPrefix = %q, want the test-scoped global config applied", got)
+	}
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, ".gitattributes", "*.txt diff=upper\n")
+	write(t, sub, "notes.txt", "one\n\ntwo\n")
+	gitInit(t, dir, "add", "-A")
+	gitInit(t, dir, "commit", "-qm", "init")
+	base := strings.TrimSpace(gitInit(t, dir, "rev-parse", "HEAD"))
+	write(t, sub, "notes.txt", "one\n\nthree\n")
+
+	snap, err := Capture(context.Background(), sub, "")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	assertPinnedPatch(t, snap.PatchText)
+	if len(snap.Files) != 1 || snap.Files[0].Path != "sub/notes.txt" {
+		t.Fatalf("files = %+v, want the repo-relative sub/notes.txt", snap.Files)
+	}
+	for _, want := range []string{"\n \n", "+three\n"} {
+		if !strings.Contains(snap.PatchText, want) {
+			t.Fatalf("patch missing %q:\n%s", want, snap.PatchText)
+		}
+	}
+
+	at, err := CaptureAt(context.Background(), sub, base)
+	if err != nil {
+		t.Fatalf("capture at %s: %v", base, err)
+	}
+	assertPinnedPatch(t, at.PatchText)
+
+	gitInit(t, dir, "add", "-A")
+	gitInit(t, dir, "commit", "-qm", "edit")
+	head := strings.TrimSpace(gitInit(t, dir, "rev-parse", "HEAD"))
+	r, err := DiffRange(context.Background(), sub, base, head)
+	if err != nil {
+		t.Fatalf("DiffRange: %v", err)
+	}
+	assertPinnedPatch(t, r.PatchText)
+	if len(r.Files) != 1 || r.Files[0].Path != "sub/notes.txt" {
+		t.Fatalf("range files = %+v, want the repo-relative sub/notes.txt", r.Files)
+	}
+}

@@ -90,7 +90,7 @@ func gitCapture(ctx context.Context, cwd, baseRef string) (Snapshot, error) {
 	}
 	defer cleanup()
 
-	patch, err := git(ctx, cwd, env, "diff", "--cached", "--no-color", "--no-ext-diff", base)
+	patch, err := gitPatch(ctx, cwd, env, "diff", "--cached", base)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("diff working tree: %w", err)
 	}
@@ -109,7 +109,7 @@ func gitCapture(ctx context.Context, cwd, baseRef string) (Snapshot, error) {
 			return Snapshot{}, err
 		}
 		// The throwaway index is already staged; only the base changes.
-		if patch, err = git(ctx, cwd, env, "diff", "--cached", "--no-color", "--no-ext-diff", base); err != nil {
+		if patch, err = gitPatch(ctx, cwd, env, "diff", "--cached", base); err != nil {
 			return Snapshot{}, fmt.Errorf("diff against trunk %s: %w", trunk, err)
 		}
 		if strings.TrimSpace(patch) == "" {
@@ -131,7 +131,7 @@ func gitCaptureAt(ctx context.Context, cwd, base string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	defer cleanup()
-	patch, err := git(ctx, cwd, env, "diff", "--cached", "--no-color", "--no-ext-diff", base)
+	patch, err := gitPatch(ctx, cwd, env, "diff", "--cached", base)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("diff against base %s: %w", base, err)
 	}
@@ -217,6 +217,12 @@ func gitSnapshot(repoRoot, branch, base, patch string) (Snapshot, error) {
 		PatchText: patch,
 		Files:     files,
 	}, nil
+}
+
+func gitPatch(ctx context.Context, cwd string, env []string, subcommand string, args ...string) (string, error) {
+	argv := []string{"-c", "diff.suppressBlankEmpty=false", subcommand,
+		"--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/"}
+	return git(ctx, cwd, env, append(argv, args...)...)
 }
 
 func git(ctx context.Context, cwd string, extraEnv []string, args ...string) (string, error) {

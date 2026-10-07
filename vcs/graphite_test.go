@@ -401,6 +401,23 @@ func TestCaptureStackDirtyTree(t *testing.T) {
 	}
 }
 
+func TestCaptureStackIgnoresUserDiffConfig(t *testing.T) {
+	hostileGitConfig(t)
+	dir := linearStack(t)
+	write(t, dir, "c.txt", "c\nmore\n")
+
+	snap, err := CaptureStack(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if len(snap.Sections) != 4 {
+		t.Fatalf("sections = %d, want 3 stack + 1 pending", len(snap.Sections))
+	}
+	for _, s := range snap.Sections {
+		assertPinnedPatch(t, s.PatchText)
+	}
+}
+
 func TestCaptureStackNoChanges(t *testing.T) {
 	dir := stackTrunk(t)
 	branchOnly(t, dir, "a", "main")
