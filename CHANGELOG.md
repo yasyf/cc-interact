@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the changed files into a `StackSection`. In a blobless partial clone, git
   fetches only the changed files' blobs. `CaptureStack` builds each branch
   section with it.
+- `daemon.Server.ViewerConnected` reports whether a browser has an anonymous
+  `/events` stream open on a subject. `Activity` counts these streams per
+  subject, and `sse.Backend` gains `AttachViewer`, which `handleEvents` calls
+  for every stream that names no consumer.
 
 ## [0.35.3] - 2026-10-06
 

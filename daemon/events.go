@@ -60,6 +60,18 @@ func (s *Server) ConsumerConnected(subjectID string) bool {
 	return s.activity.AttachedWithin(subjectID, attachGrace)
 }
 
+// AttachViewer registers an anonymous (browser) SSE stream for a subject and
+// returns its detach. Satisfies sse.Backend.
+func (s *Server) AttachViewer(subjectID string) func() {
+	return s.activity.AttachViewer(subjectID)
+}
+
+// ViewerConnected reports whether any anonymous (browser) SSE stream is open on
+// the subject, so a consumer can poll faster while someone is watching.
+func (s *Server) ViewerConnected(subjectID string) bool {
+	return s.activity.Viewing(subjectID)
+}
+
 // InjectEvent writes a one-shot, non-persisted frame to the subject's attached
 // (consumer, pid) streams, bypassing the event log — no other consumer sees it
 // and a reconnect can never replay it. For solicited signals like a delivery

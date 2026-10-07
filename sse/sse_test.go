@@ -28,6 +28,7 @@ type fakeBackend struct {
 	events    map[string][]event.Event // by canonical subject id
 	bus       *event.Bus
 	connected bool
+	viewers   int
 	attached  chan string
 	detached  chan string
 }
@@ -100,6 +101,23 @@ func (b *fakeBackend) ConsumerConnected(string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.connected
+}
+
+func (b *fakeBackend) AttachViewer(string) func() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.viewers++
+	return func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.viewers--
+	}
+}
+
+func (b *fakeBackend) viewerCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.viewers
 }
 
 func startServer(t *testing.T, b *fakeBackend, cfg Config) *httptest.Server {
@@ -604,6 +622,17 @@ func TestEventsBrowserConsumerNotRegistered(t *testing.T) {
 	case got := <-b.attached:
 		t.Fatalf("browser connection (no consumer param) was registered as %q", got)
 	default:
+	}
+	if n := b.viewerCount(); n != 1 {
+		t.Fatalf("viewers = %d with a browser stream open, want 1", n)
+	}
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for b.viewerCount() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("viewers = %d after the browser stream closed, want 0", b.viewerCount())
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
