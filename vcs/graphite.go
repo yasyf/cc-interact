@@ -151,7 +151,7 @@ func CaptureStack(ctx context.Context, cwd string) (StackSnapshot, error) {
 		return StackSnapshot{}, err
 	}
 	defer cleanup()
-	pending, err := git(ctx, cwd, env, "diff", "--cached", "--no-color", "--no-ext-diff", tips[current])
+	pending, err := gitPatch(ctx, cwd, env, "diff", "--cached", tips[current])
 	if err != nil {
 		return StackSnapshot{}, fmt.Errorf("diff working tree: %w", err)
 	}
@@ -184,7 +184,7 @@ func CaptureStack(ctx context.Context, cwd string) (StackSnapshot, error) {
 // DiffRange diffs head against base in dir, a worktree or bare repository, and
 // parses its files, leaving Branch and ParentBranch for the caller to fill.
 func DiffRange(ctx context.Context, dir, base, head string) (StackSection, error) {
-	patch, err := git(ctx, dir, nil, "diff", "--no-color", "--no-ext-diff", base, head)
+	patch, err := gitPatch(ctx, dir, nil, "diff", base, head)
 	if err != nil {
 		return StackSection{}, err
 	}

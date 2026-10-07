@@ -181,7 +181,7 @@ func (d gitTreeDiffer) Diff(ctx context.Context, fromOID, toOID string) (string,
 	if err != nil {
 		return "", err
 	}
-	out, err := git(ctx, d.repoRoot, scratch.env, "diff-tree", "-r", "-M", "--no-color", "--patch", fromOID, toOID)
+	out, err := gitPatch(ctx, d.repoRoot, scratch.env, "diff-tree", "-r", "-M", "--patch", fromOID, toOID)
 	if err != nil {
 		return "", fmt.Errorf("diff trees %s..%s: %w", fromOID, toOID, err)
 	}

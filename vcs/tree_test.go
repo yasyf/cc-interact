@@ -94,6 +94,24 @@ func TestGitTreeSnapshotAndDiff(t *testing.T) {
 	}
 }
 
+func TestGitTreeDiffIgnoresUserDiffConfig(t *testing.T) {
+	hostileGitConfig(t)
+	dir := newRepo(t)
+	write(t, dir, "tracked.go", "package a\n")
+	gitInit(t, dir, "add", "-A")
+	gitInit(t, dir, "commit", "-qm", "init")
+	scratch := t.TempDir()
+	refA := snapshotTree(t, dir, scratch)
+	write(t, dir, "tracked.go", "package a\nfunc Edited() {}\n")
+	refB := snapshotTree(t, dir, scratch)
+
+	patch, err := NewTreeDiffer(dir, scratch, refA.Backend).Diff(context.Background(), refA.OID, refB.OID)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	assertPinnedPatch(t, patch)
+}
+
 func TestGitTreeSnapshotReseedsCorruptIndex(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, "a.go", "package a\n")
