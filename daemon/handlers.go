@@ -106,20 +106,23 @@ type guardEditBody struct {
 	ToolInput json.RawMessage `json:"tool_input"`
 }
 
-// handleGuardEdit is the edit-gate mechanism: resolve the subject; no subject
-// means nothing to guard (allow); a resolve error fails closed (block with the
-// configured reason) rather than silently permit; otherwise the injected Gate
-// renders the verdict, GateObserve records it, and the reply carries Allow/Reason.
+// handleGuardEdit finds the subject in the edited file's scope, or the
+// envelope's when the input names no file. No subject allows, a resolve error
+// fails closed, and otherwise the injected Gate renders the verdict.
 func (s *Server) handleGuardEdit(hc HandlerCtx) Reply {
-	sub, ok, err := hc.Subjects.Find(hc.Ctx, hc.Window, hc.Scope)
+	var b guardEditBody
+	_ = json.Unmarshal(hc.Env.Body, &b)
+	scope := hc.Scope
+	if dir := EditDir(b.ToolInput); dir != "" {
+		scope = s.scopeResolve(hc.Ctx, dir)
+	}
+	sub, ok, err := hc.Subjects.Find(hc.Ctx, hc.Window, scope)
 	if err != nil {
 		return Reply{OK: true, Allow: false, Reason: s.gateErrorReason}
 	}
 	if !ok {
 		return Reply{OK: true, Allow: true}
 	}
-	var b guardEditBody
-	_ = json.Unmarshal(hc.Env.Body, &b)
 	tool := ToolCall{Name: b.ToolName, Input: b.ToolInput}
 	allow, reason := true, ""
 	if s.gate != nil {

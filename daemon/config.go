@@ -57,7 +57,7 @@ func validateSchemas(d daemonkit.Daemon) error {
 type AppendFunc func(ctx context.Context, e *event.Event) (int64, error)
 
 // ToolCall is the edit-guard's view of a PreToolUse call: the tool name plus its
-// raw, un-interpreted input. The gate decides; this package never parses Input.
+// raw input. The gate decides; the guard reads only the edited file's path.
 type ToolCall struct {
 	Name  string
 	Input json.RawMessage
@@ -99,11 +99,9 @@ type Config struct {
 	// resumable across session rotation (cc-review: {"open"}).
 	ActiveStatuses []string
 
-	// ScopeResolve canonicalizes the envelope's raw Scope once per RPC, so
-	// handlers see a resolved Scope. It is canonicalization, not authorization:
-	// return the raw value when there is no canonical form (cc-review: vcs.Root,
-	// else the cwd as given) — resolution never rejects a request, and handlers
-	// own their own scope preconditions. nil is the identity.
+	// ScopeResolve canonicalizes the envelope's scope or guard-edit's file
+	// directory, returning it unchanged when it has no canonical form. nil is
+	// the identity.
 	ScopeResolve func(ctx context.Context, raw string) string
 
 	// Gate is the edit-guard verdict (cc-review: block while a review is open).

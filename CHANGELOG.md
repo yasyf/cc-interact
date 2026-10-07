@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-10-07
+
+### Fixed
+
+- `guard-edit` finds the subject in the edited file's scope instead of the
+  hook's working directory. The daemon passes the nearest existing directory
+  above `file_path` or `notebook_path` through `ScopeResolve`, and falls back to
+  the envelope's scope only when the tool input names no file. Before, a
+  session whose working directory sat in a repo under review had every edit
+  blocked, even in other repos. Edits outside the subject's scope now pass, and
+  a `Write` that creates new directories inside it still blocks.
+
+### Added
+
+- `daemon.ToolFilePath` returns the file an `Edit`, `Write`, or `NotebookEdit` input
+  names, and `daemon.EditDir` returns the nearest existing directory above it.
+
 ## [0.36.0] - 2026-10-07
 
 ### Added
