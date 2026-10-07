@@ -637,3 +637,87 @@ func TestStackBranches(t *testing.T) {
 		})
 	}
 }
+
+func rangeRemote(t *testing.T) (bare, base, head string) {
+	t.Helper()
+	dir := newRepo(t)
+	write(t, dir, "a.txt", "one\n")
+	write(t, dir, "keep.txt", "untouched\n")
+	gitInit(t, dir, "add", "-A")
+	gitInit(t, dir, "commit", "-q", "-m", "base")
+	base = strings.TrimSpace(gitInit(t, dir, "rev-parse", "HEAD"))
+	write(t, dir, "a.txt", "two\n")
+	write(t, dir, "b.txt", "new\n")
+	gitInit(t, dir, "add", "-A")
+	gitInit(t, dir, "commit", "-q", "-m", "head")
+	head = strings.TrimSpace(gitInit(t, dir, "rev-parse", "HEAD"))
+	bare = filepath.Join(t.TempDir(), "remote.git")
+	gitInit(t, dir, "clone", "-q", "--bare", dir, bare)
+	return bare, base, head
+}
+
+func assertRange(t *testing.T, s StackSection, base, head string) {
+	t.Helper()
+	if s.BaseRef != base || s.HeadRef != head || s.Branch != "" || s.ParentBranch != "" || s.Pending {
+		t.Fatalf("section = %+v, want base %s head %s and no branch", s, base, head)
+	}
+	got := map[string]string{}
+	for _, f := range s.Files {
+		got[f.Path] = f.Status
+	}
+	if len(got) != 2 || got["a.txt"] != "M" || got["b.txt"] != "A" {
+		t.Fatalf("files = %+v, want a.txt M and b.txt A", s.Files)
+	}
+	if !strings.Contains(s.PatchText, "+two") || !strings.Contains(s.PatchText, "+new") {
+		t.Fatalf("patch missing changed content:\n%s", s.PatchText)
+	}
+}
+
+func TestDiffRangeBareRepo(t *testing.T) {
+	bare, base, head := rangeRemote(t)
+	s, err := DiffRange(context.Background(), bare, base, head)
+	if err != nil {
+		t.Fatalf("DiffRange: %v", err)
+	}
+	assertRange(t, s, base, head)
+}
+
+func TestDiffRangeBloblessCloneFetchesChangedBlobs(t *testing.T) {
+	remote, base, head := rangeRemote(t)
+	gitInit(t, remote, "config", "uploadpack.allowFilter", "true")
+	store := filepath.Join(t.TempDir(), "store.git")
+	gitInit(t, remote, "clone", "-q", "--bare", "--no-local", "--filter=blob:none", "file://"+remote, store)
+	missing := func() map[string]bool {
+		out := gitInit(t, store, "rev-list", "--objects", "--missing=print", "--all")
+		m := map[string]bool{}
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(line, "?") {
+				m[line[1:]] = true
+			}
+		}
+		return m
+	}
+	blob := func(rev, path string) string {
+		return strings.TrimSpace(gitInit(t, remote, "rev-parse", rev+":"+path))
+	}
+	before := missing()
+	for _, b := range []string{blob(base, "a.txt"), blob(head, "a.txt"), blob(head, "b.txt"), blob(head, "keep.txt")} {
+		if !before[b] {
+			t.Fatalf("blob %s present before diff; clone is not blobless (missing %v)", b, before)
+		}
+	}
+	s, err := DiffRange(context.Background(), store, base, head)
+	if err != nil {
+		t.Fatalf("DiffRange: %v", err)
+	}
+	assertRange(t, s, base, head)
+	after := missing()
+	for _, b := range []string{blob(base, "a.txt"), blob(head, "a.txt"), blob(head, "b.txt")} {
+		if after[b] {
+			t.Fatalf("changed blob %s still missing after diff", b)
+		}
+	}
+	if !after[blob(head, "keep.txt")] {
+		t.Fatalf("unchanged blob keep.txt was fetched")
+	}
+}

@@ -134,26 +134,16 @@ func CaptureStack(ctx context.Context, cwd string) (StackSnapshot, error) {
 		if err != nil {
 			return StackSnapshot{}, fmt.Errorf("merge-base of %q and %q: %w", parent, b, err)
 		}
-		baseRef := strings.TrimSpace(base)
-		patch, err := git(ctx, cwd, nil, "diff", "--no-color", "--no-ext-diff", baseRef, tips[b])
+		section, err := DiffRange(ctx, cwd, strings.TrimSpace(base), tips[b])
 		if err != nil {
 			return StackSnapshot{}, fmt.Errorf("diff %q against %q: %w", b, parent, err)
 		}
-		files, err := parseFiles(patch)
-		if err != nil {
-			return StackSnapshot{}, err
-		}
-		if strings.TrimSpace(patch) != "" {
+		if strings.TrimSpace(section.PatchText) != "" {
 			anyNonEmpty = true
 		}
-		sections = append(sections, StackSection{
-			Branch:       b,
-			ParentBranch: parent,
-			BaseRef:      baseRef,
-			HeadRef:      tips[b],
-			PatchText:    patch,
-			Files:        files,
-		})
+		section.Branch = b
+		section.ParentBranch = parent
+		sections = append(sections, section)
 	}
 
 	env, cleanup, err := gitStage(ctx, cwd)
@@ -189,6 +179,20 @@ func CaptureStack(ctx context.Context, cwd string) (StackSnapshot, error) {
 		Branch:   current,
 		Sections: sections,
 	}, nil
+}
+
+// DiffRange diffs head against base in dir, a worktree or bare repository, and
+// parses its files, leaving Branch and ParentBranch for the caller to fill.
+func DiffRange(ctx context.Context, dir, base, head string) (StackSection, error) {
+	patch, err := git(ctx, dir, nil, "diff", "--no-color", "--no-ext-diff", base, head)
+	if err != nil {
+		return StackSection{}, err
+	}
+	files, err := parseFiles(patch)
+	if err != nil {
+		return StackSection{}, err
+	}
+	return StackSection{BaseRef: base, HeadRef: head, PatchText: patch, Files: files}, nil
 }
 
 // graphiteCommonDir resolves the git common dir (shared across worktrees, unlike

@@ -60,6 +60,10 @@ type Backend interface {
 	// ConsumerConnected reports whether a live named consumer is currently wired
 	// to the subject. It gates the presence-change transitions.
 	ConsumerConnected(subjectID string) bool
+
+	// AttachViewer records one open anonymous (browser) SSE connection and
+	// returns its detach.
+	AttachViewer(subjectID string) func()
 }
 
 // Config tunes the server. The zero value is valid: no presence emission, the
@@ -168,8 +172,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	excludeOrigin := r.URL.Query().Get("exclude_origin")
 	// Named stream consumers (the agent's Monitor, the MCP channel) register their
-	// presence with their window pid; a browser sends neither param and is never
-	// registered. An absent claude_pid is a pid-less manual consumer (0), not an
+	// presence with their window pid; a browser sends neither param and counts as
+	// an anonymous viewer instead. An absent claude_pid is a pid-less manual consumer (0), not an
 	// error; garbage is.
 	consumer := r.URL.Query().Get("consumer")
 	pid := 0
@@ -210,6 +214,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		// inject channel stays nil, which never fires in the select.
 		inject = s.attachInject(injectKey{subjectID, consumer, pid})
 		defer s.detachInject(injectKey{subjectID, consumer, pid}, inject)
+	} else {
+		defer s.backend.AttachViewer(subjectID)()
 	}
 
 	h := w.Header()

@@ -7,8 +7,8 @@ import (
 )
 
 // Activity tracks which stream consumers are wired to a subject: live SSE
-// attachments (per subject, keyed by consumer name + window pid) and recent
-// resolve polls (per scope, same key). It is how a domain handler can report a
+// attachments (per subject, keyed by consumer name + window pid), anonymous
+// browser streams (per subject), and recent resolve polls (per scope, same key). It is how a domain handler can report a
 // consumer's presence without blocking on one (e.g. a status connected readout).
 // proven records windows whose model acked a delivered channel tag; proof lasts
 // the daemon's lifetime — pid-recycle inheritance is accepted because active
@@ -16,6 +16,7 @@ import (
 type Activity struct {
 	mu       sync.Mutex
 	attached map[string]map[attachKey]int
+	viewers  map[string]int
 	lastDrop map[string]time.Time
 	polls    map[string]time.Time
 	proven   map[int]struct{}
@@ -31,6 +32,7 @@ type attachKey struct {
 func NewActivity() *Activity {
 	return &Activity{
 		attached: make(map[string]map[attachKey]int),
+		viewers:  make(map[string]int),
 		lastDrop: make(map[string]time.Time),
 		polls:    make(map[string]time.Time),
 		proven:   make(map[int]struct{}),
@@ -64,6 +66,32 @@ func (a *Activity) Attach(subjectID, consumer string, pid int) func() {
 			}
 		})
 	}
+}
+
+// AttachViewer records one open anonymous (browser) SSE stream for a subject and
+// returns its detach.
+func (a *Activity) AttachViewer(subjectID string) func() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.viewers[subjectID]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if a.viewers[subjectID]--; a.viewers[subjectID] <= 0 {
+				delete(a.viewers, subjectID)
+			}
+		})
+	}
+}
+
+// Viewing reports whether any anonymous (browser) SSE stream is open on the
+// subject.
+func (a *Activity) Viewing(subjectID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.viewers[subjectID] > 0
 }
 
 // Attached reports whether the consumer in that window has an open SSE
