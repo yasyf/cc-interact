@@ -6,6 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-10-09
+
+### Added
+
+- `Server.ChannelState` classifies the calling window's channel route to a
+  subject as `ChannelActive`, `ChannelPending`, or `ChannelInactive`. A route is
+  active only when the window's consumer is attached and its model has run
+  `channel-ack`. An attached but unproven route also gets one non-persisted
+  `channel.probe` frame (`ProbeEventType`) in that window's stream, so the model
+  proves delivery seconds after the op instead of on the next real event. The
+  logic moves here from cc-review so cc-slack can share it. Its poll window is
+  `2 * ResolvePollCeiling`; cc-review's private 3 s window predated the 5 s
+  ceiling.
+- `StatusBody.Proven` reports whether the calling window's channel round trip is
+  proven. A watcher polls it to end a fallback Monitor once tags flow.
+
+### Fixed
+
+- The SSE plane registers a named consumer's inject queue before it records
+  the attachment, so a probe sent as soon as `Activity.Attached` turns true is
+  queued instead of dropped.
+
+### Changed
+
+- Build with `toolchain go1.26.9` and `golang.org/x/net` v0.60.0, which fix
+  GO-2026-6611, GO-2026-6612, GO-2026-6613, and GO-2026-6617 in `net/http`
+  and `x/net` code this module calls.
+
 ## [0.36.2] - 2026-10-07
 
 ### Fixed

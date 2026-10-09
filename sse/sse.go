@@ -197,6 +197,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// only the emit is gated on OnPresenceChange.
 	var inject chan string
 	if consumer != "" {
+		// Only a named consumer can receive solicited frames (Inject); a browser's
+		// inject channel stays nil, which never fires in the select. The queue
+		// exists before Attach so a probe sent on seeing the attachment lands.
+		inject = s.attachInject(injectKey{subjectID, consumer, pid})
+		defer s.detachInject(injectKey{subjectID, consumer, pid}, inject)
 		wasConnected := s.backend.ConsumerConnected(subjectID)
 		detach := s.backend.Attach(subjectID, consumer, pid)
 		if !wasConnected {
@@ -210,10 +215,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				}
 			})
 		}()
-		// Only a named consumer can receive solicited frames (Inject); a browser's
-		// inject channel stays nil, which never fires in the select.
-		inject = s.attachInject(injectKey{subjectID, consumer, pid})
-		defer s.detachInject(injectKey{subjectID, consumer, pid}, inject)
 	} else {
 		defer s.backend.AttachViewer(subjectID)()
 	}

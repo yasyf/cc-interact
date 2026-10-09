@@ -86,6 +86,7 @@ func (s *Server) handleChannelAck(hc HandlerCtx) Reply {
 type StatusBody struct {
 	ConsumerConnected bool           `json:"consumer_connected"`
 	Consumers         map[string]int `json:"consumers,omitempty"`
+	Proven            bool           `json:"proven,omitempty"`
 }
 
 func (s *Server) handleStatus(hc HandlerCtx) Reply {
@@ -96,6 +97,7 @@ func (s *Server) handleStatus(hc HandlerCtx) Reply {
 		reply.Body, _ = json.Marshal(StatusBody{
 			ConsumerConnected: s.activity.AttachedWithin(sub.ID, attachGrace),
 			Consumers:         s.activity.Counts(sub.ID),
+			Proven:            s.activity.Proven(hc.Env.ClaudePID),
 		})
 	}
 	return reply
