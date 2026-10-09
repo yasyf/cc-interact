@@ -60,9 +60,9 @@ func SessionRecordCmd(d Deps) *cobra.Command {
 	}
 }
 
-// ChannelAckCmd is the hidden command the model runs when the first channel tag
-// arrives while its Monitor is armed: it proves the window's channel round trip,
-// flipping later starts from pending to active.
+// ChannelAckCmd is the hidden command the model runs on its first channel tag,
+// usually a channel.probe: it proves the window's channel round trip, flipping
+// later ChannelState reads from pending to active.
 func ChannelAckCmd(d Deps) *cobra.Command {
 	var (
 		session string
