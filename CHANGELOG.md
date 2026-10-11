@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@cc-interact/react` (0.6.0): `StreamToast` gains `title`, a bold single-line
+  heading above the message; `onClick`, which turns the toast body into a
+  button that runs the handler and then dismisses the toast; and `durationMs`,
+  which overrides the per-kind auto-dismiss budget. `EventStreamConfig.toast`
+  now receives the frame's `EventContext` as a second argument, after the frame
+  is reduced, so `ctx.queryClient.getQueryData(key)` reads the post-reduce
+  cache. Toast messages keep their line breaks and clamp at five lines.
+
+### Fixed
+
+- `@cc-interact/react` (0.6.0): `useOptimisticMutation` rolls its optimistic
+  patch back when the mutation fails; a failed post used to stay on screen
+  until a refetch or stream echo replaced it. The rollback replays every other
+  optimistic patch and stream frame written to the key since, so it removes
+  only the failed mutation's change. `onError` runs after the cache is rolled
+  back.
+
 ## [0.37.0] - 2026-10-09
 
 ### Added

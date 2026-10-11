@@ -9,12 +9,16 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { FC, ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
+import { applyCacheStep } from '../query';
 
 export type ToastKind = 'info' | 'warn' | 'error';
 
 export interface StreamToast {
   kind: ToastKind;
   text: string;
+  title?: string;
+  onClick?: () => void;
+  durationMs?: number;
 }
 
 export interface StreamNotification extends StreamToast {
@@ -63,7 +67,7 @@ export interface EventStreamConfig<
   // SSE plane (resume rides the Last-Event-ID header the browser sends).
   url?: (subject: Subject, scope: Scope) => string;
   // Optional notification mapping; a null return suppresses the toast.
-  toast?: (ev: Ev) => StreamToast | null;
+  toast?: (ev: Ev, ctx: EventContext<Cache, Subject, Scope>) => StreamToast | null;
   // Whether a frame applies to the cache on screen (e.g. a version filter).
   // Defaults to always-true.
   appliesTo?: (ev: Ev, cache: Cache) => boolean;
@@ -175,16 +179,17 @@ export function createEventStream<
         const key = config.queryKey(subject, resolvedScope);
         const current = queryClient.getQueryData<Cache>(key);
 
-        if (current !== undefined && (config.appliesTo ? config.appliesTo(ev, current) : true)) {
-          queryClient.setQueryData<Cache>(key, config.reduce(current, ev));
-        }
+        applyCacheStep<Cache>(queryClient, key, (cache) =>
+          config.appliesTo?.(ev, cache) === false ? cache : config.reduce(cache, ev),
+        );
 
         if (config.peerPresence) {
           const present = config.peerPresence(ev);
           if (present !== null) setPeerPresent(present);
         }
 
-        config.onEvent?.(ev, { queryClient, cache: current, subject, scope: resolvedScope });
+        const ctx = { queryClient, cache: current, subject, scope: resolvedScope };
+        config.onEvent?.(ev, ctx);
 
         // Replayed frames patch state above but never toast. The caught-up marker
         // gives the exact replay/live boundary; without it (older servers) fall
@@ -195,7 +200,7 @@ export function createEventStream<
             : config.highWaterSeq === undefined
               ? true
               : current !== undefined && Number(raw.lastEventId) > config.highWaterSeq(current);
-        const toast = live && config.toast ? config.toast(ev) : null;
+        const toast = live && config.toast ? config.toast(ev, ctx) : null;
         if (toast) pushToast(toast);
       };
 
