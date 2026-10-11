@@ -69,6 +69,12 @@ jobs:
           bun install
           bun run build
 
+      - name: Test web library
+        working-directory: web
+        run: |
+          bun run typecheck
+          bunx vitest run
+
   # Static analysis type-checks the tree, so it runs for darwin. GOOS/GOARCH
   # keep it on a linux runner; the install step clears them so the tool builds
   # for the host.

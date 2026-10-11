@@ -3,7 +3,7 @@
 // choreography. Domain hooks (useSession, useSubmit, …) are built on these by
 // the consumer; none ship here.
 
-import { QueryClient, useMutation, useQueryClient } from '@tanstack/react-query';
+import { QueryClient, hashKey, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { QueryKey, UseMutationResult } from '@tanstack/react-query';
 
 export function createQueryClient(overrides?: ConstructorParameters<typeof QueryClient>[0]) {
@@ -43,10 +43,9 @@ export interface OptimisticMutationConfig<Vars, Data, Cache> {
   // re-establishes truth. Typically the broader `[prefix, subject]` with
   // exact:false.
   invalidate?: (vars: Vars) => { queryKey: QueryKey; exact?: boolean };
-  // Fired on mutation error, once the invalidation is dispatched (its refetch is
-  // not awaited), so a consumer can surface the failure promptly (e.g. an error
-  // toast). The optimistic patch is deliberately left in place — the daemon
-  // redelivers absolute state, so there is nothing to roll back.
+  // Fired on mutation error, once the optimistic patch is rolled back and the
+  // invalidation is dispatched (its refetch is not awaited), so a consumer can
+  // surface the failure promptly (e.g. an error toast).
   onError?: (err: Error, vars: Vars) => void;
   // Mutations sharing a scope run serially in dispatch order instead of
   // concurrently. Set it (e.g. to the subject id) when the daemon's append
@@ -55,15 +54,55 @@ export interface OptimisticMutationConfig<Vars, Data, Cache> {
   scope?: string;
 }
 
-// cancel → snapshot → optimistic patch → invalidate-on-error. The patch is not
-// rolled back from a snapshot: the daemon redelivers absolute state over the
-// stream, so an error invalidates the family and lets the refetch / echo
-// converge.
+type Step<C> = (cache: C) => C;
+
+interface Entry<C> {
+  step: Step<C>;
+  settled: boolean;
+}
+
+interface Journal<C> {
+  base: C;
+  entries: Entry<C>[];
+}
+
+const journals = new WeakMap<QueryClient, Map<string, Journal<unknown>>>();
+
+const journalAt = <C>(qc: QueryClient, key: QueryKey) =>
+  journals.get(qc)?.get(hashKey(key)) as Journal<C> | undefined;
+
+function openJournal<C>(qc: QueryClient, key: QueryKey, base: C): Journal<C> {
+  const open = journalAt<C>(qc, key);
+  if (open) return open;
+  const journal: Journal<C> = { base, entries: [] };
+  const byKey = journals.get(qc) ?? new Map<string, Journal<unknown>>();
+  journals.set(qc, byKey.set(hashKey(key), journal as Journal<unknown>));
+  return journal;
+}
+
+function closeSettledJournal(qc: QueryClient, key: QueryKey): void {
+  const byKey = journals.get(qc)!;
+  const hash = hashKey(key);
+  if (byKey.get(hash)!.entries.every((entry) => entry.settled)) byKey.delete(hash);
+}
+
+export function applyCacheStep<C>(qc: QueryClient, key: QueryKey, step: Step<C>): void {
+  const current = qc.getQueryData<C>(key);
+  if (current === undefined) return;
+  journalAt<C>(qc, key)?.entries.push({ step, settled: true });
+  const next = step(current);
+  if (next !== current) qc.setQueryData<C>(key, next);
+}
+
+// cancel → journal the optimistic patch → on error, replay the journal without
+// it. While a mutation on a key is unsettled, every write to that key — these
+// patches and stream frames alike — is journaled over the value the first one
+// saw, so a failure drops its own patch and keeps later patches and frames.
 export function useOptimisticMutation<Vars, Data, Cache>(
   config: OptimisticMutationConfig<Vars, Data, Cache>,
 ): UseMutationResult<Data, Error, Vars> {
   const qc = useQueryClient();
-  return useMutation<Data, Error, Vars>({
+  return useMutation<Data, Error, Vars, Entry<Cache> | undefined>({
     mutationFn: config.mutationFn,
     ...(config.scope !== undefined && { scope: { id: config.scope } }),
     onMutate: async (vars) => {
@@ -74,9 +113,30 @@ export function useOptimisticMutation<Vars, Data, Cache>(
       await qc.cancelQueries({ queryKey: key });
       const current = qc.getQueryData<Cache>(key);
       if (current === undefined) return;
-      qc.setQueryData<Cache>(key, config.applyOptimistic(current, vars));
+      const entry: Entry<Cache> = {
+        step: (cache) => config.applyOptimistic(cache, vars),
+        settled: false,
+      };
+      openJournal<Cache>(qc, key, current).entries.push(entry);
+      qc.setQueryData<Cache>(key, entry.step(current));
+      return entry;
     },
-    onError: (err, vars) => {
+    onSuccess: (_data, vars, entry) => {
+      if (!entry) return;
+      entry.settled = true;
+      closeSettledJournal(qc, config.queryKey(vars));
+    },
+    onError: (err, vars, entry) => {
+      if (entry) {
+        const key = config.queryKey(vars);
+        const { base, entries } = journalAt<Cache>(qc, key)!;
+        entries.splice(entries.indexOf(entry), 1);
+        qc.setQueryData<Cache>(
+          key,
+          entries.reduce((cache, { step }) => step(cache), base),
+        );
+        closeSettledJournal(qc, key);
+      }
       const inv = config.invalidate?.(vars);
       if (inv) void qc.invalidateQueries(inv);
       config.onError?.(err, vars);

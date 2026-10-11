@@ -55,7 +55,7 @@ export function ToastStack({ notifications, onDismiss }: ToastStackProps) {
       if (!active.has(n.id)) {
         active.set(
           n.id,
-          setTimeout(() => dismiss.current(n.id), AUTO_DISMISS_MS[n.kind]),
+          setTimeout(() => dismiss.current(n.id), n.durationMs ?? AUTO_DISMISS_MS[n.kind]),
         );
       }
     }
@@ -77,23 +77,45 @@ export function ToastStack({ notifications, onDismiss }: ToastStackProps) {
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
-      {visible.map((n) => (
-        <div
-          key={n.id}
-          className={`toast toast-${n.kind}`}
-          role={n.kind === 'error' ? 'alert' : 'status'}
-        >
-          <span className="toast-msg">{n.text}</span>
-          <button
-            type="button"
-            className="toast-x"
-            aria-label="dismiss"
-            onClick={() => onDismiss(n.id)}
+      {visible.map((n) => {
+        const { onClick } = n;
+        const body = (
+          <>
+            {n.title !== undefined && <span className="toast-title">{n.title}</span>}
+            <span className="toast-msg">{n.text}</span>
+          </>
+        );
+        return (
+          <div
+            key={n.id}
+            className={`toast toast-${n.kind}`}
+            role={n.kind === 'error' ? 'alert' : 'status'}
           >
-            ×
-          </button>
-        </div>
-      ))}
+            {onClick ? (
+              <button
+                type="button"
+                className="toast-body"
+                onClick={() => {
+                  onClick();
+                  onDismiss(n.id);
+                }}
+              >
+                {body}
+              </button>
+            ) : (
+              <div className="toast-body">{body}</div>
+            )}
+            <button
+              type="button"
+              className="toast-x"
+              aria-label="dismiss"
+              onClick={() => onDismiss(n.id)}
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
