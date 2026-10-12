@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-10-12
+
 ### Added
 
 - `@cc-interact/react` (0.6.0): `StreamToast` gains `title`, a bold single-line
@@ -24,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optimistic patch and stream frame written to the key since, so it removes
   only the failed mutation's change. `onError` runs after the cache is rolled
   back.
+- `Launcher.EnsureCurrent` and `EnsureCurrentIfRunning` wait for the daemon's
+  one control slot when another command holds it. They used to fail at once
+  with `daemon: probe incumbent: wire: session capacity exhausted` whenever
+  two commands probed the incumbent together. Builds on daemonkit v0.33.1,
+  whose `Client.Control` retries `ErrSessionCapacity` until its deadline.
 
 ## [0.37.0] - 2026-10-09
 
@@ -870,7 +877,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.37.1...HEAD
+[0.37.1]: https://github.com/yasyf/cc-interact/compare/v0.37.0...v0.37.1
 [0.34.0]: https://github.com/yasyf/cc-interact/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/yasyf/cc-interact/compare/v0.32.1...v0.33.0
 [0.32.1]: https://github.com/yasyf/cc-interact/compare/v0.32.0...v0.32.1
