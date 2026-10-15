@@ -2,6 +2,9 @@ package sse
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -130,5 +133,86 @@ func TestDrainWaitsForInflightStream(t *testing.T) {
 	case <-closed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("store close did not follow the drain barrier")
+	}
+}
+
+func TestClosePresenceHoldsTheStoreForAnAttachThatOutlivesDrain(t *testing.T) {
+	b := newFakeBackend()
+	b.addSubject("s1id")
+	d := newTestIntake()
+	var storeClosed atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	sawOpen := make(chan bool, 1)
+	s := NewServer(b, Config{
+		PresenceDebounce: time.Hour,
+		Admit:            d.Admit,
+		OnPresenceChange: func(_ context.Context, _ string, connected bool) {
+			if !connected {
+				return
+			}
+			close(entered)
+			<-release
+			sawOpen <- !storeClosed.Load()
+		},
+	})
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events?session=s1id&consumer=channel&claude_pid=4242", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the attach never reached OnPresenceChange")
+	}
+
+	d.Close()
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer drainCancel()
+	if err := d.Wait(drainCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Drain wait = %v, want the attach to outlive its budget", err)
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer closeCancel()
+	if err := s.ClosePresence(closeCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ClosePresence() = %v while the attach still emits, want %v", err, context.DeadlineExceeded)
+	}
+
+	closed := make(chan error, 1)
+	go func() {
+		err := s.ClosePresence(context.Background())
+		storeClosed.Store(true)
+		closed <- err
+	}()
+	select {
+	case err := <-closed:
+		t.Fatalf("ClosePresence() = %v before the attach returned", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case open := <-sawOpen:
+		if !open {
+			t.Fatal("the attach's OnPresenceChange ran after the store closed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the attach never finished")
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("ClosePresence() = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ClosePresence never returned after the attach finished")
 	}
 }
