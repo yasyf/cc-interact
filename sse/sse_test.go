@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -263,6 +264,98 @@ func TestPresenceChangeSkippedWhenStillConnected(t *testing.T) {
 	case got := <-calls:
 		t.Fatalf("emitted presence change %v while a peer stayed connected", got)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestClosePresenceStopsPendingAndLaterDisconnects(t *testing.T) {
+	calls := make(chan bool, 4)
+	s := NewServer(newFakeBackend(), Config{
+		PresenceDebounce: 20 * time.Millisecond,
+		OnPresenceChange: func(_ context.Context, _ string, connected bool) { calls <- connected },
+	})
+	s.debounceDisconnect("s1id")
+	if err := s.ClosePresence(context.Background()); err != nil {
+		t.Fatalf("ClosePresence() = %v, want nil", err)
+	}
+	s.debounceDisconnect("s1id")
+	select {
+	case got := <-calls:
+		t.Fatalf("presence change %v emitted after ClosePresence", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestAttachAfterClosePresenceEmitsNoConnect(t *testing.T) {
+	b := newFakeBackend()
+	b.addSubject("s1id")
+	calls := make(chan bool, 4)
+	s := NewServer(b, Config{
+		PresenceDebounce: 20 * time.Millisecond,
+		OnPresenceChange: func(_ context.Context, _ string, connected bool) { calls <- connected },
+	})
+	if err := s.ClosePresence(context.Background()); err != nil {
+		t.Fatalf("ClosePresence() = %v, want nil", err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resp := connectUntilLive(t, ctx, srv.URL+"/events?session=s1id&consumer=channel&claude_pid=4242")
+	_ = resp.Body.Close()
+	cancel()
+	select {
+	case got := <-calls:
+		t.Fatalf("presence change %v emitted for a stream after ClosePresence", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func firingDisconnect(t *testing.T) (*Server, chan struct{}) {
+	t.Helper()
+	entered, release := make(chan struct{}), make(chan struct{})
+	s := NewServer(newFakeBackend(), Config{
+		PresenceDebounce: 20 * time.Millisecond,
+		OnPresenceChange: func(context.Context, string, bool) {
+			close(entered)
+			<-release
+		},
+	})
+	s.debounceDisconnect("s1id")
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the disconnect debounce never fired")
+	}
+	return s, release
+}
+
+func TestClosePresenceWaitsForAFiringDisconnect(t *testing.T) {
+	s, release := firingDisconnect(t)
+	done := make(chan error, 1)
+	go func() { done <- s.ClosePresence(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("ClosePresence() = %v while a disconnect was still firing", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ClosePresence() = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ClosePresence never returned after the disconnect finished")
+	}
+}
+
+func TestClosePresenceReturnsCtxErrorWhileADisconnectFires(t *testing.T) {
+	s, release := firingDisconnect(t)
+	defer close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := s.ClosePresence(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ClosePresence() = %v, want %v", err, context.DeadlineExceeded)
 	}
 }
 

@@ -287,7 +287,7 @@ func (s *Server) settleFailedStart() error {
 	s.workers.Close()
 	settleCtx, settleCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer settleCancel()
-	return errors.Join(s.workers.Wait(settleCtx), s.closeState())
+	return errors.Join(s.workers.Wait(settleCtx), s.closeAfterPresence(settleCtx))
 }
 
 // product is the Server's daemonkit face: dispatch plus the two shutdown stages.
@@ -322,8 +322,17 @@ func (p product) Drain(b daemonkit.Budget) error {
 	return s.workers.Wait(ctx)
 }
 
-func (p product) Close(daemonkit.Budget) error {
-	return p.s.closeState()
+func (p product) Close(b daemonkit.Budget) error {
+	ctx, done := b.Context(context.Background())
+	defer done()
+	return p.s.closeAfterPresence(ctx)
+}
+
+func (s *Server) closeAfterPresence(ctx context.Context) error {
+	if err := s.sse.ClosePresence(ctx); err != nil {
+		return fmt.Errorf("daemon: a presence disconnect still holds the store, left open: %w", err)
+	}
+	return s.closeState()
 }
 
 func (s *Server) activateState(startup context.Context) error {

@@ -109,6 +109,11 @@ type Server struct {
 
 	injectMu sync.Mutex
 	injects  map[injectKey]map[chan string]struct{}
+
+	presenceMu     sync.Mutex
+	presenceClosed bool
+	disconnects    map[*time.Timer]struct{}
+	emitting       sync.WaitGroup
 }
 
 // NewServer builds the server and mounts GET /events. Register additional routes
@@ -120,7 +125,8 @@ func NewServer(backend Backend, cfg Config) *Server {
 	}
 	s := &Server{
 		backend: backend, cfg: cfg, mux: http.NewServeMux(), debounce: debounce,
-		injects: make(map[injectKey]map[chan string]struct{}),
+		injects:     make(map[injectKey]map[chan string]struct{}),
+		disconnects: make(map[*time.Timer]struct{}),
 	}
 	s.mux.HandleFunc("GET /events", s.handleEvents)
 	return s
@@ -205,15 +211,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		wasConnected := s.backend.ConsumerConnected(subjectID)
 		detach := s.backend.Attach(subjectID, consumer, pid)
 		if !wasConnected {
-			s.presenceChange(r.Context(), subjectID, true)
+			s.announceConnect(r.Context(), subjectID)
 		}
 		defer func() {
 			detach()
-			time.AfterFunc(s.debounce, func() {
-				if !s.backend.ConsumerConnected(subjectID) {
-					s.presenceChange(context.Background(), subjectID, false)
-				}
-			})
+			s.debounceDisconnect(subjectID)
 		}()
 	} else {
 		defer s.backend.AttachViewer(subjectID)()
@@ -343,6 +345,74 @@ func (s *Server) detachInject(k injectKey, ch chan string) {
 	if len(s.injects[k]) == 0 {
 		delete(s.injects, k)
 	}
+}
+
+// ClosePresence stops pending disconnect debounces, skips every later connect
+// and disconnect, and waits until those already emitting return, or returns
+// ctx's error first.
+func (s *Server) ClosePresence(ctx context.Context) error {
+	s.presenceMu.Lock()
+	s.presenceClosed = true
+	for timer := range s.disconnects {
+		timer.Stop()
+	}
+	clear(s.disconnects)
+	s.presenceMu.Unlock()
+	emitted := make(chan struct{})
+	go func() {
+		s.emitting.Wait()
+		close(emitted)
+	}()
+	select {
+	case <-emitted:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Server) announceConnect(ctx context.Context, subjectID string) {
+	if !s.enterPresence() {
+		return
+	}
+	defer s.emitting.Done()
+	s.presenceChange(ctx, subjectID, true)
+}
+
+func (s *Server) enterPresence() bool {
+	s.presenceMu.Lock()
+	defer s.presenceMu.Unlock()
+	if s.presenceClosed {
+		return false
+	}
+	s.emitting.Add(1)
+	return true
+}
+
+func (s *Server) debounceDisconnect(subjectID string) {
+	s.presenceMu.Lock()
+	defer s.presenceMu.Unlock()
+	if s.presenceClosed {
+		return
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(s.debounce, func() {
+		s.presenceMu.Lock()
+		_, pending := s.disconnects[timer]
+		delete(s.disconnects, timer)
+		if pending {
+			s.emitting.Add(1)
+		}
+		s.presenceMu.Unlock()
+		if !pending {
+			return
+		}
+		defer s.emitting.Done()
+		if !s.backend.ConsumerConnected(subjectID) {
+			s.presenceChange(context.Background(), subjectID, false)
+		}
+	})
+	s.disconnects[timer] = struct{}{}
 }
 
 func (s *Server) presenceChange(ctx context.Context, subjectID string, connected bool) {

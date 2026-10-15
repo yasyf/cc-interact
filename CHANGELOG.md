@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.2] - 2026-10-15
+
+### Fixed
+
+- A daemon no longer crashes on a presence change that runs after shutdown
+  closes its store. Each named SSE consumer's detach scheduled a presence
+  debounce, 15s by default, that nothing tracked, so one still pending when
+  `Close` set the store to nil dereferenced it in `Append`. cc-present logged
+  twelve such SIGSEGVs over three restarts on 2026-10-14 and 2026-10-15. A
+  stream's first attach also emitted its connect outside any shutdown
+  barrier, so a stream that outlived an abandoned `Drain` could do the same.
+  `sse.Server.ClosePresence` stops pending debounces, skips every later
+  connect and disconnect, and waits for those already emitting. The daemon's
+  `Close` and failed-start settle call it before they close the store, and
+  leave the store open if an emission outlasts the stage budget. A
+  suppressed disconnect leaves a stale `connected:true` that the consumer
+  reconciles at its next boot, as after a crash, and a suppressed connect is
+  emitted when the stream reconnects to the next daemon.
+
 ## [0.37.1] - 2026-10-12
 
 ### Added
@@ -877,7 +896,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.37.1...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.37.2...HEAD
+[0.37.2]: https://github.com/yasyf/cc-interact/compare/v0.37.1...v0.37.2
 [0.37.1]: https://github.com/yasyf/cc-interact/compare/v0.37.0...v0.37.1
 [0.34.0]: https://github.com/yasyf/cc-interact/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/yasyf/cc-interact/compare/v0.32.1...v0.33.0
