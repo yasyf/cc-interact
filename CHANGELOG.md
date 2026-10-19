@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-10-18
+
+### Added
+
+- `cmd.Deps.ChannelEvent` sets which event types the channel server pushes to
+  the agent. The stream cursor still advances past every other type, and a nil
+  value pushes all of them, as before. cc-slack registers every subagent, so
+  any session that loaded it got `agent.started`, `agent.directed`,
+  `agent.delivered`, and `agent.stopped` tags for each subagent it spawned,
+  even with no Slack watch open.
+
 ## [0.37.2] - 2026-10-15
 
 ### Fixed
@@ -896,7 +907,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.37.2...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.38.0...HEAD
+[0.38.0]: https://github.com/yasyf/cc-interact/compare/v0.37.2...v0.38.0
 [0.37.2]: https://github.com/yasyf/cc-interact/compare/v0.37.1...v0.37.2
 [0.37.1]: https://github.com/yasyf/cc-interact/compare/v0.37.0...v0.37.1
 [0.34.0]: https://github.com/yasyf/cc-interact/compare/v0.33.0...v0.34.0
