@@ -47,6 +47,9 @@ type Deps struct {
 	WindowAlive func(pid int) bool
 	// TerminalEvent reports whether an event type ends a watch (cc-review: "submit").
 	TerminalEvent func(eventType string) bool
+	// ChannelEvent reports whether the channel server pushes an event type to the
+	// agent; the stream cursor advances past the rest. nil pushes every type.
+	ChannelEvent func(eventType string) bool
 	// Serve runs the long-lived daemon (consumer builds daemon.New(Config).Serve).
 	Serve func(ctx context.Context) error
 	// ChannelTools supplies the channel server's domain tools, the JSON-RPC method

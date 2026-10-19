@@ -56,8 +56,9 @@ func ChannelCmd(d Deps) *cobra.Command {
 	return cmd
 }
 
-// streamToChannel waits for the daemon + subject, then pushes every event as a
-// channel notification for the lifetime of the session. The window pid is
+// streamToChannel waits for the daemon + subject, then pushes each event
+// Deps.ChannelEvent admits as a channel notification for the lifetime of the
+// session. The window pid is
 // resolved once at boot — the channel server lives as long as the window — and
 // keys the stream even when the session id is stale or unset.
 func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, scope, notifyMethod string) {
@@ -79,6 +80,9 @@ func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, 
 	// A failed push propagates so the cursor doesn't advance past an undelivered
 	// event; a channel otherwise runs for the whole session.
 	_ = channel.StreamEvents(ctx, src, func(eventType, data string) error {
+		if d.ChannelEvent != nil && !d.ChannelEvent(eventType) {
+			return nil
+		}
 		return srv.Notify(notifyMethod, map[string]any{
 			"content": data,
 			"meta":    map[string]any{"type": eventType, "subject_id": subjectID},
