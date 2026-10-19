@@ -30,8 +30,8 @@ func TestChannelEventFilter(t *testing.T) {
 
 			sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
-				fmt.Fprint(w, "id: 1\ndata: {\"type\":\"agent.started\",\"agent_id\":\"a1\"}\n\n")
-				fmt.Fprint(w, "id: 2\ndata: {\"type\":\"comment.created\",\"id\":\"c1\"}\n\n")
+				_, _ = fmt.Fprint(w, "id: 1\ndata: {\"type\":\"agent.started\",\"agent_id\":\"a1\"}\n\n")
+				_, _ = fmt.Fprint(w, "id: 2\ndata: {\"type\":\"comment.created\",\"id\":\"c1\"}\n\n")
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}
