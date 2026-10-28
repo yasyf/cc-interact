@@ -17,9 +17,8 @@ import (
 
 // TestChannelBuildsIdentityOnce pins the unresolved-subject poll's cost: a
 // channel server that polls a daemon with no subject yet, then streams and
-// re-resolves after a dropped stream, builds the consumer's client identity —
-// whose Program construction reads and digests the whole executable — once,
-// not once per poll.
+// re-resolves after a dropped stream, builds the consumer's client identity
+// once, not once per poll.
 func TestChannelBuildsIdentityOnce(t *testing.T) {
 	var streams atomic.Int32
 	sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

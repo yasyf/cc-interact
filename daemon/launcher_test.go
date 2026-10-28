@@ -21,7 +21,6 @@ func exactLauncher(spec daemonkit.Daemon) Launcher {
 func testLauncherSpec(label string) daemonkit.Daemon {
 	return Spec(daemonkit.Daemon{
 		Label: daemonkit.Label(label),
-		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
 }
 
@@ -40,10 +39,6 @@ func TestLauncherValidateRequiresSpecIdentity(t *testing.T) {
 		}, true},
 		{"prior era beside it", func(l Launcher) Launcher {
 			l.Daemon.Schemas = []daemonkit.Schema{WireBuild, "legacy"}
-			return l
-		}, true},
-		{"unstated serving", func(l Launcher) Launcher {
-			l.Daemon.Trust.Serving = daemonkit.Serving{}
 			return l
 		}, true},
 		{"missing label", func(l Launcher) Launcher { l.Daemon.Label = ""; return l }, true},
@@ -91,7 +86,6 @@ func TestSpecStampsSchemaAndFrameDefault(t *testing.T) {
 func TestNewClientRefusesAForeignSchema(t *testing.T) {
 	base := daemonkit.Daemon{
 		Label: "cci-client-schema-test",
-		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	}
 	tests := []struct {
 		name    string

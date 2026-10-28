@@ -25,7 +25,6 @@ func newDaemon(t *testing.T) *daemon.Server {
 	testhome.Set(t, home)
 	spec := daemon.Spec(daemonkit.Daemon{
 		Label: "cci-channel-test",
-		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
 	s, err := daemon.New(daemon.Config{
 		AppName:        "cc-test",

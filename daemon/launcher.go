@@ -18,10 +18,9 @@ const UpgradeTimeout = 30 * time.Second
 var ErrNoPeer = daemonkit.ErrAbsent
 
 // ErrIncumbentNewer refuses an upgrade that would put an older release back in
-// a newer one's place. daemonkit converges on Health.Build, an executable
-// digest that proves two builds differ but never which came first, so a
-// downgrade otherwise reads as an ordinary transition; the ordering rides
-// HealthDetail.RuntimeBuild instead.
+// a newer one's place. daemonkit converges on Health.Build, which proves two
+// builds differ but never which came first, so a downgrade otherwise reads as
+// an ordinary transition; the ordering rides HealthDetail.RuntimeBuild instead.
 var ErrIncumbentNewer = errors.New("daemon: incumbent runs a newer release")
 
 // Launcher starts, converges, and connects to one cc-interact daemon. Every
@@ -51,10 +50,11 @@ func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) erro
 	if err != nil {
 		return err
 	}
+	defer func() { _ = client.Close(ctx) }()
 	operationCtx, cancel := boundedContext(ctx, timeout)
 	defer cancel()
 	switch err := l.probeIncumbent(operationCtx, client); {
-	case err == nil, errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining):
+	case err == nil, errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining), errors.Is(err, daemonkit.ErrProtocolMismatch):
 	default:
 		return err
 	}
@@ -74,10 +74,11 @@ func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = client.Close(ctx) }()
 	operationCtx, cancel := boundedContext(ctx, UpgradeTimeout)
 	defer cancel()
 	switch err := l.probeIncumbent(operationCtx, client); {
-	case err == nil, errors.Is(err, daemonkit.ErrDraining):
+	case err == nil, errors.Is(err, daemonkit.ErrDraining), errors.Is(err, daemonkit.ErrProtocolMismatch):
 	case errors.Is(err, daemonkit.ErrAbsent):
 		return ErrNoPeer
 	default:
@@ -89,21 +90,17 @@ func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
 	return nil
 }
 
-// probeIncumbent passes daemonkit's ErrAbsent and ErrDraining back unwrapped,
-// so each ensure path classifies an absence on its own terms.
+// probeIncumbent passes daemonkit's ErrAbsent, ErrDraining, and
+// ErrProtocolMismatch back unwrapped, so each ensure path classifies an
+// absence, a departure, or an older wire protocol on its own terms.
 func (l Launcher) probeIncumbent(ctx context.Context, client *daemonkit.Client) error {
-	control, err := client.Control(ctx)
+	health, err := client.Health(ctx)
 	switch {
 	case err == nil:
-	case errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining):
+	case errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining), errors.Is(err, daemonkit.ErrProtocolMismatch):
 		return err
 	default:
 		return fmt.Errorf("daemon: probe incumbent: %w", err)
-	}
-	defer func() { _ = control.Close(ctx) }()
-	health, err := control.Health(ctx)
-	if err != nil {
-		return fmt.Errorf("daemon: read incumbent health: %w", err)
 	}
 	return l.refuseRollback(health)
 }

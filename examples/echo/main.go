@@ -80,25 +80,17 @@ type itemBody struct {
 func appPaths() paths.Paths { return paths.Paths{App: appDir} }
 
 // appSpec is the one daemonkit identity the launcher and the daemon share.
-// Business stays on the same-EUID floor; the control lane and the serving
-// posture both name the identity the echo binary is released under, so an
-// unsigned dev build must relax both together.
 func appSpec() (daemonkit.Daemon, error) {
-	program, err := daemonkit.Stable()
+	program, err := daemonkit.Stable(appVersion)
 	if err != nil {
 		return daemonkit.Daemon{}, err
 	}
-	requirement := daemonkit.Requirement{TeamID: "SXKCTF23Q2", SigningIdentifier: "com.yasyf.cc-interact.echo"}
 	return daemon.Spec(daemonkit.Daemon{
 		Label:   "com.yasyf.cc-interact.echo",
 		Program: program,
 		Args:    []string{"daemon"},
 		Log:     appPaths().LogPath(),
 		Restart: daemonkit.RestartOnFailure,
-		Trust: daemonkit.Trust{
-			Control: &requirement,
-			Serving: daemonkit.ServingSigned(requirement),
-		},
 	}), nil
 }
 

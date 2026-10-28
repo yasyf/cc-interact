@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Any process running as the same user can connect to a cc-interact
+  daemon.** cc-interact builds against the daemonkit release that drops peer
+  verification, so a daemon's socket no longer checks a caller's code
+  signature, team ID, or user ID. `daemon.Launcher` reads the incumbent's
+  health on the client's one connection instead of a separate signed control
+  connection, and the business lane reuses that connection. An incumbent that
+  speaks the older wire protocol is no longer an error: Ensure stops it with
+  SIGTERM and starts this build. Consumers drop `Daemon.Trust` and pass their
+  version string to `daemonkit.Stable`. The HTTP plane's bearer token,
+  `TrustedPeer`, and `TrustedOrigin` are unchanged.
+
 ## [0.38.0] - 2026-10-18
 
 ### Added
