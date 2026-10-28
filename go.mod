@@ -2,14 +2,14 @@ module github.com/yasyf/cc-interact
 
 go 1.26.5
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/shirou/gopsutil/v4 v4.26.5
 	github.com/spf13/cobra v1.10.2
-	github.com/yasyf/daemonkit v0.34.1-0.20261028042048-421113ae9455
-	github.com/yasyf/synckit v0.46.1-0.20261028042517-18536ed9b209
+	github.com/yasyf/daemonkit v0.35.1
+	github.com/yasyf/synckit v0.47.0
 	modernc.org/sqlite v1.52.0
 )
 
