@@ -37,9 +37,9 @@ type Envelope struct {
 }
 
 // HealthDetail is the product's half of daemonkit's Health.Detail, published
-// once at start and read back by the launcher. daemonkit's own Health.Build is
-// an executable digest, which proves two builds differ but never which is
-// newer; RuntimeBuild is the semantic release that orders them.
+// once at start and read back by the launcher. daemonkit's own Health.Build
+// proves two builds differ but never which is newer; RuntimeBuild is the
+// semantic release that orders them.
 type HealthDetail struct {
 	RuntimeBuild string `json:"runtime_build"`
 }

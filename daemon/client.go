@@ -29,10 +29,8 @@ type Client struct {
 	closeErr error
 }
 
-// NewClient opens the business lane of the daemon d names. The lane
-// authenticates the accepting process against d.Trust.Serving on every
-// session acquisition; the first Do reports a provably absent daemon as
-// daemonkit.ErrAbsent.
+// NewClient opens the business lane of the daemon d names. The first Do
+// reports a provably absent daemon as daemonkit.ErrAbsent.
 func NewClient(d daemonkit.Daemon) (*Client, error) {
 	if err := validateSchemas(d); err != nil {
 		return nil, err
@@ -46,8 +44,7 @@ func NewClient(d daemonkit.Daemon) (*Client, error) {
 
 // Reopen opens a fresh business lane on the identity c was opened with, closed
 // or not, so a poller that releases its session each attempt never rebuilds
-// that identity. Every session the new lane acquires still verifies
-// Trust.Serving.
+// that identity.
 func (c *Client) Reopen() *Client {
 	return &Client{daemon: c.daemon, business: c.daemon.Business()}
 }

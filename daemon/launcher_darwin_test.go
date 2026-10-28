@@ -19,7 +19,7 @@ import (
 // removal.
 func TestStopRemovesTheAgentWithoutAPlacedProgram(t *testing.T) {
 	shortHome(t)
-	program, err := daemonkit.Stable()
+	program, err := daemonkit.Stable("1.0.0")
 	if err != nil {
 		t.Fatalf("Stable: %v", err)
 	}
@@ -27,7 +27,6 @@ func TestStopRemovesTheAgentWithoutAPlacedProgram(t *testing.T) {
 	launcher := exactLauncher(Spec(daemonkit.Daemon{
 		Label:   label,
 		Program: program,
-		Trust:   daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	}))
 	plist := writeMarkedAgent(t, label)
 	if _, err := os.Stat(programPath(label)); !errors.Is(err, os.ErrNotExist) {

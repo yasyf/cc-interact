@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-10-27
+
+### Changed
+
+- **Any process running as the same user can connect to a cc-interact
+  daemon.** cc-interact builds against the daemonkit release that drops peer
+  verification, so a daemon's socket no longer checks a caller's code
+  signature, team ID, or user ID. `daemon.Launcher` reads the incumbent's
+  health on the client's one connection instead of a separate signed control
+  connection, and the business lane reuses that connection. An incumbent that
+  speaks the older wire protocol is no longer an error: Ensure stops it with
+  SIGTERM and starts this build. Consumers drop `Daemon.Trust` and pass their
+  version string to `daemonkit.Stable`. The HTTP plane's bearer token,
+  `TrustedPeer`, and `TrustedOrigin` are unchanged.
+- Builds against daemonkit 0.35.1 and synckit 0.47.0 with Go 1.26.10.
+
 ## [0.38.0] - 2026-10-18
 
 ### Added
@@ -907,7 +923,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.39.0...HEAD
+[0.39.0]: https://github.com/yasyf/cc-interact/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/yasyf/cc-interact/compare/v0.37.2...v0.38.0
 [0.37.2]: https://github.com/yasyf/cc-interact/compare/v0.37.1...v0.37.2
 [0.37.1]: https://github.com/yasyf/cc-interact/compare/v0.37.0...v0.37.1

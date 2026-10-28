@@ -44,7 +44,6 @@ func serveStubDaemon(
 	shortHome(t)
 	spec := Spec(daemonkit.Daemon{
 		Label: daemonkit.Label(label),
-		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -228,7 +227,6 @@ func TestDoAbsentDaemonIsProvenAbsent(t *testing.T) {
 	shortHome(t)
 	spec := Spec(daemonkit.Daemon{
 		Label: "cci-client-absent",
-		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
 	client, err := NewClient(spec)
 	if err != nil {

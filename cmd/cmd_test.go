@@ -34,7 +34,6 @@ const probeOp daemon.Op = "probe"
 func testSpec(label string) daemonkit.Daemon {
 	return daemon.Spec(daemonkit.Daemon{
 		Label: daemonkit.Label(label),
-		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
 }
 
@@ -183,7 +182,6 @@ func liveDaemon(t *testing.T, maxFrame daemonkit.Bytes) daemonkit.Daemon {
 	spec := daemon.Spec(daemonkit.Daemon{
 		Label:    "cci-cmd-live",
 		MaxFrame: maxFrame,
-		Trust:    daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
 	s, err := daemon.New(daemon.Config{
 		AppName:        "cc-interact-test",

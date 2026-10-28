@@ -26,7 +26,6 @@ func testPaths() paths.Paths { return paths.Paths{App: ".cc-interact-test"} }
 func testServeSpec() daemonkit.Daemon {
 	return Spec(daemonkit.Daemon{
 		Label: "cci-server-test",
-		Trust: daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	})
 }
 

@@ -78,7 +78,6 @@ func TestWireBuildHardCutRejectsAnotherSchema(t *testing.T) {
 	legacy := daemonkit.Daemon{
 		Label:   "cci-legacy",
 		Schemas: []daemonkit.Schema{"legacy"},
-		Trust:   daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 	}
 	if _, err := New(Config{Daemon: legacy, RuntimeBuild: "v1.0.0"}); err == nil {
 		t.Fatal("New accepted another wire schema")
