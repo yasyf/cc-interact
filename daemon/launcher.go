@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/yasyf/cc-interact/version"
@@ -45,6 +48,9 @@ func (l Launcher) NewClient() (*Client, error) {
 // EnsureCurrent makes the daemon be the exact build of this launcher's own
 // Program, ready and serving, cold-starting one when none runs. A newer
 // incumbent refuses with ErrIncumbentNewer instead of being rolled back.
+// Ensures of one daemon run one at a time, so a launcher that probes while
+// another replaces the daemon reads the build that replacement left serving
+// rather than the gap before it.
 func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) error {
 	client, err := l.open()
 	if err != nil {
@@ -53,6 +59,11 @@ func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) erro
 	defer func() { _ = client.Close(ctx) }()
 	operationCtx, cancel := boundedContext(ctx, timeout)
 	defer cancel()
+	release, err := l.awaitEnsureTurn(operationCtx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	switch err := l.probeIncumbent(operationCtx, client); {
 	case err == nil, errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining), errors.Is(err, daemonkit.ErrProtocolMismatch):
 	default:
@@ -68,7 +79,8 @@ func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) erro
 // returning ErrNoPeer for proven absence. An incumbent that is already leaving
 // is running, not absent: Ensure's own drain-observation ladder settles it and
 // starts the wanted build in its place. A newer incumbent refuses with
-// ErrIncumbentNewer.
+// ErrIncumbentNewer. It waits its turn behind any other ensure of the daemon,
+// as EnsureCurrent does.
 func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
 	client, err := l.open()
 	if err != nil {
@@ -77,6 +89,11 @@ func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
 	defer func() { _ = client.Close(ctx) }()
 	operationCtx, cancel := boundedContext(ctx, UpgradeTimeout)
 	defer cancel()
+	release, err := l.awaitEnsureTurn(operationCtx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	switch err := l.probeIncumbent(operationCtx, client); {
 	case err == nil, errors.Is(err, daemonkit.ErrDraining), errors.Is(err, daemonkit.ErrProtocolMismatch):
 	case errors.Is(err, daemonkit.ErrAbsent):
@@ -89,6 +106,36 @@ func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
 	}
 	return nil
 }
+
+func (l Launcher) awaitEnsureTurn(ctx context.Context) (func(), error) {
+	if err := l.Paths.EnsureLockDir(); err != nil {
+		return nil, fmt.Errorf("daemon: create lock dir: %w", err)
+	}
+	lock, err := os.OpenFile(ensureLockPath(l.Paths), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("daemon: open ensure lock: %w", err)
+	}
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { _ = lock.Close() }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			_ = lock.Close()
+			return nil, fmt.Errorf("daemon: ensure lock: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			_ = lock.Close()
+			return nil, fmt.Errorf("daemon: wait for another ensure: %w", ctx.Err())
+		case <-time.After(ensureTurnPoll):
+		}
+	}
+}
+
+const ensureTurnPoll = 50 * time.Millisecond
+
+func ensureLockPath(p paths.Paths) string { return filepath.Join(p.LockDir(), "ensure.lock") }
 
 // probeIncumbent passes daemonkit's ErrAbsent, ErrDraining, and
 // ErrProtocolMismatch back unwrapped, so each ensure path classifies an

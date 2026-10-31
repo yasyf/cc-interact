@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-10-31
+
+### Fixed
+
+- **An older launcher no longer rolls back a newer daemon.** A launcher that
+  probed while another replaced the daemon saw no incumbent and skipped the
+  ordering check, so its Ensure put its older build back in place of the
+  newer one that had just come up. Two clients of different releases then
+  replaced each other's daemon on every call. `EnsureCurrent` and
+  `EnsureCurrentIfRunning` now wait for any other ensure of the same daemon
+  before they probe, under `<state dir>/locks/ensure.lock`, so the probe reads
+  the build the earlier ensure left serving and a newer one refuses with
+  `ErrIncumbentNewer`.
+
 ## [0.39.0] - 2026-10-27
 
 ### Changed
@@ -923,7 +937,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `@cc-interact/react` npm package (Vite library mode): `createEventStream`, query primitives, app shell, theme/layout base CSS.
 - `plugin-template/` scaffold and a headless `examples/echo` consumer.
 
-[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.39.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-interact/compare/v0.39.1...HEAD
+[0.39.1]: https://github.com/yasyf/cc-interact/compare/v0.39.0...v0.39.1
 [0.39.0]: https://github.com/yasyf/cc-interact/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/yasyf/cc-interact/compare/v0.37.2...v0.38.0
 [0.37.2]: https://github.com/yasyf/cc-interact/compare/v0.37.1...v0.37.2

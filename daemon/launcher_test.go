@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/yasyf/daemonkit"
 	"github.com/yasyf/daemonkit/paths"
@@ -168,5 +171,35 @@ func TestEnsureCurrentIfRunningRefusesAnAbsentDaemon(t *testing.T) {
 	launcher := exactLauncher(testLauncherSpec("cci-launcher-absent"))
 	if err := launcher.EnsureCurrentIfRunning(context.Background()); !errors.Is(err, ErrNoPeer) {
 		t.Fatalf("EnsureCurrentIfRunning with nothing running = %v, want ErrNoPeer", err)
+	}
+}
+
+// TestAnEnsureProbesOnlyOnceTheEnsureAheadOfItFinishes drives the race that
+// rolled a daemon back: an older launcher probing while a newer one replaced
+// the daemon saw no incumbent, skipped the ordering check, and its Ensure then
+// replaced the newer build that came up meanwhile.
+func TestAnEnsureProbesOnlyOnceTheEnsureAheadOfItFinishes(t *testing.T) {
+	shortHome(t)
+	launcher := exactLauncher(testLauncherSpec("cci-launcher-queued"))
+	if err := launcher.Paths.EnsureLockDir(); err != nil {
+		t.Fatal(err)
+	}
+	ahead, err := os.OpenFile(ensureLockPath(launcher.Paths), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(ahead.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- launcher.EnsureCurrentIfRunning(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("EnsureCurrentIfRunning = %v while another ensure was still replacing the daemon", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	_ = ahead.Close()
+	if err := <-done; !errors.Is(err, ErrNoPeer) {
+		t.Fatalf("EnsureCurrentIfRunning after the ensure ahead of it = %v, want ErrNoPeer", err)
 	}
 }
