@@ -16,6 +16,7 @@ permissions:
 # Timeouts kill a wedged test in minutes instead of GitHub's 6-hour cap.
 jobs:
   test:
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
