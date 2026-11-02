@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 # PRs only: cancelling on main leaves a landed commit with no CI verdict.
 concurrency:
