@@ -33,9 +33,9 @@ var ErrUnauthenticatedBind = errors.New("non-loopback HTTP bind requires a token
 // trustPeer hook approves (the address is Unmap()ed first, so a v4-in-v6
 // ::ffff: peer counts as its v4 form; an unparseable RemoteAddr never
 // bypasses, and a zoned peer reaches only the hook) — both only under an
-// allowed Origin, per allowedOrigin, so a
-// foreign page cannot CSRF the daemon through a browser on a local or trusted
-// machine. Otherwise the request must present the token in an "Authorization:
+// allowed Host, per allowedHost, and an allowed Origin, per allowedOrigin, so a
+// foreign page cannot rebind to or CSRF the daemon through a browser on a local
+// or trusted machine. Otherwise the request must present the token in an "Authorization:
 // Bearer <token>" header or the ?token= query fallback (browser EventSource
 // cannot set headers), compared in constant time; a ?token= is stripped before
 // next runs so it never reaches a downstream redirect or access log. Anything
@@ -58,13 +58,13 @@ func authHandler(token string, trustPeer func(netip.Addr) bool, trustOrigin func
 			addr = addr.Unmap()
 			loopbackPeer := addr.IsLoopback() && addr.Zone() == ""
 			trusted := loopbackPeer || (trustPeer != nil && trustPeer(addr))
-			if trusted && allowedOrigin(r, trustOrigin, loopbackPeer) {
+			if trusted && allowedHost(r, trustOrigin, loopbackPeer) && allowedOrigin(r, trustOrigin, loopbackPeer) {
 				if !loopbackPeer {
 					ctx, cancel := context.WithCancel(r.Context())
 					defer cancel()
 					r = r.WithContext(ctx)
 					go watchPeerTrust(ctx, cancel, reauthEvery, func() bool {
-						return trustPeer(addr) && allowedOrigin(r, trustOrigin, false)
+						return trustPeer(addr) && allowedHost(r, trustOrigin, false) && allowedOrigin(r, trustOrigin, false)
 					})
 				}
 				next.ServeHTTP(w, r)
@@ -120,7 +120,17 @@ func allowedOrigin(r *http.Request, trusted func(string) bool, loopbackPeer bool
 	if err != nil {
 		return false
 	}
-	host := u.Hostname()
+	return allowedName(u.Hostname(), trusted, loopbackPeer)
+}
+
+// allowedHost reports whether r's Host permits a no-token bypass, by the same
+// test as an Origin. A DNS-rebinding page's browser connects from a trusted peer
+// with no Origin on a same-origin read, and only its Host names the attacker.
+func allowedHost(r *http.Request, trusted func(string) bool, loopbackPeer bool) bool {
+	return allowedName((&url.URL{Host: r.Host}).Hostname(), trusted, loopbackPeer)
+}
+
+func allowedName(host string, trusted func(string) bool, loopbackPeer bool) bool {
 	if host == "" {
 		return false
 	}
