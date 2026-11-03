@@ -81,6 +81,9 @@ func TestServerInitializeListCall(t *testing.T) {
 	if _, hasInstr := initResult["instructions"]; hasInstr {
 		t.Fatalf("initialize must omit instructions when unset: %+v", initResult)
 	}
+	if tools := initResult["capabilities"].(map[string]any)["tools"].(map[string]any); tools["listChanged"] != true {
+		t.Fatalf("capabilities.tools = %+v, want listChanged so a client refetches tools when a resumed server announces them", tools)
+	}
 
 	listTools := replyByID(t, replies, 2)["result"].(map[string]any)["tools"].([]any)
 	if len(listTools) != 1 {
@@ -121,6 +124,27 @@ func TestServerInitializeInstructions(t *testing.T) {
 	}
 	if instr := replies[0]["result"].(map[string]any)["instructions"]; instr != "handshakes need no reply" {
 		t.Fatalf("initialize instructions = %v, want the configured text", instr)
+	}
+}
+
+func TestServerResumedAnnouncesToolsChanged(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "x", Version: "v2", Resumed: true}, []Tool{{Name: "echo"}})
+	var out bytes.Buffer
+	if err := srv.Serve(context.Background(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`), &out); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	replies := decodeReplies(t, &out)
+	if len(replies) != 2 {
+		t.Fatalf("resumed server wrote %+v, want the announcement then the tools/list reply", replies)
+	}
+	if _, hasID := replies[0]["id"]; hasID || replies[0]["method"] != "notifications/tools/list_changed" {
+		t.Fatalf("first frame = %+v, want a notifications/tools/list_changed notification", replies[0])
+	}
+	if params, ok := replies[0]["params"].(map[string]any); !ok || len(params) != 0 {
+		t.Fatalf("announcement params = %v, want an empty object", replies[0]["params"])
+	}
+	if tools := replyByID(t, replies, 1)["result"].(map[string]any)["tools"].([]any); len(tools) != 1 {
+		t.Fatalf("tools/list after the announcement = %+v, want the resumed server's tool", tools)
 	}
 }
 
