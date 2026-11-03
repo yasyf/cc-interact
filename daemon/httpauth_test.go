@@ -74,7 +74,12 @@ func TestAuthHandler(t *testing.T) {
 			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte("reached"))
 			})
+			const selfHost = "self.tailnet.example"
+			trustOrigin := func(h string) bool {
+				return h == selfHost || (tt.trustOrigin != nil && tt.trustOrigin(h))
+			}
 			req := httptest.NewRequest(http.MethodGet, "/events", nil)
+			req.Host = selfHost + ":8123"
 			req.RemoteAddr = tt.remoteAddr
 			if tt.authHeader != "" {
 				req.Header.Set("Authorization", tt.authHeader)
@@ -91,12 +96,58 @@ func TestAuthHandler(t *testing.T) {
 				req.URL.RawQuery = q.Encode()
 			}
 			rec := httptest.NewRecorder()
-			authHandler(tt.token, tt.trustPeer, tt.trustOrigin, peerReauthInterval, next).ServeHTTP(rec, req)
+			authHandler(tt.token, tt.trustPeer, trustOrigin, peerReauthInterval, next).ServeHTTP(rec, req)
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
 			}
 			if got := rec.Body.String(); got != tt.wantBody {
 				t.Fatalf("body = %q, want %q", got, tt.wantBody)
+			}
+		})
+	}
+}
+
+func anyHost(string) bool { return true }
+
+func TestAuthHandlerRefusesARebindingHost(t *testing.T) {
+	const token = "s3cret-token"
+	trustPeer := func(a netip.Addr) bool { return a == netip.MustParseAddr("100.64.0.7") }
+	trustOrigin := func(h string) bool { return h == "me.tailnet.example" || h == "fd7a::1" }
+	tests := []struct {
+		name       string
+		remoteAddr string
+		host       string
+		authHeader string
+		wantStatus int
+	}{
+		{"loopback peer naming a rebinding host", "127.0.0.1:41000", "evil.example:61118", "", http.StatusUnauthorized},
+		{"loopback peer naming localhost", "127.0.0.1:41000", "localhost:61118", "", http.StatusOK},
+		{"loopback peer naming a loopback address", "127.0.0.1:41000", "127.0.0.1:61118", "", http.StatusOK},
+		{"v6 loopback peer naming v6 loopback", "[::1]:41000", "[::1]:61118", "", http.StatusOK},
+		{"loopback peer naming this machine", "127.0.0.1:41000", "me.tailnet.example:61118", "", http.StatusOK},
+		{"trusted peer naming a rebinding host", "100.64.0.7:41000", "evil.example:61118", "", http.StatusUnauthorized},
+		{"trusted peer naming localhost", "100.64.0.7:41000", "localhost:61118", "", http.StatusUnauthorized},
+		{"trusted peer naming this machine", "100.64.0.7:41000", "me.tailnet.example:61118", "", http.StatusOK},
+		{"trusted peer naming this machine with no port", "100.64.0.7:41000", "me.tailnet.example", "", http.StatusOK},
+		{"trusted peer naming this machine's v6 address", "100.64.0.7:41000", "[fd7a::1]:61118", "", http.StatusOK},
+		{"no host", "127.0.0.1:41000", "", "", http.StatusUnauthorized},
+		{"a token holder may name any host", "100.64.0.7:41000", "evil.example:61118", "Bearer " + token, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+			req.Host = tt.host
+			req.RemoteAddr = tt.remoteAddr
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			rec := httptest.NewRecorder()
+			authHandler(token, trustPeer, trustOrigin, peerReauthInterval, next).ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
 			}
 		})
 	}
@@ -126,7 +177,7 @@ func TestAuthHandlerReauthClosesRevokedTrustedPeerStream(t *testing.T) {
 	req.RemoteAddr = "100.64.0.7:41000"
 	done := make(chan struct{})
 	go func() {
-		authHandler("", trustPeer, nil, 20*time.Millisecond, next).ServeHTTP(httptest.NewRecorder(), req)
+		authHandler("", trustPeer, anyHost, 20*time.Millisecond, next).ServeHTTP(httptest.NewRecorder(), req)
 		close(done)
 	}()
 
@@ -179,7 +230,7 @@ func TestAuthHandlerReauthSparesLoopbackAndBearerStreams(t *testing.T) {
 			}
 			done := make(chan struct{})
 			go func() {
-				authHandler(token, distrust, nil, 5*time.Millisecond, next).ServeHTTP(httptest.NewRecorder(), req)
+				authHandler(token, distrust, anyHost, 5*time.Millisecond, next).ServeHTTP(httptest.NewRecorder(), req)
 				close(done)
 			}()
 			time.Sleep(50 * time.Millisecond) // ten would-be re-auth intervals

@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.1] - 2026-11-03
+
+### Security
+
+- **A DNS-rebinding page can no longer read a daemon through a trusted browser.**
+  A no-token admission, by loopback or a trusted peer, now also requires the
+  request's `Host` to pass the test an `Origin` passes: `localhost` or a loopback
+  address from a loopback peer, or a name `TrustedOrigin` approves. Bearer-token
+  callers are unaffected. A `TrustedPeer` with no `TrustedOrigin` now admits no
+  one without a token.
+
 ## [0.40.0] - 2026-11-03
 
 ### Added
