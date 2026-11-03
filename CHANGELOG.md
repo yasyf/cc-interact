@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-11-03
+
+### Added
+
+- **A resumed channel server shows the client its own tools.** `initialize`
+  now advertises `capabilities.tools.listChanged`, and a server built with
+  `ServerInfo.Resumed` opens `Serve` with `notifications/tools/list_changed`.
+  A consumer that re-executes a newer build on the same stdio after the
+  handshake sets it, so the client lists the newer build's tools instead of
+  keeping the ones the first process advertised. Claude Code refetches a
+  server's tools on that notification only when the server advertised
+  `listChanged` at `initialize`.
+
 ## [0.39.1] - 2026-10-31
 
 ### Fixed

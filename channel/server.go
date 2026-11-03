@@ -33,10 +33,14 @@ type Tool struct {
 
 // ServerInfo carries the initialize handshake fields: the serverInfo name and
 // version, plus optional top-level instructions folded into the client's prompt.
+// Resumed marks a server taking over a session another process already
+// initialized: Serve opens by announcing notifications/tools/list_changed, so
+// the client lists this server's tools instead of keeping the old process's.
 type ServerInfo struct {
 	Name         string
 	Version      string
 	Instructions string
+	Resumed      bool
 }
 
 type rpcMessage struct {
@@ -82,6 +86,11 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	s.out = out
 	s.mu.Unlock()
 	defer s.work.Wait()
+	if s.info.Resumed {
+		if err := s.Notify("notifications/tools/list_changed", map[string]any{}); err != nil {
+			return err
+		}
+	}
 
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -101,7 +110,7 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		case "initialize":
 			res := map[string]any{
 				"protocolVersion": mcpProtocolVersion,
-				"capabilities":    map[string]any{"tools": map[string]any{}, "experimental": map[string]any{"claude/channel": map[string]any{}}},
+				"capabilities":    map[string]any{"tools": map[string]any{"listChanged": true}, "experimental": map[string]any{"claude/channel": map[string]any{}}},
 				"serverInfo":      map[string]any{"name": s.info.Name, "version": s.info.Version},
 			}
 			if s.info.Instructions != "" {
