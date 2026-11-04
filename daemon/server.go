@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/procs"
 	"github.com/yasyf/cc-interact/sse"
 	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
@@ -344,7 +345,8 @@ func (s *Server) activateState(startup context.Context) error {
 	s.store = st
 	s.db = st.DB()
 	s.subjects = subject.Resolver{
-		Store: store.NewSubjectStore(s.db),
+		Store:      store.NewSubjectStore(s.db),
+		LiveWindow: procs.LiveClaude,
 		Policy: subject.Policy{Active: func(sub subject.Subject) bool {
 			return slices.Contains(s.activeStatuses, sub.Status)
 		}},

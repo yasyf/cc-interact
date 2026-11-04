@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/yasyf/cc-interact/event"
 	"github.com/yasyf/cc-interact/subject"
 	"github.com/yasyf/daemonkit"
 )
@@ -63,13 +64,18 @@ func (s *Server) handleResolve(hc HandlerCtx) Reply {
 
 // handleSessionRecord follows session-id rotation: ids rotate on resume/clear/
 // compact, so the window's open subject is rebound to the new session id here —
-// this is what keeps guard-edit and status working across rotation.
+// this is what keeps guard-edit and status working across rotation. A resume that
+// leaves a boot subject behind tells the channel attached to it to move.
 func (s *Server) handleSessionRecord(hc HandlerCtx) Reply {
 	if hc.Env.Session == "" {
 		return Reply{OK: true}
 	}
-	if err := hc.Subjects.Rebind(hc.Ctx, hc.Window, hc.Scope); err != nil {
+	boot, err := hc.Subjects.Settle(hc.Ctx, hc.Window, hc.Scope)
+	if err != nil {
 		return errReply(err.Error())
+	}
+	if boot != "" {
+		s.InjectEvent(boot, ChannelConsumer, hc.Env.ClaudePID, `{"type":"`+event.TypeWindowMoved+`"}`)
 	}
 	return Reply{OK: true}
 }

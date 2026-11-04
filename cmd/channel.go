@@ -2,17 +2,16 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-interact/channel"
 	"github.com/yasyf/cc-interact/consume"
+	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
 )
-
-// channelConsumer is the stream-consumer name the channel server registers under.
-const channelConsumer = "channel"
 
 // ChannelCmd is the hidden, opt-in stdio MCP channel server. Loaded at session
 // start, it advertises the consumer's domain tools and pushes each subject event
@@ -60,32 +59,38 @@ func ChannelCmd(d Deps) *cobra.Command {
 // Deps.ChannelEvent admits as a channel notification for the lifetime of the
 // session. The window pid is
 // resolved once at boot — the channel server lives as long as the window — and
-// keys the stream even when the session id is stale or unset.
+// keys the stream even when the session id is stale or unset. A resume moves the
+// stream onto the session's subject, so it resolves again when told to.
 func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, scope, notifyMethod string) {
 	claudePID := d.ClaudePID()
 	connect := reuseIdentity(d.NewClient)
-	subjectID, port := waitForSubject(ctx, connect, session, scope, claudePID, channelConsumer)
-	if subjectID == "" {
-		return
-	}
-	src := consume.StreamSource{
-		Port: port, SubjectID: subjectID, Consumer: channelConsumer, ClaudePID: claudePID,
-		ExcludeOrigin: event.OriginAgent,
-		Paths:         d.Paths, WindowAlive: d.WindowAlive,
-		Refresh: refreshHandshake(connect, session, scope, claudePID, channelConsumer),
-	}
-	// No push at attach: an unsolicited tag wakes an idle agent for nothing. The
-	// channel stays silent until the subject produces an event — or the daemon
-	// injects a solicited frame (a delivery probe) into this stream.
-	// A failed push propagates so the cursor doesn't advance past an undelivered
-	// event; a channel otherwise runs for the whole session.
-	_ = channel.StreamEvents(ctx, src, func(eventType, data string) error {
-		if d.ChannelEvent != nil && !d.ChannelEvent(eventType) {
-			return nil
+	for {
+		subjectID, port := waitForSubject(ctx, connect, session, scope, claudePID, daemon.ChannelConsumer)
+		if subjectID == "" {
+			return
 		}
-		return srv.Notify(notifyMethod, map[string]any{
-			"content": data,
-			"meta":    map[string]any{"type": eventType, "subject_id": subjectID},
+		src := consume.StreamSource{
+			Port: port, SubjectID: subjectID, Consumer: daemon.ChannelConsumer, ClaudePID: claudePID,
+			ExcludeOrigin: event.OriginAgent,
+			Paths:         d.Paths, WindowAlive: d.WindowAlive,
+			Refresh: refreshHandshake(connect, session, scope, claudePID, daemon.ChannelConsumer),
+		}
+		// No push at attach: an unsolicited tag wakes an idle agent for nothing. The
+		// channel stays silent until the subject produces an event — or the daemon
+		// injects a solicited frame (a delivery probe) into this stream.
+		// A failed push propagates so the cursor doesn't advance past an undelivered
+		// event; a channel otherwise runs for the whole session.
+		err := channel.StreamEvents(ctx, src, func(eventType, data string) error {
+			if d.ChannelEvent != nil && !d.ChannelEvent(eventType) {
+				return nil
+			}
+			return srv.Notify(notifyMethod, map[string]any{
+				"content": data,
+				"meta":    map[string]any{"type": eventType, "subject_id": subjectID},
+			})
 		})
-	})
+		if !errors.Is(err, channel.ErrWindowMoved) {
+			return
+		}
+	}
 }

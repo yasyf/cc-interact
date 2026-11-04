@@ -12,6 +12,9 @@ import (
 type Resolver struct {
 	Store  Store
 	Policy Policy
+	// LiveWindow reports whether a window pid is still running. Nil treats every
+	// recorded window as gone.
+	LiveWindow func(pid int) bool
 }
 
 // Find returns the window's subject without ever writing: the exact
@@ -32,7 +35,9 @@ func (rs Resolver) Find(ctx context.Context, w Window, scope string) (Subject, b
 //  3. otherwise                         → create (status lc.Initial)
 //
 // A start never adopts another window's subject: ownership is per-window, so a
-// review a different session opened is left untouched. fresh=true closes (status
+// review a different session opened is left untouched, and a caller naming the
+// session of a window that is still alive leaves that window's pid in place.
+// fresh=true closes (status
 // lc.Closed) and detaches only the exact (session, scope) binding (row 1), then
 // creates: a fresh start under another session id never closes the subject its
 // pid shares, such as a parent window's open review. slug is the precomputed name
@@ -55,7 +60,7 @@ func (rs Resolver) Start(ctx context.Context, w Window, scope, slug string, lc L
 	if s, ok, err := rs.Store.FindBySessionScope(ctx, w.Session, scope); err != nil {
 		return Subject{}, false, err
 	} else if ok {
-		if w.ClaudePID != 0 && s.ClaudePID != w.ClaudePID {
+		if w.ClaudePID != 0 && s.ClaudePID != w.ClaudePID && !rs.liveWindow(s.ClaudePID) {
 			swapped, err := rs.Store.Rebind(ctx, s.ID, s.ClaudePID, w.Session, w.ClaudePID)
 			if err != nil {
 				return Subject{}, false, err
@@ -113,6 +118,44 @@ func (rs Resolver) Rebind(ctx context.Context, w Window, scope string) error {
 	}
 
 	return nil
+}
+
+// Settle takes a hook's word for the session this window runs. A resumed window
+// boots under a fresh session id, which its MCP servers keep for life, and its
+// first SessionStart can create a subject for that id before the resume reveals
+// the session it continues. Settle moves the session's subject onto the window
+// and detaches the younger boot subject, so a lookup under either id finds the
+// one subject. It returns the detached subject's id, "" when there was none, so
+// the caller can move any stream attached to it.
+func (rs Resolver) Settle(ctx context.Context, w Window, scope string) (string, error) {
+	held, ok, err := rs.Store.FindBySessionScope(ctx, w.Session, scope)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", rs.Rebind(ctx, w, scope)
+	}
+	boot := ""
+	latest, found, err := rs.Store.FindLatestByWindowScope(ctx, w.ClaudePID, scope)
+	if err != nil {
+		return "", err
+	}
+	if found && latest.ID != held.ID && latest.CreatedAt.After(held.CreatedAt) {
+		if err := rs.Store.Detach(ctx, latest.ID); err != nil {
+			return "", err
+		}
+		boot = latest.ID
+	}
+	if w.ClaudePID != 0 && held.ClaudePID != w.ClaudePID {
+		if _, err := rs.Store.Rebind(ctx, held.ID, held.ClaudePID, w.Session, w.ClaudePID); err != nil {
+			return "", err
+		}
+	}
+	return boot, nil
+}
+
+func (rs Resolver) liveWindow(pid int) bool {
+	return pid != 0 && rs.LiveWindow != nil && rs.LiveWindow(pid)
 }
 
 func (rs Resolver) create(ctx context.Context, w Window, scope, slug, status string) (Subject, bool, error) {
