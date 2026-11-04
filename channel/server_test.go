@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -359,5 +360,17 @@ func TestServerParkUnderLoad(t *testing.T) {
 	}
 	if progress["message"] != "working" {
 		t.Fatalf("progress message = %v, want working", progress["message"])
+	}
+}
+
+func TestAToolsMetaIsListedOnlyWhenSet(t *testing.T) {
+	meta := map[string]any{"anthropic/alwaysLoad": true}
+	srv := NewServer(ServerInfo{Name: "x", Version: "1"}, []Tool{{Name: "pinned", Meta: meta}, {Name: "plain"}})
+	listed := srv.toolSchemas()
+	if got := listed[0].(map[string]any)["_meta"]; !reflect.DeepEqual(got, meta) {
+		t.Fatalf("pinned _meta = %v, want %v", got, meta)
+	}
+	if _, ok := listed[1].(map[string]any)["_meta"]; ok {
+		t.Fatalf("plain tool listed _meta: %v", listed[1])
 	}
 }
