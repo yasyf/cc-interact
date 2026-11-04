@@ -24,10 +24,13 @@ const mcpProtocolVersion = "2025-06-18"
 // result shape. progress reports incremental progress: when the request carried a
 // _meta.progressToken, each call pushes a notifications/progress frame; otherwise
 // it is a no-op, so a handler may call progress unconditionally (it is never nil).
+// Meta, when set, is listed as the tool's _meta on tools/list, such as
+// anthropic/alwaysLoad to keep the tool out from behind Claude Code's tool search.
 type Tool struct {
 	Name        string
 	Description string
 	InputSchema map[string]any
+	Meta        map[string]any
 	Handler     func(ctx context.Context, args json.RawMessage, progress func(string)) (text string, isErr bool)
 }
 
@@ -146,11 +149,15 @@ func (s *Server) Notify(method string, params any) error {
 func (s *Server) toolSchemas() []any {
 	out := make([]any, 0, len(s.list))
 	for _, t := range s.list {
-		out = append(out, map[string]any{
+		schema := map[string]any{
 			"name":        t.Name,
 			"description": t.Description,
 			"inputSchema": t.InputSchema,
-		})
+		}
+		if t.Meta != nil {
+			schema["_meta"] = t.Meta
+		}
+		out = append(out, schema)
 	}
 	return out
 }

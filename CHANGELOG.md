@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.3] - 2026-11-04
+
+### Added
+
+- **A channel tool can carry `_meta`.** `channel.Tool.Meta` is listed as the tool's `_meta` on `tools/list`, so a server can pin one tool with `anthropic/alwaysLoad` instead of every tool it serves.
+
 ## [0.40.2] - 2026-11-03
 
 ### Fixed
