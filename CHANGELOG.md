@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.2] - 2026-11-03
+
+### Fixed
+
+- **A resumed window's channel reaches it again.** A resumed window boots under a
+  fresh session id, which its MCP servers keep, while its hooks report the session
+  it continues. The channel attached to a subject made for the fresh id and never
+  saw the session's events. `session-record` now moves the session's subject onto
+  the window and detaches the boot subject, and the channel resolves again and
+  streams the session's subject.
+- **A caller naming a live window's session leaves that window's pid alone.**
+  `Start` used to move the subject onto the caller's pid, so the owner's watches
+  depended on the caller staying alive.
+
 ## [0.40.1] - 2026-11-03
 
 ### Security

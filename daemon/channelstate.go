@@ -14,6 +14,9 @@ const (
 	ChannelInactive ChannelState = "inactive"
 )
 
+// ChannelConsumer is the stream-consumer name the channel server registers under.
+const ChannelConsumer = "channel"
+
 // ProbeEventType is the delivery probe's event type; the model answers it with channel-ack.
 const ProbeEventType = "channel.probe"
 

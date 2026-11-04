@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 const repo = "/repo"
@@ -440,5 +441,92 @@ func TestRebind(t *testing.T) {
 				t.Fatalf("binding = %s/%d, want %s/%d", sess, pid, tc.wantSess, tc.wantPID)
 			}
 		})
+	}
+}
+
+func aged(t *testing.T, ctx context.Context, f *fakeStore, session string, pid int, at time.Time) Subject {
+	t.Helper()
+	s := seedSubject(t, ctx, f, session, pid, "open")
+	f.row(s.ID).CreatedAt = at
+	s.CreatedAt = at
+	return s
+}
+
+func TestSettleLeavesAResumedWindowOneSubject(t *testing.T) {
+	ctx := context.Background()
+	rs, f := newResolver()
+	now := time.Now()
+	const (
+		deadPID   = 100
+		resumed   = 200
+		sessionID = "resumed-session"
+		bootID    = "boot-session"
+	)
+	held := aged(t, ctx, f, sessionID, deadPID, now.Add(-time.Hour))
+	boot := aged(t, ctx, f, bootID, resumed, now)
+
+	moved, err := rs.Settle(ctx, Window{Session: sessionID, ClaudePID: resumed}, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != boot.ID {
+		t.Fatalf("Settle moved %q, want the boot subject %q", moved, boot.ID)
+	}
+	for _, session := range []string{sessionID, bootID} {
+		got, ok, err := rs.Find(ctx, Window{Session: session, ClaudePID: resumed}, repo)
+		if err != nil || !ok || got.ID != held.ID {
+			t.Fatalf("Find under %s = %+v ok=%v err=%v, want the session's subject %s", session, got, ok, err, held.ID)
+		}
+	}
+	again, err := rs.Settle(ctx, Window{Session: sessionID, ClaudePID: resumed}, repo)
+	if err != nil || again != "" {
+		t.Fatalf("second Settle moved %q err=%v, want nothing", again, err)
+	}
+}
+
+func TestSettleLeavesAnOlderSubjectOnTheWindow(t *testing.T) {
+	ctx := context.Background()
+	rs, f := newResolver()
+	now := time.Now()
+	const window = 200
+	older := aged(t, ctx, f, "another-session", window, now.Add(-time.Hour))
+	own := aged(t, ctx, f, "own-session", window, now)
+
+	moved, err := rs.Settle(ctx, Window{Session: own.SessionID, ClaudePID: window}, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != "" {
+		t.Fatalf("Settle moved %q, want nothing moved", moved)
+	}
+	if got := f.row(older.ID); got.SessionID != "another-session" || got.ClaudePID != window {
+		t.Fatalf("older subject = %+v, want it untouched", got)
+	}
+}
+
+func TestStartLeavesALiveWindowItsSubject(t *testing.T) {
+	ctx := context.Background()
+	rs, f := newResolver()
+	const (
+		owner  = 100
+		caller = 200
+	)
+	rs.LiveWindow = func(pid int) bool { return pid == owner }
+	held := seedSubject(t, ctx, f, "s1", owner, "open")
+
+	got, resumed, err := rs.Start(ctx, Window{Session: "s1", ClaudePID: caller}, repo, "", lc, false)
+	if err != nil || !resumed || got.ID != held.ID {
+		t.Fatalf("Start = %+v resumed=%v err=%v, want the held subject", got, resumed, err)
+	}
+	if pid := f.row(held.ID).ClaudePID; pid != owner {
+		t.Fatalf("subject pid = %d, want the live owner %d", pid, owner)
+	}
+
+	rs.LiveWindow = func(int) bool { return false }
+	if _, _, err := rs.Start(ctx, Window{Session: "s1", ClaudePID: caller}, repo, "", lc, false); err != nil {
+		t.Fatal(err)
+	}
+	if pid := f.row(held.ID).ClaudePID; pid != caller {
+		t.Fatalf("subject pid = %d, want the resumed window %d once the owner is gone", pid, caller)
 	}
 }

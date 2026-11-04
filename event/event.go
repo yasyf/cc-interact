@@ -24,6 +24,10 @@ const (
 	OriginSupersede Origin = "supersede"
 )
 
+// TypeWindowMoved is the one-shot frame telling a window's channel that the
+// subject it streams was the resume's boot subject, so it resolves again.
+const TypeWindowMoved = "channel.window_moved"
+
 // Event is one entry in a subject's append-only log, fanned out to every consumer.
 type Event struct {
 	SubjectID string
