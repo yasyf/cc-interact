@@ -59,7 +59,7 @@ func (c *Client) Close() error {
 	if c.closed {
 		return c.closeErr
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
 	c.closed, c.closeErr = true, c.business.Close(ctx)
 	return c.closeErr

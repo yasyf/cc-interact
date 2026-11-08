@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.4] - 2026-11-08
+
+### Fixed
+
+- **An ensure releases the daemon session it probes with.** `EnsureCurrent` and `EnsureCurrentIfRunning` closed their probe client with the caller's context, which daemonkit refuses to close on when it has no deadline, so every ensure under a deadline-less context kept one session slot until the daemon's idle reclaim. A channel server ensures before each tool call, so one window running about 64 tool calls filled the daemon's 64 slots and every other client on the host was refused with `session capacity exhausted`. The probe now closes on its own five-second bound.
+
 ## [0.40.3] - 2026-11-04
 
 ### Added

@@ -203,3 +203,23 @@ func TestAnEnsureProbesOnlyOnceTheEnsureAheadOfItFinishes(t *testing.T) {
 		t.Fatalf("EnsureCurrentIfRunning after the ensure ahead of it = %v, want ErrNoPeer", err)
 	}
 }
+
+func TestEnsuresWithNoDeadlineReleaseEverySessionTheyProbeWith(t *testing.T) {
+	spec, _ := serveStubDaemon(t, "cci-launcher-release", replyWith(Reply{OK: true}))
+	launcher := exactLauncher(spec)
+	for range maxSessions + 1 {
+		if err := launcher.EnsureCurrentIfRunning(context.Background()); errors.Is(err, daemonkit.ErrSessionCapacity) {
+			t.Fatalf("EnsureCurrentIfRunning = %v: an earlier ensure kept its probe session", err)
+		}
+	}
+	client, err := NewClient(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.Do(ctx, Envelope{Op: "probe"}); err != nil {
+		t.Fatalf("Do after %d ensures = %v, want a free session", maxSessions+1, err)
+	}
+}

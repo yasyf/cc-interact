@@ -56,7 +56,7 @@ func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) erro
 	if err != nil {
 		return err
 	}
-	defer func() { _ = client.Close(ctx) }()
+	defer closeProbe(client)
 	operationCtx, cancel := boundedContext(ctx, timeout)
 	defer cancel()
 	release, err := l.awaitEnsureTurn(operationCtx)
@@ -86,7 +86,7 @@ func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = client.Close(ctx) }()
+	defer closeProbe(client)
 	operationCtx, cancel := boundedContext(ctx, UpgradeTimeout)
 	defer cancel()
 	release, err := l.awaitEnsureTurn(operationCtx)
@@ -133,7 +133,10 @@ func (l Launcher) awaitEnsureTurn(ctx context.Context) (func(), error) {
 	}
 }
 
-const ensureTurnPoll = 50 * time.Millisecond
+const (
+	ensureTurnPoll = 50 * time.Millisecond
+	closeTimeout   = 5 * time.Second
+)
 
 func ensureLockPath(p paths.Paths) string { return filepath.Join(p.LockDir(), "ensure.lock") }
 
@@ -225,6 +228,12 @@ func (l Launcher) validate() error {
 		return errors.New("daemon: runtime build is required")
 	}
 	return l.Daemon.ValidateForClient()
+}
+
+func closeProbe(client *daemonkit.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+	_ = client.Close(ctx)
 }
 
 func boundedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
