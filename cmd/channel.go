@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
 )
+
+const headRetryDelay = time.Second
 
 // ChannelCmd is the hidden, opt-in stdio MCP channel server. Loaded at session
 // start, it advertises the consumer's domain tools and pushes each subject event
@@ -68,6 +71,20 @@ func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, 
 		subjectID, port := waitForSubject(ctx, connect, session, scope, claudePID, daemon.ChannelConsumer)
 		if subjectID == "" {
 			return
+		}
+		if d.ChannelResumesLive {
+			head, err := consume.StreamHead(ctx, port, subjectID, event.OriginAgent)
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(headRetryDelay):
+				}
+				continue
+			}
+			if err := consume.RaiseCursor(d.Paths, subjectID, daemon.ChannelConsumer, head); err != nil {
+				return
+			}
 		}
 		src := consume.StreamSource{
 			Port: port, SubjectID: subjectID, Consumer: daemon.ChannelConsumer, ClaudePID: claudePID,
