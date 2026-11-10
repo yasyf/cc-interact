@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.6] - 2026-11-09
+
+### Added
+
+- **A channel can resume live instead of replaying its backlog.** `cmd.Deps.ChannelResumesLive` raises the channel cursor to the subject's stream head before each attach, so a channel that starts after days without one pushes only events logged from then on. Reconnects inside one channel process still replay their gap. Set it only when another path delivers what the channel skips; cc-slack sets it because its hook directives carry every top-level event. `consume.StreamHead` reads a subject's stream head and `consume.RaiseCursor` lifts a consumer's persisted cursor.
+
 ## [0.40.5] - 2026-11-09
 
 ### Added

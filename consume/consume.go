@@ -8,6 +8,7 @@ package consume
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,6 +29,8 @@ import (
 // reconnectDelay is how long a stream consumer waits before reconnecting after
 // the SSE connection drops.
 const reconnectDelay = 2 * time.Second
+
+const caughtUpEvent = "event: caught-up"
 
 // livenessInterval is how often a pid-bound consumer checks that its owning
 // window is still alive; a parked Read only wakes on the context cancel this
@@ -157,6 +160,49 @@ func streamURL(src StreamSource) string {
 		u += "&claude_pid=" + strconv.Itoa(src.ClaudePID)
 	}
 	return u
+}
+
+// StreamHead returns the seq of the newest event a stream of subjectID without
+// excludeOrigin carries: the seq the daemon's caught-up marker names once its
+// replay ends.
+func StreamHead(ctx context.Context, port int, subjectID string, excludeOrigin event.Origin) (int64, error) {
+	u := fmt.Sprintf("http://127.0.0.1:%d/events?session=%s&exclude_origin=%s",
+		port, url.QueryEscape(subjectID), url.QueryEscape(excludeOrigin))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("read the event log head of %s: %w", subjectID, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("read the event log head of %s: events endpoint returned %d", subjectID, resp.StatusCode)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	caughtUp := false
+	for sc.Scan() {
+		line := sc.Text()
+		if line == caughtUpEvent {
+			caughtUp = true
+			continue
+		}
+		if data, ok := strings.CutPrefix(line, "data: "); ok && caughtUp {
+			var marker struct {
+				Seq int64 `json:"seq"`
+			}
+			if err := json.Unmarshal([]byte(data), &marker); err != nil {
+				return 0, fmt.Errorf("parse the caught-up marker of %s: %w", subjectID, err)
+			}
+			return marker.Seq, nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return 0, fmt.Errorf("event stream of %s closed before it caught up: %w", subjectID, err)
+	}
+	return 0, fmt.Errorf("event stream of %s closed before it caught up", subjectID)
 }
 
 // readStream consumes one SSE connection. A nil fatal means a transient drop
@@ -313,6 +359,23 @@ func readCursor(path string) (int64, error) {
 		return 0, fmt.Errorf("corrupt cursor %s: %w", path, err)
 	}
 	return n, nil
+}
+
+// RaiseCursor lifts consumer's persisted cursor for subjectID to seq when it is
+// behind, so the next ConsumeEvents for that consumer resumes after seq.
+func RaiseCursor(p paths.Paths, subjectID, consumer string, seq int64) error {
+	if err := statepath.EnsureSubjectDir(p, subjectID); err != nil {
+		return fmt.Errorf("ensure cursor directory for %s: %w", subjectID, err)
+	}
+	path := statepath.Cursor(p, subjectID, consumer)
+	cursor, err := readCursor(path)
+	if err != nil {
+		return err
+	}
+	if cursor >= seq {
+		return nil
+	}
+	return writeCursor(path, seq)
 }
 
 // writeCursor persists the cursor atomically and durably through a uniquely
