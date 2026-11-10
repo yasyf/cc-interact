@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -164,11 +165,14 @@ func TestDispatchChannelAck(t *testing.T) {
 	if r := s.dispatch(context.Background(), Envelope{Op: OpChannelAck}); r.OK {
 		t.Fatalf("channel-ack without a pid = %+v, want error", r)
 	}
-	if r := s.dispatch(context.Background(), Envelope{Op: OpChannelAck, ClaudePID: 77}); !r.OK {
+	if r := s.dispatch(context.Background(), Envelope{Op: OpChannelAck, ClaudePID: os.Getpid()}); !r.OK {
 		t.Fatalf("channel-ack with a pid = %+v, want ok", r)
 	}
-	if !s.activity.Proven(77) {
+	if !s.proven(os.Getpid()) {
 		t.Fatal("channel-ack must mark the window proven")
+	}
+	if s.proven(os.Getppid()) {
+		t.Fatal("proof leaked across windows")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/consume"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/internal/statepath"
+	"github.com/yasyf/cc-interact/procs"
 	"github.com/yasyf/cc-interact/subject"
 )
 
@@ -88,7 +91,12 @@ func appendDirected(t *testing.T, s *Server, sub subject.Subject, text string, l
 
 func hookDrain(t *testing.T, s *Server, sub subject.Subject) []string {
 	t.Helper()
-	r := s.dispatch(context.Background(), agentEnvelope(OpAgentInject, sub, agentInjectBody{AgentID: agent.TopLevel}))
+	return hookDrainFrom(t, s, agentEnvelope(OpAgentInject, sub, agentInjectBody{AgentID: agent.TopLevel}))
+}
+
+func hookDrainFrom(t *testing.T, s *Server, env Envelope) []string {
+	t.Helper()
+	r := s.dispatch(context.Background(), env)
 	if !r.OK {
 		t.Fatalf("inject = %+v, want ok", r)
 	}
@@ -139,7 +147,7 @@ func assertNoFrame(t *testing.T, frames <-chan channelFrame) {
 
 func TestProvenChannelEventSkipsTheHook(t *testing.T) {
 	s := newTestServer(t, Config{})
-	sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 42, "open")
+	sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", os.Getpid(), "open")
 	frames := startChannel(t, s, sub)
 	prove(t, s, sub)
 
@@ -153,11 +161,86 @@ func TestProvenChannelEventSkipsTheHook(t *testing.T) {
 	assertNoFrame(t, frames)
 }
 
+func TestAHookRunOutsideTheWindowSkipsWhatItsChannelPushed(t *testing.T) {
+	s := newTestServer(t, Config{})
+	sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", os.Getpid(), "open")
+	frames := startChannel(t, s, sub)
+	prove(t, s, sub)
+
+	seq := appendDirected(t, s, sub, "hello", true)
+	waitPushed(t, s, sub, frames, seq)
+	outside := agentEnvelope(OpAgentInject, sub, agentInjectBody{AgentID: agent.TopLevel})
+	outside.ClaudePID = 0
+	if got := hookDrainFrom(t, s, outside); len(got) != 0 {
+		t.Fatalf("a hook with no claude pid delivered %v the proven channel pushed, want nothing", got)
+	}
+}
+
+func writeProof(t *testing.T, s *Server, pid int, start int64) {
+	t.Helper()
+	if err := os.MkdirAll(statepath.WindowProofs(s.paths), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statepath.WindowProof(s.paths, pid), []byte(strconv.FormatInt(start, 10)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProofAnEarlierDaemonRecordedHolds(t *testing.T) {
+	s := newTestServer(t, Config{})
+	sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", os.Getpid(), "open")
+	start, err := procs.StartTime(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeProof(t, s, sub.ClaudePID, start)
+
+	frames := startChannel(t, s, sub)
+	if got := s.ChannelState(HandlerCtx{Env: Envelope{ClaudePID: os.Getpid()}, Scope: "scopeA"}, sub.ID, ChannelConsumer); got != ChannelActive {
+		t.Fatalf("channel state under an earlier daemon's proof = %q, want active with no new probe", got)
+	}
+	waitPushed(t, s, sub, frames, appendDirected(t, s, sub, "hello", true))
+	if got := hookDrain(t, s, sub); len(got) != 0 {
+		t.Fatalf("hook delivered %v under an earlier daemon's proof, want nothing", got)
+	}
+}
+
+func TestARecycledPidInheritsNoProof(t *testing.T) {
+	s := newTestServer(t, Config{})
+	sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", os.Getpid(), "open")
+	start, err := procs.StartTime(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeProof(t, s, sub.ClaudePID, start-1)
+
+	frames := startChannel(t, s, sub)
+	waitPushed(t, s, sub, frames, appendDirected(t, s, sub, "hello", true))
+	if got := hookDrain(t, s, sub); len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("hook delivered %v under another process's proof, want [hello]", got)
+	}
+}
+
+func TestAnotherWindowsChannelOnTheSubjectStopsTheSkip(t *testing.T) {
+	s := newTestServer(t, Config{})
+	sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", os.Getpid(), "open")
+	frames := startChannel(t, s, sub)
+	prove(t, s, sub)
+	other := sub
+	other.ClaudePID = os.Getppid()
+	startChannel(t, s, other)
+
+	waitPushed(t, s, sub, frames, appendDirected(t, s, sub, "hello", true))
+	if got := hookDrain(t, s, sub); len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("hook delivered %v with a second window's channel sharing the cursor, want [hello]", got)
+	}
+}
+
 func TestHookDeliveredBacklogNeverReachesALaterChannel(t *testing.T) {
 	for _, backlog := range []int{1, 1000} {
 		t.Run(strconv.Itoa(backlog), func(t *testing.T) {
 			s := newTestServer(t, Config{})
-			sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 42, "open")
+			sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", os.Getpid(), "open")
 			for i := range backlog {
 				appendDirected(t, s, sub, fmt.Sprintf("backlog-%d", i), true)
 			}
@@ -192,7 +275,7 @@ func TestHookStillDeliversWhatTheChannelDidNotProvablyPush(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestServer(t, Config{})
-			sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 42, "open")
+			sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", os.Getpid(), "open")
 			if tc.resumed {
 				seq := appendDirected(t, s, sub, "hello", tc.linked)
 				if err := consume.RaiseCursor(s.paths, sub.ID, ChannelConsumer, seq); err != nil {
