@@ -449,7 +449,9 @@ func (s *Server) recordAgentStopped(ctx context.Context, subjectID, agentID stri
 }
 
 // handleAgentInject drains an agent's pending directives and returns them in one
-// round trip. A top-level drain skips what the window's channel already pushed.
+// round trip. A top-level drain skips what the channel of the subject's window
+// already pushed; the subject names the window because a hook may run outside
+// it, as a capt-hook worker does, and then carries no claude pid.
 // An untracked session yields an empty slice; a non-empty drain records
 // agent.delivered (via=hook).
 func (s *Server) handleAgentInject(hc HandlerCtx) Reply {
@@ -466,7 +468,7 @@ func (s *Server) handleAgentInject(hc HandlerCtx) Reply {
 	}
 	var pushed store.ChannelPushed
 	if b.AgentID == agent.TopLevel {
-		if pushed, err = s.channelPushed(sub.ID, hc.Env.ClaudePID); err != nil {
+		if pushed, err = s.channelPushed(sub.ID, sub.ClaudePID); err != nil {
 			return errReply(err.Error())
 		}
 	}
@@ -542,7 +544,7 @@ func (s *Server) handleAgentDirect(hc HandlerCtx) Reply {
 // overlapping, or unproven channel pushed nothing that counts.
 func (s *Server) channelPushed(subjectID string, pid int) (store.ChannelPushed, error) {
 	after, flushed, ok := s.activity.Pushed(subjectID, ChannelConsumer, pid)
-	if !ok || !s.activity.Proven(pid) {
+	if !ok || !s.proven(pid) {
 		return store.ChannelPushed{}, nil
 	}
 	persisted, err := consume.Cursor(s.paths, subjectID, ChannelConsumer)

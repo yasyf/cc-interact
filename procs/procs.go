@@ -43,6 +43,20 @@ func LiveClaude(pid int) bool {
 	return isClaude(argv)
 }
 
+// StartTime returns when process pid started, in milliseconds since the epoch,
+// so a recycled pid reads as another process.
+func StartTime(pid int) (int64, error) {
+	p, err := process.NewProcess(int32(pid)) //nolint:gosec // G115: OS PIDs are bounded well below int32 max (Linux PID_MAX_LIMIT 2^22, macOS 99999).
+	if err != nil {
+		return 0, fmt.Errorf("open pid %d: %w", pid, err)
+	}
+	start, err := p.CreateTime()
+	if err != nil {
+		return 0, fmt.Errorf("start time of pid %d: %w", pid, err)
+	}
+	return start, nil
+}
+
 // FindAncestor walks the parent chain starting at pid (inclusive) and returns
 // the first pid whose argv satisfies match; 0 when nothing matches.
 func FindAncestor(pid int, match func(argv []string) bool) int {

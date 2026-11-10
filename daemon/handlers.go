@@ -84,7 +84,9 @@ func (s *Server) handleChannelAck(hc HandlerCtx) Reply {
 	if hc.Env.ClaudePID == 0 {
 		return errReply("channel-ack requires a window (no claude pid)")
 	}
-	s.activity.MarkProven(hc.Env.ClaudePID)
+	if err := s.recordProof(hc.Env.ClaudePID); err != nil {
+		return errReply(err.Error())
+	}
 	return Reply{OK: true}
 }
 
@@ -103,7 +105,7 @@ func (s *Server) handleStatus(hc HandlerCtx) Reply {
 		reply.Body, _ = json.Marshal(StatusBody{
 			ConsumerConnected: s.activity.AttachedWithin(sub.ID, attachGrace),
 			Consumers:         s.activity.Counts(sub.ID),
-			Proven:            s.activity.Proven(hc.Env.ClaudePID),
+			Proven:            s.proven(hc.Env.ClaudePID),
 		})
 	}
 	return reply

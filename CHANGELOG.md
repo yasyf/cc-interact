@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.1] - 2026-11-10
+
+### Fixed
+
+- **A hook drain skips what the channel pushed even when the hook runs outside the window.** A capt-hook worker runs the agent-inject hook under its own daemon, so the envelope carries no claude pid and the drain never found the window's channel stream or its proof: every linked directive was delivered a second time. The drain now names the window by the subject's binding.
+- **Channel proof outlives the daemon, and a recycled pid never inherits it.** `channel-ack` records the acking window in `cc-interact-v1/windows/<claude pid>.proof` as its process start time, and proof is read from there alone, so a restarted daemon keeps it with no new probe, and a pid that another process took reads unproven. Proof no longer lives in `Activity`.
+- **A hook drain skips nothing while two windows stream one subject's channel.** The windows share one persisted channel cursor, so `Activity.Pushed` now answers only for the consumer's one connection on the subject, in any window.
+
 ## [0.41.0] - 2026-11-09
 
 ### Added
