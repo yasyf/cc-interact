@@ -169,6 +169,28 @@ func (s *Server) reconcileSubscriptions(ctx context.Context) error {
 	return nil
 }
 
+// muteFrames returns the seqs among evs withheld from consumer: for the channel
+// consumer, every event whose linked top-level directive is already delivered,
+// read in one query, and for any consumer each event muteFrame withholds.
+func (s *Server) muteFrames(ctx context.Context, subjectID, consumer string, evs []event.Event) (map[int64]bool, error) {
+	muted := make(map[int64]bool)
+	if consumer == ChannelConsumer {
+		seqs, err := s.store.DeliveredEventSeqs(ctx, subjectID, evs[0].Seq, evs[len(evs)-1].Seq)
+		if err != nil {
+			return nil, err
+		}
+		for _, seq := range seqs {
+			muted[seq] = true
+		}
+	}
+	for _, e := range evs {
+		if s.muteFrame(subjectID, consumer, e) {
+			muted[e.Seq] = true
+		}
+	}
+	return muted, nil
+}
+
 // muteFrame reports whether the event is withheld from consumer: a frame
 // WithholdFrame withholds reaches no named consumer, and otherwise only the
 // configured mute consumer is affected, and only for a type a currently-present

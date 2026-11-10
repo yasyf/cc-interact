@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
@@ -21,7 +22,7 @@ func TestEnqueueDirective(t *testing.T) {
 				ctx := context.Background()
 				s, subjects := openTestStore(t)
 				subject := create(t, subjects, "session-1", "/repo", 0)
-				_, _, err := s.EnqueueDirective(ctx, subject.ID, "missing", "human", "work", time.Unix(100, 0))
+				_, _, err := s.EnqueueDirective(ctx, subject.ID, "missing", "human", "work", sql.NullInt64{}, time.Unix(100, 0))
 				if !errors.Is(err, ErrNotFound) {
 					t.Fatalf("enqueue unknown agent err = %v, want ErrNotFound", err)
 				}
@@ -35,7 +36,7 @@ func TestEnqueueDirective(t *testing.T) {
 				subject := create(t, subjects, "session-1", "/repo", 0)
 				now := time.Unix(100, 0)
 				directive, status, err := s.EnqueueDirective(
-					ctx, subject.ID, agent.TopLevel, "human", "work", now)
+					ctx, subject.ID, agent.TopLevel, "human", "work", sql.NullInt64{}, now)
 				if err != nil {
 					t.Fatalf("enqueue top-level directive: %v", err)
 				}
@@ -81,7 +82,7 @@ func TestEnqueueDirective(t *testing.T) {
 					t.Run(tc.name, func(t *testing.T) {
 						tc.before(t)
 						_, status, err := s.EnqueueDirective(
-							ctx, subject.ID, info.AgentID, "human", tc.name, time.Unix(int64(300+i), 0))
+							ctx, subject.ID, info.AgentID, "human", tc.name, sql.NullInt64{}, time.Unix(int64(300+i), 0))
 						if err != nil {
 							t.Fatalf("enqueue directive: %v", err)
 						}
@@ -123,13 +124,13 @@ func TestDrainDirectives(t *testing.T) {
 					{text: "third", now: time.Unix(101, 0)},
 				} {
 					if _, _, err := s.EnqueueDirective(
-						ctx, subject.ID, info.AgentID, "human", directive.text, directive.now); err != nil {
+						ctx, subject.ID, info.AgentID, "human", directive.text, sql.NullInt64{}, directive.now); err != nil {
 						t.Fatalf("enqueue directive %d: %v", i, err)
 					}
 				}
 
 				deliveredAt := time.Unix(200, 0)
-				got, err := s.DrainDirectives(ctx, subject.ID, info.AgentID, deliveredAt)
+				got, err := s.DrainDirectives(ctx, subject.ID, info.AgentID, ChannelPushed{}, deliveredAt)
 				if err != nil {
 					t.Fatalf("drain directives: %v", err)
 				}
@@ -145,7 +146,7 @@ func TestDrainDirectives(t *testing.T) {
 					}
 				}
 
-				second, err := s.DrainDirectives(ctx, subject.ID, info.AgentID, time.Unix(300, 0))
+				second, err := s.DrainDirectives(ctx, subject.ID, info.AgentID, ChannelPushed{}, time.Unix(300, 0))
 				if err != nil {
 					t.Fatalf("second drain: %v", err)
 				}
@@ -170,12 +171,12 @@ func TestDrainDirectives(t *testing.T) {
 						t.Fatalf("register %s/%s: %v", info.SubjectID, info.AgentID, err)
 					}
 					if _, _, err := s.EnqueueDirective(
-						ctx, info.SubjectID, info.AgentID, "human", info.SubjectID+"/"+info.AgentID, time.Unix(100, 0)); err != nil {
+						ctx, info.SubjectID, info.AgentID, "human", info.SubjectID+"/"+info.AgentID, sql.NullInt64{}, time.Unix(100, 0)); err != nil {
 						t.Fatalf("enqueue %s/%s: %v", info.SubjectID, info.AgentID, err)
 					}
 				}
 
-				got, err := s.DrainDirectives(ctx, subjectA.ID, "worker-1", time.Unix(200, 0))
+				got, err := s.DrainDirectives(ctx, subjectA.ID, "worker-1", ChannelPushed{}, time.Unix(200, 0))
 				if err != nil {
 					t.Fatalf("drain addressed agent: %v", err)
 				}
@@ -191,7 +192,7 @@ func TestDrainDirectives(t *testing.T) {
 					{subjectID: subjectB.ID, agentID: "worker-1"},
 				} {
 					pending, err := s.DrainDirectives(
-						ctx, address.subjectID, address.agentID, time.Unix(201, 0))
+						ctx, address.subjectID, address.agentID, ChannelPushed{}, time.Unix(201, 0))
 					if err != nil {
 						t.Fatalf("drain %s/%s: %v", address.subjectID, address.agentID, err)
 					}
@@ -243,6 +244,7 @@ func TestConcurrentEnqueueAndClose(t *testing.T) {
 						info.AgentID,
 						"human",
 						fmt.Sprintf("directive-%d", i),
+						sql.NullInt64{},
 						time.Unix(int64(100+i), 0),
 					)
 					results <- result{directive: directive, status: status, err: err}
@@ -270,7 +272,7 @@ func TestConcurrentEnqueueAndClose(t *testing.T) {
 				enqueued = append(enqueued, got)
 			}
 
-			drained, err := s.DrainDirectives(ctx, subject.ID, info.AgentID, time.Unix(2000, 0))
+			drained, err := s.DrainDirectives(ctx, subject.ID, info.AgentID, ChannelPushed{}, time.Unix(2000, 0))
 			if err != nil {
 				t.Fatalf("drain directives: %v", err)
 			}

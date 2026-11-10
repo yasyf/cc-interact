@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -21,17 +22,17 @@ func TestListPendingDirectiveAgents(t *testing.T) {
 			t.Fatalf("register %s/%s: %v", subjectID, agentID, err)
 		}
 		for i := 0; i < delivered; i++ {
-			if _, _, err := s.EnqueueDirective(ctx, subjectID, agentID, "human", "delivered", time.Unix(150, 0)); err != nil {
+			if _, _, err := s.EnqueueDirective(ctx, subjectID, agentID, "human", "delivered", sql.NullInt64{}, time.Unix(150, 0)); err != nil {
 				t.Fatalf("enqueue delivered %s/%s: %v", subjectID, agentID, err)
 			}
 		}
 		if delivered > 0 {
-			if _, err := s.DrainDirectives(ctx, subjectID, agentID, time.Unix(160, 0)); err != nil {
+			if _, err := s.DrainDirectives(ctx, subjectID, agentID, ChannelPushed{}, time.Unix(160, 0)); err != nil {
 				t.Fatalf("drain delivered %s/%s: %v", subjectID, agentID, err)
 			}
 		}
 		for i := 0; i < pending; i++ {
-			if _, _, err := s.EnqueueDirective(ctx, subjectID, agentID, "human", "pending", time.Unix(170, 0)); err != nil {
+			if _, _, err := s.EnqueueDirective(ctx, subjectID, agentID, "human", "pending", sql.NullInt64{}, time.Unix(170, 0)); err != nil {
 				t.Fatalf("enqueue pending %s/%s: %v", subjectID, agentID, err)
 			}
 		}
@@ -78,7 +79,7 @@ func TestListPendingDirectiveAgents(t *testing.T) {
 	}
 
 	// The peek is non-destructive: the pending rows are still drainable afterward.
-	drained, err := s.DrainDirectives(ctx, subjectA.ID, "a-1-done-pending", time.Unix(300, 0))
+	drained, err := s.DrainDirectives(ctx, subjectA.ID, "a-1-done-pending", ChannelPushed{}, time.Unix(300, 0))
 	if err != nil {
 		t.Fatalf("drain after peek: %v", err)
 	}

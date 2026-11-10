@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-11-09
+
+### Added
+
+- **A top-level directive can carry the event it delivers, so the session gets it once.** `daemon.Server.DirectEvent` queues a top-level directive linked to a logged event's seq. The channel stream withholds that event once the directive is delivered, and a hook drain skips the directive once the window's proven channel has pushed it: the stream resumed below the event, and the channel's persisted cursor has passed it. A directive with no link, and every subagent directive, behaves as before.
+- **The store migrates the previous core schema in place.** `store.Open` recognizes a store recorded at the previous core schema with the same consumer DDL, adds `directives.event_seq` and its index, and records the new fingerprint in one transaction, so every consumer keeps its rows. Only core tables migrate; a consumer's own tables stay exact, and any other mismatch still fails or archives as before.
+
+### Changed
+
+- `store.EnqueueDirective` takes the linked event seq, `store.DrainDirectives` takes the span a proven channel pushed, `sse.Backend.Attach` takes the cursor a stream resumes after, and `sse.Config.MuteFrame` is now `MuteFrames`, called once per flush with the whole batch.
+
 ## [0.40.6] - 2026-11-09
 
 ### Added
