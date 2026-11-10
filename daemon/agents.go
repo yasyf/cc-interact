@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,7 +13,9 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-interact/agent"
+	"github.com/yasyf/cc-interact/consume"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
 )
 
@@ -230,7 +233,19 @@ func parseAwaitTimeout(r *http.Request) time.Duration {
 // already stopped — appends agent.relay (OriginSystem) so the subject's watchers
 // see the directive land on a done agent.
 func (s *Server) Direct(ctx context.Context, subjectID, agentID, origin, text string) (agent.Directive, error) {
-	directive, status, err := s.store.EnqueueDirective(ctx, subjectID, agentID, origin, text, time.Now())
+	return s.direct(ctx, subjectID, agentID, origin, text, sql.NullInt64{})
+}
+
+// DirectEvent is Direct for a top-level directive that carries the logged event
+// at eventSeq, so the session receives it once: the channel stream withholds the
+// event once the directive is delivered, and a hook drain skips the directive
+// once the window's proven channel has pushed the event.
+func (s *Server) DirectEvent(ctx context.Context, subjectID, origin, text string, eventSeq int64) (agent.Directive, error) {
+	return s.direct(ctx, subjectID, agent.TopLevel, origin, text, sql.NullInt64{Int64: eventSeq, Valid: true})
+}
+
+func (s *Server) direct(ctx context.Context, subjectID, agentID, origin, text string, eventSeq sql.NullInt64) (agent.Directive, error) {
+	directive, status, err := s.store.EnqueueDirective(ctx, subjectID, agentID, origin, text, eventSeq, time.Now())
 	if err != nil {
 		return agent.Directive{}, fmt.Errorf("enqueue directive: %w", err)
 	}
@@ -246,10 +261,11 @@ func (s *Server) Direct(ctx context.Context, subjectID, agentID, origin, text st
 	return directive, nil
 }
 
-// drainMailbox drains the agent's pending directives and stamps its presence, so
-// the channel mute outlives the gap between a delivering await and the next park.
-func (s *Server) drainMailbox(ctx context.Context, subjectID, agentID string, now time.Time) ([]agent.Directive, error) {
-	drained, err := s.store.DrainDirectives(ctx, subjectID, agentID, now)
+// drainMailbox drains the agent's pending directives, skipping those whose event
+// pushed names, and stamps its presence, so the channel mute outlives the gap
+// between a delivering await and the next park.
+func (s *Server) drainMailbox(ctx context.Context, subjectID, agentID string, pushed store.ChannelPushed, now time.Time) ([]agent.Directive, error) {
+	drained, err := s.store.DrainDirectives(ctx, subjectID, agentID, pushed, now)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +386,7 @@ func (s *Server) handleAgentStop(hc HandlerCtx) Reply {
 		return errReply("agent-stop requires an agent_id")
 	}
 	now := time.Now()
-	pending, err := s.store.DrainDirectives(hc.Ctx, sub.ID, b.AgentID, now)
+	pending, err := s.store.DrainDirectives(hc.Ctx, sub.ID, b.AgentID, store.ChannelPushed{}, now)
 	if err != nil {
 		return errReply(err.Error())
 	}
@@ -433,8 +449,9 @@ func (s *Server) recordAgentStopped(ctx context.Context, subjectID, agentID stri
 }
 
 // handleAgentInject drains an agent's pending directives and returns them in one
-// round trip. An untracked session yields an empty slice; a non-empty drain
-// records agent.delivered (via=hook).
+// round trip. A top-level drain skips what the window's channel already pushed.
+// An untracked session yields an empty slice; a non-empty drain records
+// agent.delivered (via=hook).
 func (s *Server) handleAgentInject(hc HandlerCtx) Reply {
 	sub, ok, err := hc.Subjects.Find(hc.Ctx, hc.Window, hc.Scope)
 	if err != nil {
@@ -447,7 +464,13 @@ func (s *Server) handleAgentInject(hc HandlerCtx) Reply {
 	if err := json.Unmarshal(hc.Env.Body, &b); err != nil {
 		return errReply(fmt.Errorf("agent-inject body: %w", err).Error())
 	}
-	drained, err := s.drainMailbox(hc.Ctx, sub.ID, b.AgentID, time.Now())
+	var pushed store.ChannelPushed
+	if b.AgentID == agent.TopLevel {
+		if pushed, err = s.channelPushed(sub.ID, hc.Env.ClaudePID); err != nil {
+			return errReply(err.Error())
+		}
+	}
+	drained, err := s.drainMailbox(hc.Ctx, sub.ID, b.AgentID, pushed, time.Now())
 	if err != nil {
 		return errReply(err.Error())
 	}
@@ -512,6 +535,23 @@ func (s *Server) handleAgentDirect(hc HandlerCtx) Reply {
 	return Reply{OK: true, Body: body}
 }
 
+// channelPushed is the span of events the window's one attached channel stream
+// has pushed and the window's model is proven to receive: past the cursor the
+// stream resumed after, through both the last frame the daemon flushed to it and
+// the cursor the channel persists once it has pushed an event. An unattached,
+// overlapping, or unproven channel pushed nothing that counts.
+func (s *Server) channelPushed(subjectID string, pid int) (store.ChannelPushed, error) {
+	after, flushed, ok := s.activity.Pushed(subjectID, ChannelConsumer, pid)
+	if !ok || !s.activity.Proven(pid) {
+		return store.ChannelPushed{}, nil
+	}
+	persisted, err := consume.Cursor(s.paths, subjectID, ChannelConsumer)
+	if err != nil {
+		return store.ChannelPushed{}, err
+	}
+	return store.ChannelPushed{After: after, Through: min(flushed, persisted)}, nil
+}
+
 func directivesBody(drained []agent.Directive) Reply {
 	if drained == nil {
 		drained = []agent.Directive{}
@@ -544,7 +584,7 @@ func (s *Server) handleAgentAwait(w http.ResponseWriter, r *http.Request) {
 	release := s.parks.wait(subjectID, agentID)
 	defer s.parks.done(subjectID, agentID, release)
 
-	drained, err := s.drainMailbox(r.Context(), subjectID, agentID, time.Now())
+	drained, err := s.drainMailbox(r.Context(), subjectID, agentID, store.ChannelPushed{}, time.Now())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -560,7 +600,7 @@ func (s *Server) handleAgentAwait(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(timeout):
 		// A Direct may have landed rows and signalled release in the sliver where the
 		// timeout case won the select; one final re-drain returns them, else 204.
-		late, err := s.drainMailbox(r.Context(), subjectID, agentID, time.Now())
+		late, err := s.drainMailbox(r.Context(), subjectID, agentID, store.ChannelPushed{}, time.Now())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -571,7 +611,7 @@ func (s *Server) handleAgentAwait(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case <-release:
-		redrained, err := s.drainMailbox(r.Context(), subjectID, agentID, time.Now())
+		redrained, err := s.drainMailbox(r.Context(), subjectID, agentID, store.ChannelPushed{}, time.Now())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -52,10 +52,12 @@ type Backend interface {
 	Subscribe(subjectID string) (<-chan struct{}, func())
 
 	// Attach records one open named-consumer SSE connection (consumer name +
-	// window pid) and returns its detach. It always runs for a named consumer,
-	// independent of presence emission, so the registry feeding ConsumerConnected
-	// stays accurate.
-	Attach(subjectID, consumer string, pid int) func()
+	// window pid, resuming after cursor) and returns its pushed, which the
+	// handler calls with each new high-water cursor once those frames are
+	// flushed, and its detach. It always runs for a named consumer, independent
+	// of presence emission, so the registry feeding ConsumerConnected stays
+	// accurate.
+	Attach(subjectID, consumer string, pid int, cursor int64) (pushed func(seq int64), detach func())
 
 	// ConsumerConnected reports whether a live named consumer is currently wired
 	// to the subject. It gates the presence-change transitions.
@@ -90,11 +92,12 @@ type Config struct {
 	// ends it); a non-nil error refuses the stream as draining. nil admits every stream.
 	Admit func() (release func(), err error)
 
-	// MuteFrame, when set, withholds an event from the named consumer while
-	// returning true. Like the presence filter, a muted frame's cursor still
+	// MuteFrames, when set, returns the seqs among one flush's events to
+	// withhold from the named consumer; an error delivers nothing and retries on
+	// the next wake. Like the presence filter, a muted frame's cursor still
 	// advances, so a later un-mute delivers only new events, never the backlog.
 	// nil mutes nothing.
-	MuteFrame func(subjectID, consumer string, e event.Event) bool
+	MuteFrames func(ctx context.Context, subjectID, consumer string, evs []event.Event) (map[int64]bool, error)
 }
 
 // Server is the HTTP handler tree. It owns the mux and always mounts GET
@@ -201,7 +204,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// timer; the consumer reconciles the stale connected:true at its next boot.
 	// Attach always runs so the registry feeding ConsumerConnected stays accurate;
 	// only the emit is gated on OnPresenceChange.
+	cursor := parseCursor(r)
 	var inject chan string
+	pushed := func(int64) {}
 	if consumer != "" {
 		// Only a named consumer can receive solicited frames (Inject); a browser's
 		// inject channel stays nil, which never fires in the select. The queue
@@ -209,7 +214,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		inject = s.attachInject(injectKey{subjectID, consumer, pid})
 		defer s.detachInject(injectKey{subjectID, consumer, pid}, inject)
 		wasConnected := s.backend.ConsumerConnected(subjectID)
-		detach := s.backend.Attach(subjectID, consumer, pid)
+		var detach func()
+		pushed, detach = s.backend.Attach(subjectID, consumer, pid, cursor)
 		if !wasConnected {
 			s.announceConnect(r.Context(), subjectID)
 		}
@@ -228,8 +234,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	cursor := parseCursor(r)
-
 	// Subscribe BEFORE the first query so an event committed during replay is not
 	// lost between the gap query and the park (the cap-1 buffer retains the edge).
 	signal, unsub := s.backend.Subscribe(subjectID)
@@ -237,6 +241,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer)
+	pushed(cursor)
 	io.WriteString(w, ": connected\n\n") // prove liveness + flush proxies
 	// Replay done (from-zero load or Last-Event-ID resume): mark the live-tail
 	// boundary once. seq is the high-water flushed, or the resume cursor when nothing
@@ -255,6 +260,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case <-signal:
 			cursor = s.flushSince(ctx, w, flusher, subjectID, cursor, excludeOrigin, consumer)
+			pushed(cursor)
 		case p := <-inject:
 			// No id: the frame is outside the log, so the consumer's cursor must not
 			// advance past real events it has not seen.
@@ -268,13 +274,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // returns the new high-water cursor. For a named consumer it drops frames of the
 // configured presence type — the connectivity flip a named consumer caused must
 // not wake it — but the cursor advances past skipped rows too, so a wake never
-// re-queries the filtered tail. One query per wake; no DB handle is held across
-// the select.
+// re-queries the filtered tail. One events query and at most one MuteFrames call
+// per wake; no DB handle is held across the select.
 func (s *Server) flushSince(ctx context.Context, w io.Writer, fl http.Flusher, subjectID string, cursor int64, excludeOrigin, consumer string) int64 {
 	named := consumer != ""
 	evs, err := s.backend.EventsSince(ctx, subjectID, cursor, excludeOrigin)
-	if err != nil {
+	if err != nil || len(evs) == 0 {
 		return cursor
+	}
+	var muted map[int64]bool
+	if named && s.cfg.MuteFrames != nil {
+		if muted, err = s.cfg.MuteFrames(ctx, subjectID, consumer, evs); err != nil {
+			return cursor
+		}
 	}
 	wrote := false
 	for _, e := range evs {
@@ -284,7 +296,7 @@ func (s *Server) flushSince(ctx context.Context, w io.Writer, fl http.Flusher, s
 		if named && s.cfg.PresenceEventType != "" && e.Type == s.cfg.PresenceEventType {
 			continue
 		}
-		if named && s.cfg.MuteFrame != nil && s.cfg.MuteFrame(subjectID, consumer, e) {
+		if muted[e.Seq] {
 			continue
 		}
 		// No `event:` field: native EventSource delivers only default-type frames

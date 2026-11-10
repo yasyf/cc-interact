@@ -361,6 +361,11 @@ func readCursor(path string) (int64, error) {
 	return n, nil
 }
 
+// Cursor returns consumer's persisted cursor for subjectID, 0 when it has none.
+func Cursor(p paths.Paths, subjectID, consumer string) (int64, error) {
+	return readCursor(statepath.Cursor(p, subjectID, consumer))
+}
+
 // RaiseCursor lifts consumer's persisted cursor for subjectID to seq when it is
 // behind, so the next ConsumeEvents for that consumer resumes after seq.
 func RaiseCursor(p paths.Paths, subjectID, consumer string, seq int64) error {

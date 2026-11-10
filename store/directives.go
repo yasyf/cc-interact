@@ -36,10 +36,19 @@ func scanDirective(row interface{ Scan(...any) error }) (agent.Directive, error)
 	return directive, nil
 }
 
-// EnqueueDirective atomically observes the addressed agent's status and queues a directive.
+// ChannelPushed is the span of event seqs, After exclusive through Through
+// inclusive, that a window's proven channel stream has pushed. The zero value is
+// empty.
+type ChannelPushed struct {
+	After, Through int64
+}
+
+// EnqueueDirective atomically observes the addressed agent's status and queues a
+// directive. A valid eventSeq links the directive to the logged event it carries.
 func (s *Store) EnqueueDirective(
 	ctx context.Context,
 	subjectID, agentID, origin, text string,
+	eventSeq sql.NullInt64,
 	now time.Time,
 ) (agent.Directive, string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -62,8 +71,8 @@ func (s *Store) EnqueueDirective(
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO directives(subject_id, agent_id, origin, text, created_at) VALUES(?,?,?,?,?)`,
-		subjectID, agentID, origin, text, unix(now))
+		`INSERT INTO directives(subject_id, agent_id, origin, text, event_seq, created_at) VALUES(?,?,?,?,?,?)`,
+		subjectID, agentID, origin, text, eventSeq, unix(now))
 	if err != nil {
 		return agent.Directive{}, "", fmt.Errorf("insert directive: %w", err)
 	}
@@ -102,10 +111,38 @@ func (s *Store) HasPendingDirectives(ctx context.Context, subjectID, agentID, ex
 	return pending == 1, nil
 }
 
-// DrainDirectives atomically marks and returns pending directives in FIFO order.
+// DeliveredEventSeqs returns the seqs from through to of the subject's events whose
+// linked top-level directive is delivered.
+func (s *Store) DeliveredEventSeqs(ctx context.Context, subjectID string, from, to int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT event_seq FROM directives
+		 WHERE subject_id=? AND event_seq BETWEEN ? AND ? AND agent_id=? AND delivered_at IS NOT NULL`,
+		subjectID, from, to, agent.TopLevel)
+	if err != nil {
+		return nil, fmt.Errorf("select delivered event seqs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var seqs []int64
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			return nil, fmt.Errorf("scan delivered event seq: %w", err)
+		}
+		seqs = append(seqs, seq)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("select delivered event seqs: %w", err)
+	}
+	return seqs, nil
+}
+
+// DrainDirectives atomically marks every pending directive delivered and returns
+// them in FIFO order, except a directive whose linked event lies in pushed: the
+// channel already delivered it, so it is marked and not returned.
 func (s *Store) DrainDirectives(
 	ctx context.Context,
 	subjectID, agentID string,
+	pushed ChannelPushed,
 	now time.Time,
 ) ([]agent.Directive, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -118,8 +155,9 @@ func (s *Store) DrainDirectives(
 		`SELECT `+directiveCols+`
 		 FROM directives
 		 WHERE subject_id=? AND agent_id=? AND delivered_at IS NULL
+		   AND (event_seq IS NULL OR event_seq<=? OR event_seq>?)
 		 ORDER BY created_at ASC, id ASC`,
-		subjectID, agentID)
+		subjectID, agentID, pushed.After, pushed.Through)
 	if err != nil {
 		return nil, fmt.Errorf("select pending directives: %w", err)
 	}

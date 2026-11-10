@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
 )
 
@@ -126,7 +128,7 @@ func TestAgentStartRegistersAndGreets(t *testing.T) {
 		t.Fatalf("directed events = %+v, want one system-origin greeting", directed)
 	}
 
-	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "w1", time.Now())
+	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "w1", store.ChannelPushed{}, time.Now())
 	if err != nil {
 		t.Fatalf("drain greeting: %v", err)
 	}
@@ -384,7 +386,7 @@ func TestDirectToDoneAgentEmitsRelay(t *testing.T) {
 	if len(relay) != 1 || relay[0].Origin != event.OriginSystem {
 		t.Fatalf("relay events = %+v, want one system-origin event", relay)
 	}
-	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "w1", time.Now())
+	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "w1", store.ChannelPushed{}, time.Now())
 	if err != nil {
 		t.Fatalf("drain: %v", err)
 	}
@@ -531,7 +533,7 @@ func TestReconcileDirectives(t *testing.T) {
 	}
 
 	// Draining the stranded directive stops the re-emission.
-	if _, err := s.store.DrainDirectives(context.Background(), sub.ID, "done-pending", time.Now()); err != nil {
+	if _, err := s.store.DrainDirectives(context.Background(), sub.ID, "done-pending", store.ChannelPushed{}, time.Now()); err != nil {
 		t.Fatalf("drain done-pending: %v", err)
 	}
 	if err := s.reconcileDirectives(context.Background()); err != nil {
@@ -604,7 +606,7 @@ func TestConcurrentDirectAndStopThroughDaemon(t *testing.T) {
 	}
 
 	final := getAgent(t, s, sub.ID, "w1")
-	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "w1", time.Now())
+	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "w1", store.ChannelPushed{}, time.Now())
 	if err != nil {
 		t.Fatalf("final drain: %v", err)
 	}
@@ -742,7 +744,7 @@ func TestAgentStartConcurrentFirstRegistrationGreetsOnce(t *testing.T) {
 	if got := atomic.LoadInt32(&greetings); got != 1 {
 		t.Fatalf("greeting fired %d times, want exactly 1", got)
 	}
-	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "w1", time.Now())
+	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "w1", store.ChannelPushed{}, time.Now())
 	if err != nil {
 		t.Fatalf("drain: %v", err)
 	}
@@ -893,7 +895,7 @@ func TestAgentAwaitTimeoutReDrainReturnsLateRows(t *testing.T) {
 
 	// Enqueue directly, bypassing Direct's park release, so ONLY the timeout-path
 	// re-drain can surface the row.
-	if _, _, err := s.store.EnqueueDirective(context.Background(), sub.ID, "w1", event.OriginHuman, "late", time.Now()); err != nil {
+	if _, _, err := s.store.EnqueueDirective(context.Background(), sub.ID, "w1", event.OriginHuman, "late", sql.NullInt64{}, time.Now()); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 

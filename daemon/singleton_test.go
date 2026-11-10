@@ -12,6 +12,7 @@ import (
 
 	"github.com/yasyf/cc-interact/agent"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/store"
 	"github.com/yasyf/cc-interact/subject"
 )
 
@@ -63,7 +64,7 @@ func TestSingletonSupersedesSameType(t *testing.T) {
 		t.Fatalf("subscribers = %v, want only the newest [h2]", got)
 	}
 	// Drop h1's terminal supersede directive so the tee assertion is unambiguous.
-	if _, err := s.store.DrainDirectives(context.Background(), sub.ID, "h1", time.Now()); err != nil {
+	if _, err := s.store.DrainDirectives(context.Background(), sub.ID, "h1", store.ChannelPushed{}, time.Now()); err != nil {
 		t.Fatalf("drain h1: %v", err)
 	}
 	mustAppend(t, s, sub.ID, event.OriginHuman, "decision.created", `{"type":"decision.created"}`)
@@ -125,7 +126,7 @@ func TestSingletonLeavesOtherTypesAlone(t *testing.T) {
 	if len(got) != 2 || !hasType(got, "h2") || !hasType(got, "w1") {
 		t.Fatalf("subscribers = %v, want [h2 w1]", got)
 	}
-	if _, err := s.store.DrainDirectives(context.Background(), sub.ID, "h1", time.Now()); err != nil {
+	if _, err := s.store.DrainDirectives(context.Background(), sub.ID, "h1", store.ChannelPushed{}, time.Now()); err != nil {
 		t.Fatalf("drain h1: %v", err)
 	}
 	mustAppend(t, s, sub.ID, event.OriginHuman, "decision.created", `{"type":"decision.created"}`)
@@ -205,7 +206,7 @@ func TestSingletonSweepsUnregisteredRunningRow(t *testing.T) {
 	if got := len(eventsOfType(t, s, sub.ID, agent.EventRelay)); got != 0 {
 		t.Fatalf("agent.relay events after reconcile = %d, want 0", got)
 	}
-	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "zombie", time.Now())
+	drained, err := s.store.DrainDirectives(context.Background(), sub.ID, "zombie", store.ChannelPushed{}, time.Now())
 	if err != nil {
 		t.Fatalf("drain zombie: %v", err)
 	}

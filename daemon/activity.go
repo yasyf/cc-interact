@@ -16,6 +16,7 @@ import (
 type Activity struct {
 	mu       sync.Mutex
 	attached map[string]map[attachKey]int
+	streams  map[string]map[attachKey]map[*pushSpan]struct{}
 	viewers  map[string]int
 	lastDrop map[string]time.Time
 	polls    map[string]time.Time
@@ -28,10 +29,15 @@ type attachKey struct {
 	pid      int
 }
 
+type pushSpan struct {
+	after, through int64
+}
+
 // NewActivity returns an empty registry.
 func NewActivity() *Activity {
 	return &Activity{
 		attached: make(map[string]map[attachKey]int),
+		streams:  make(map[string]map[attachKey]map[*pushSpan]struct{}),
 		viewers:  make(map[string]int),
 		lastDrop: make(map[string]time.Time),
 		polls:    make(map[string]time.Time),
@@ -40,10 +46,12 @@ func NewActivity() *Activity {
 	}
 }
 
-// Attach records one open SSE connection for a consumer in a window and returns
-// its detach. Counting (not a flag) keeps an overlapping reconnect attached; the
-// subject's last detach stamps lastDrop for AttachedWithin.
-func (a *Activity) Attach(subjectID, consumer string, pid int) func() {
+// Attach records one open SSE connection for a consumer in a window, resuming
+// after cursor, and returns its pushed, which records that the connection has
+// written every frame through a seq, and its detach. Counting (not a flag) keeps
+// an overlapping reconnect attached; the subject's last detach stamps lastDrop
+// for AttachedWithin.
+func (a *Activity) Attach(subjectID, consumer string, pid int, cursor int64) (pushed func(seq int64), detach func()) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	m := a.attached[subjectID]
@@ -53,19 +61,35 @@ func (a *Activity) Attach(subjectID, consumer string, pid int) func() {
 	}
 	k := attachKey{consumer, pid}
 	m[k]++
+	if a.streams[subjectID] == nil {
+		a.streams[subjectID] = make(map[attachKey]map[*pushSpan]struct{})
+	}
+	if a.streams[subjectID][k] == nil {
+		a.streams[subjectID][k] = make(map[*pushSpan]struct{})
+	}
+	span := &pushSpan{after: cursor, through: cursor}
+	a.streams[subjectID][k][span] = struct{}{}
 	var once sync.Once
-	return func() {
-		once.Do(func() {
+	return func(seq int64) {
 			a.mu.Lock()
 			defer a.mu.Unlock()
-			if m[k]--; m[k] <= 0 {
-				delete(m, k)
-			}
-			if len(m) == 0 {
-				a.lastDrop[subjectID] = a.now()
-			}
-		})
-	}
+			span.through = max(span.through, seq)
+		}, func() {
+			once.Do(func() {
+				a.mu.Lock()
+				defer a.mu.Unlock()
+				delete(a.streams[subjectID][k], span)
+				if len(a.streams[subjectID][k]) == 0 {
+					delete(a.streams[subjectID], k)
+				}
+				if m[k]--; m[k] <= 0 {
+					delete(m, k)
+				}
+				if len(m) == 0 {
+					a.lastDrop[subjectID] = a.now()
+				}
+			})
+		}
 }
 
 // AttachViewer records one open anonymous (browser) SSE stream for a subject and
@@ -100,6 +124,23 @@ func (a *Activity) Attached(subjectID, consumer string, pid int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.attached[subjectID][attachKey{consumer, pid}] > 0
+}
+
+// Pushed reports the span of seqs the consumer's one open connection in that
+// window has written since it resumed: past its resume cursor, through the last
+// seq it flushed. ok is false with no connection open, or with several, since
+// overlapping connections leave no single span that every one of them pushed.
+func (a *Activity) Pushed(subjectID, consumer string, pid int) (after, through int64, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	spans := a.streams[subjectID][attachKey{consumer, pid}]
+	if len(spans) != 1 {
+		return 0, 0, false
+	}
+	for span := range spans {
+		after, through = span.after, span.through
+	}
+	return after, through, true
 }
 
 // Counts reports live SSE connection counts by consumer name for subjectID,

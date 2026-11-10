@@ -188,16 +188,12 @@ func New(cfg Config) (*Server, error) {
 			onPresence(ctx, s, subjectID, connected)
 		}
 	}
-	var muteFrame func(subjectID, consumer string, e event.Event) bool
-	if cfg.Subscribe != nil && cfg.MuteConsumer != "" || cfg.WithholdFrame != nil {
-		muteFrame = s.muteFrame
-	}
 	s.sse = sse.NewServer(s, sse.Config{
 		OnPresenceChange:  ssePresence,
 		PresenceEventType: cfg.PresenceEventType,
 		PresenceDebounce:  cfg.PresenceDebounce,
 		Admit:             s.workers.Admit,
-		MuteFrame:         muteFrame,
+		MuteFrames:        s.muteFrames,
 	})
 	// Core ops ride the same registry as domain ops. A scope with no canonical
 	// form reaches them as the resolver's fallback value, which matches no

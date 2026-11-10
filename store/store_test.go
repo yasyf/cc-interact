@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-interact/internal/testhome"
 	"github.com/yasyf/cc-interact/subject"
@@ -369,5 +370,79 @@ func TestGetMissing(t *testing.T) {
 	_, st := openTestStore(t)
 	if _, err := st.Get(ctx, "nope"); err != ErrNotFound {
 		t.Fatalf("unknown id err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestOpenMigratesThePreviousCoreSchemaInPlace(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy UnsupportedSchemaPolicy
+	}{
+		{"fail-closed opener", FailUnsupportedSchema},
+		{"archiving opener", ArchiveUnsupportedSchema},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "test.db")
+			extension := Schema{DDL: `CREATE TABLE widgets (id TEXT PRIMARY KEY);`}
+			baseFingerprint, err := extension.fingerprint(baseCoreSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db, err := openSQLite(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := createSchema(ctx, db, baseCoreSchema, extension, baseFingerprint); err != nil {
+				t.Fatal(err)
+			}
+			sub, err := NewSubjectStore(db).Create(ctx, "s1", "s1", "sess", "scope", 42, "open")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`INSERT INTO widgets(id) VALUES('w1')`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`INSERT INTO directives(subject_id, agent_id, origin, text, created_at) VALUES(?, '', 'human', 'kept', 1)`, sub.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			s, err := Open(ctx, path, extension, WithUnsupportedSchema(tc.policy))
+			if err != nil {
+				t.Fatalf("open previous-core store: %v", err)
+			}
+			var widgets int
+			if err := s.DB().QueryRow(`SELECT COUNT(*) FROM widgets`).Scan(&widgets); err != nil || widgets != 1 {
+				t.Fatalf("widgets = %d, %v; want the consumer row kept", widgets, err)
+			}
+			drained, err := s.DrainDirectives(ctx, sub.ID, "", ChannelPushed{After: 0, Through: 1 << 40}, time.Unix(2, 0))
+			if err != nil || len(drained) != 1 || drained[0].Text != "kept" {
+				t.Fatalf("drained %+v, %v; want the unlinked directive kept and returned", drained, err)
+			}
+			wantFingerprint, err := extension.Fingerprint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fingerprint string
+			if err := s.DB().QueryRow(`SELECT fingerprint FROM cc_interact_schema_v1 WHERE id=1`).Scan(&fingerprint); err != nil || fingerprint != wantFingerprint {
+				t.Fatalf("fingerprint = %q, %v; want %q", fingerprint, err, wantFingerprint)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			backups, err := filepath.Glob(path + ".*.bak")
+			if err != nil || len(backups) != 0 {
+				t.Fatalf("backups = %v, %v; want the store migrated, not archived", backups, err)
+			}
+			reopened, err := Open(ctx, path, extension)
+			if err != nil {
+				t.Fatalf("reopen migrated store: %v", err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+		})
 	}
 }

@@ -92,10 +92,10 @@ func (b *fakeBackend) Subscribe(subjectID string) (<-chan struct{}, func()) {
 	return b.bus.Subscribe(subjectID)
 }
 
-func (b *fakeBackend) Attach(subjectID, consumer string, pid int) func() {
+func (b *fakeBackend) Attach(subjectID, consumer string, pid int, _ int64) (func(int64), func()) {
 	key := subjectID + "/" + consumer + "/" + strconv.Itoa(pid)
 	b.attached <- key
-	return func() { b.detached <- key }
+	return func(int64) {}, func() { b.detached <- key }
 }
 
 func (b *fakeBackend) ConsumerConnected(string) bool {
@@ -464,10 +464,10 @@ func TestPresenceFilteredFromNamedConsumers(t *testing.T) {
 	})
 }
 
-// TestMuteFrameWithheldFromNamedConsumer proves a MuteFrame hook withholds a frame
+// TestMuteFramesWithheldFromNamedConsumer proves a MuteFrames hook withholds a frame
 // from only the targeted consumer, advancing the cursor past it so a resume from
 // the last delivered id never replays the muted tail.
-func TestMuteFrameWithheldFromNamedConsumer(t *testing.T) {
+func TestMuteFramesWithheldFromNamedConsumer(t *testing.T) {
 	seed := func(b *fakeBackend, id string) (keepSeq, mutedSeq int64) {
 		b.seed(id,
 			event.Event{Origin: event.OriginSystem, Type: presenceType, Payload: []byte(`{"type":"presence.changed"}`)},
@@ -489,8 +489,12 @@ func TestMuteFrameWithheldFromNamedConsumer(t *testing.T) {
 	}
 
 	// otherType is muted, but only for the "channel" consumer.
-	cfg := Config{PresenceDebounce: 20 * time.Millisecond, MuteFrame: func(_, consumer string, e event.Event) bool {
-		return consumer == "channel" && e.Type == otherType
+	cfg := Config{PresenceDebounce: 20 * time.Millisecond, MuteFrames: func(_ context.Context, _, consumer string, evs []event.Event) (map[int64]bool, error) {
+		muted := map[int64]bool{}
+		for _, e := range evs {
+			muted[e.Seq] = consumer == "channel" && e.Type == otherType
+		}
+		return muted, nil
 	}}
 
 	cases := []struct {

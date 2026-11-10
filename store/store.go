@@ -29,7 +29,7 @@ type Store struct {
 
 const schemaVersion = 1
 
-const coreSchema = `
+const baseCoreSchema = `
 CREATE TABLE cc_interact_schema_v1 (
   id          INTEGER PRIMARY KEY CHECK (id = 1),
   fingerprint TEXT NOT NULL
@@ -85,6 +85,14 @@ CREATE INDEX idx_directives_pending
   ON directives(subject_id, agent_id) WHERE delivered_at IS NULL;
 `
 
+const directiveEventSeqMigration = `
+ALTER TABLE directives ADD COLUMN event_seq INTEGER;
+CREATE INDEX idx_directives_event
+  ON directives(subject_id, event_seq) WHERE event_seq IS NOT NULL;
+`
+
+const coreSchema = baseCoreSchema + directiveEventSeqMigration
+
 // Schema is a consumer's exact v1 DDL extension. It is applied only while a
 // fresh database is created and participates byte-for-byte in its fingerprint.
 type Schema struct {
@@ -120,11 +128,13 @@ func (s Schema) Validate() error {
 }
 
 // Fingerprint returns the exact core-plus-consumer v1 schema fingerprint.
-func (s Schema) Fingerprint() (string, error) {
+func (s Schema) Fingerprint() (string, error) { return s.fingerprint(coreSchema) }
+
+func (s Schema) fingerprint(core string) (string, error) {
 	if err := s.Validate(); err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte("cc-interact-store-v1\x00" + coreSchema + "\x00" + s.DDL))
+	sum := sha256.Sum256([]byte("cc-interact-store-v1\x00" + core + "\x00" + s.DDL))
 	return hex.EncodeToString(sum[:]), nil
 }
 
@@ -132,15 +142,18 @@ func (s Schema) Fingerprint() (string, error) {
 func Path(p paths.Paths) string { return statepath.DB(p) }
 
 // Open opens or creates an exact v1 store. Existing databases must match both
-// user_version and the compiled core-plus-consumer fingerprint; they are never
-// altered, migrated, or interpreted under a different schema. On a mismatch Open
-// fails closed, leaving the store on disk, unless WithUnsupportedSchema opts into
-// ArchiveUnsupportedSchema, which renames the wedged store aside and starts fresh.
-// Archiving is decided under an exclusive per-store lock and fires only on a
-// definitive ErrUnsupportedSchema mismatch, so a genuinely transient failure (a
-// locked, I/O-erroring, or permission-denied store) is never archived; an opener
-// whose lockless pre-check merely raced a concurrent archive re-checks under the
-// lock and rides the fresh store.
+// user_version and the compiled core-plus-consumer fingerprint, with one
+// exception: a store recorded at the previous core schema with the same consumer
+// DDL is migrated in place, adding directives.event_seq and its index and
+// recording the new fingerprint in one transaction, so its rows survive. Only
+// core tables are ever migrated; a consumer's own tables stay exact. Any other
+// mismatch fails closed, leaving the store on disk, unless WithUnsupportedSchema
+// opts into ArchiveUnsupportedSchema, which renames the wedged store aside and
+// starts fresh. Migrating and archiving are decided under an exclusive per-store
+// lock, and archiving fires only on a definitive ErrUnsupportedSchema mismatch,
+// so a genuinely transient failure (a locked, I/O-erroring, or permission-denied
+// store) is never archived; an opener whose lockless pre-check merely raced a
+// concurrent migration or archive re-checks under the lock and rides the result.
 func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) (*Store, error) {
 	config := openConfig{}
 	for _, opt := range opts {
@@ -150,7 +163,7 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 	if err != nil {
 		return nil, err
 	}
-	sqliteSchemaFingerprint, err := expectedSQLiteSchemaFingerprint(ctx, extension, fingerprint)
+	sqliteSchemaFingerprint, err := expectedSQLiteSchemaFingerprint(ctx, coreSchema, extension, fingerprint)
 	if err != nil {
 		return nil, err
 	}
@@ -175,30 +188,31 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 			return &Store{db: db}, nil
 		}
 		_ = db.Close()
-		// Any verify miss for an archive-opted caller re-checks under the lock,
-		// which is the single source of truth: a lockless pre-verify that merely
-		// straddled a concurrent archive rides the fresh store there, while a
-		// genuinely locked or corrupt store still fails the under-lock verify with a
-		// non-sentinel error and is never archived.
-		if config.unsupportedSchema != ArchiveUnsupportedSchema {
+		// A definitive mismatch re-checks under the lock, which is the single
+		// source of truth: a previous-core store migrates there, and a lockless
+		// pre-verify that merely straddled a concurrent migration or archive rides
+		// its result. An archive-opted caller re-checks on any miss, while a
+		// genuinely locked or corrupt store still fails the under-lock verify with
+		// a non-sentinel error and is never archived.
+		if !errors.Is(verr, ErrUnsupportedSchema) && config.unsupportedSchema != ArchiveUnsupportedSchema {
 			return nil, verr
 		}
-	}
-	// The store is absent, or unsupported with the caller opted into archiving. A
-	// no-archive caller creating a brand-new store keeps the lockless path; the
-	// archive policy serializes the reset so concurrent openers produce exactly one
-	// archive and one fresh store, with every loser riding the winner's fresh store.
-	if config.unsupportedSchema != ArchiveUnsupportedSchema {
+	} else if config.unsupportedSchema != ArchiveUnsupportedSchema {
+		// A no-archive caller creating a brand-new store keeps the lockless path;
+		// the archive policy serializes the reset so concurrent openers produce
+		// exactly one archive and one fresh store, with every loser riding the
+		// winner's fresh store.
 		return createStore(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint)
 	}
-	return resetUnderLock(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint)
+	return openUnderLock(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint, config.unsupportedSchema)
 }
 
-// resetUnderLock takes the per-store archive lock, re-evaluates the on-disk store
-// under it, archives it if it is still a definitive mismatch, then creates a fresh
-// store. Holding the lock across the whole detect→archive→create sequence lets a
-// concurrent opener that acquires the lock afterward find and ride the fresh store.
-func resetUnderLock(ctx context.Context, dbPath string, extension Schema, fingerprint, sqliteSchemaFingerprint string) (*Store, error) {
+// openUnderLock takes the per-store lock and re-evaluates the on-disk store under
+// it: a current store opens, a previous-core store migrates, and any other
+// definitive mismatch is archived for an archive-opted caller, then a fresh
+// store is created. Holding the lock across the whole sequence lets a concurrent
+// opener that acquires it afterward find and ride the result.
+func openUnderLock(ctx context.Context, dbPath string, extension Schema, fingerprint, sqliteSchemaFingerprint string, policy UnsupportedSchemaPolicy) (*Store, error) {
 	lockCtx, cancel := context.WithTimeout(ctx, archiveLockTimeout)
 	defer cancel()
 	lock, err := durable.AcquireLock(lockCtx, dbPath+archiveLockSuffix)
@@ -218,8 +232,18 @@ func resetUnderLock(ctx context.Context, dbPath string, extension Schema, finger
 		if verr == nil {
 			return &Store{db: db}, nil
 		}
+		if errors.Is(verr, ErrUnsupportedSchema) {
+			migrated, err := migrateBaseCore(ctx, db, extension, fingerprint, sqliteSchemaFingerprint)
+			if err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+			if migrated {
+				return &Store{db: db}, nil
+			}
+		}
 		_ = db.Close()
-		if !errors.Is(verr, ErrUnsupportedSchema) {
+		if !errors.Is(verr, ErrUnsupportedSchema) || policy != ArchiveUnsupportedSchema {
 			return nil, verr
 		}
 		backup, archiveErr := archiveUnsupportedStore(dbPath)
@@ -236,12 +260,47 @@ func resetUnderLock(ctx context.Context, dbPath string, extension Schema, finger
 	return createStore(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint)
 }
 
+// migrateBaseCore brings a store recorded at baseCoreSchema with the same
+// consumer DDL forward to coreSchema in one transaction. It reports false,
+// changing nothing, for a store at any other schema.
+func migrateBaseCore(ctx context.Context, db *sql.DB, extension Schema, fingerprint, sqliteSchemaFingerprint string) (bool, error) {
+	baseFingerprint, err := extension.fingerprint(baseCoreSchema)
+	if err != nil {
+		return false, err
+	}
+	baseSQLiteSchemaFingerprint, err := expectedSQLiteSchemaFingerprint(ctx, baseCoreSchema, extension, baseFingerprint)
+	if err != nil {
+		return false, err
+	}
+	if err := verifySchema(ctx, db, baseFingerprint, baseSQLiteSchemaFingerprint); err != nil {
+		if errors.Is(err, ErrUnsupportedSchema) {
+			return false, nil
+		}
+		return false, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin core migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, directiveEventSeqMigration); err != nil {
+		return false, fmt.Errorf("migrate core schema: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE cc_interact_schema_v1 SET fingerprint=? WHERE id=1`, fingerprint); err != nil {
+		return false, fmt.Errorf("record migrated schema fingerprint: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit core migration: %w", err)
+	}
+	return true, verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint)
+}
+
 func createStore(ctx context.Context, dbPath string, extension Schema, fingerprint, sqliteSchemaFingerprint string) (*Store, error) {
 	db, err := openSQLite(dbPath)
 	if err != nil {
 		return nil, err
 	}
-	if err := createSchema(ctx, db, extension, fingerprint); err != nil {
+	if err := createSchema(ctx, db, coreSchema, extension, fingerprint); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -265,13 +324,13 @@ func openSQLite(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-func createSchema(ctx context.Context, db *sql.DB, extension Schema, fingerprint string) error {
+func createSchema(ctx context.Context, db *sql.DB, core string, extension Schema, fingerprint string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin schema: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, coreSchema); err != nil {
+	if _, err := tx.ExecContext(ctx, core); err != nil {
 		return fmt.Errorf("create core schema: %w", err)
 	}
 	if strings.TrimSpace(extension.DDL) != "" {
@@ -291,14 +350,14 @@ func createSchema(ctx context.Context, db *sql.DB, extension Schema, fingerprint
 	return nil
 }
 
-func expectedSQLiteSchemaFingerprint(ctx context.Context, extension Schema, fingerprint string) (string, error) {
+func expectedSQLiteSchemaFingerprint(ctx context.Context, core string, extension Schema, fingerprint string) (string, error) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return "", fmt.Errorf("open expected sqlite_schema: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	defer func() { _ = db.Close() }()
-	if err := createSchema(ctx, db, extension, fingerprint); err != nil {
+	if err := createSchema(ctx, db, core, extension, fingerprint); err != nil {
 		return "", fmt.Errorf("create expected sqlite_schema: %w", err)
 	}
 	value, err := liveSQLiteSchemaFingerprint(ctx, db)

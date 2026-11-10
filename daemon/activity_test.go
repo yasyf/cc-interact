@@ -8,8 +8,8 @@ import (
 
 func TestActivityAttachDetachCounts(t *testing.T) {
 	a := NewActivity()
-	d1 := a.Attach("s1", "channel", 100)
-	d2 := a.Attach("s1", "channel", 100)
+	_, d1 := a.Attach("s1", "channel", 100, 0)
+	_, d2 := a.Attach("s1", "channel", 100, 0)
 
 	if !a.Attached("s1", "channel", 100) {
 		t.Fatal("attached after two attaches")
@@ -30,11 +30,11 @@ func TestActivityAttachDetachCounts(t *testing.T) {
 
 func TestActivityCounts(t *testing.T) {
 	a := NewActivity()
-	d1 := a.Attach("s1", "watch", 100)
-	d2 := a.Attach("s1", "watch", 200)
-	overlap := a.Attach("s1", "watch", 100)
-	dChannel := a.Attach("s1", "channel", 100)
-	dOther := a.Attach("s2", "watch", 100)
+	_, d1 := a.Attach("s1", "watch", 100, 0)
+	_, d2 := a.Attach("s1", "watch", 200, 0)
+	_, overlap := a.Attach("s1", "watch", 100, 0)
+	_, dChannel := a.Attach("s1", "channel", 100, 0)
+	_, dOther := a.Attach("s2", "watch", 100, 0)
 	defer dOther()
 
 	for _, tc := range []struct {
@@ -92,7 +92,7 @@ func TestActivityProven(t *testing.T) {
 	if a.Proven(200) {
 		t.Fatal("proof leaked across windows")
 	}
-	detach := a.Attach("s1", "channel", 100)
+	_, detach := a.Attach("s1", "channel", 100, 0)
 	detach()
 	if !a.Proven(100) {
 		t.Fatal("proof is daemon-lifetime and must survive an SSE detach")
@@ -107,8 +107,8 @@ func TestActivityAttachedWithinGrace(t *testing.T) {
 	if a.AttachedWithin("s1", 10*time.Second) {
 		t.Fatal("never-attached subject must read unattached")
 	}
-	dChannel := a.Attach("s1", "channel", 100)
-	dWatch := a.Attach("s1", "watch", 200)
+	_, dChannel := a.Attach("s1", "channel", 100, 0)
+	_, dWatch := a.Attach("s1", "watch", 200, 0)
 	if !a.AttachedWithin("s1", 10*time.Second) {
 		t.Fatal("a live attachment of any consumer must count")
 	}
@@ -130,5 +130,29 @@ func TestActivityAttachedWithinGrace(t *testing.T) {
 	}
 	if a.AttachedWithin("s2", time.Hour) {
 		t.Fatal("grace leaked across subjects")
+	}
+}
+
+func TestPushedSpanBelongsToTheOneOpenStream(t *testing.T) {
+	a := NewActivity()
+	if _, _, ok := a.Pushed("s1", "channel", 100); ok {
+		t.Fatal("a window with no stream reported a pushed span")
+	}
+	pushedA, detachA := a.Attach("s1", "channel", 100, 100)
+	pushedA(140)
+	if after, through, ok := a.Pushed("s1", "channel", 100); !ok || after != 100 || through != 140 {
+		t.Fatalf("pushed = (%d, %d], %v; want (100, 140], true", after, through, ok)
+	}
+	_, detachB := a.Attach("s1", "channel", 100, 0)
+	if _, _, ok := a.Pushed("s1", "channel", 100); ok {
+		t.Fatal("overlapping streams reported one pushed span")
+	}
+	detachB()
+	if after, through, ok := a.Pushed("s1", "channel", 100); !ok || after != 100 || through != 140 {
+		t.Fatalf("after the overlap pushed = (%d, %d], %v; want the remaining stream's (100, 140], true", after, through, ok)
+	}
+	detachA()
+	if _, _, ok := a.Pushed("s1", "channel", 100); ok {
+		t.Fatal("a detached stream still reported a pushed span")
 	}
 }
