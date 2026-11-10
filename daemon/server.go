@@ -80,6 +80,7 @@ type Server struct {
 	subscribe           SubscribeFunc
 	subscriptions       *subscriptionRegistry
 	muteConsumer        string
+	withholdFrame       func(subjectID string, e event.Event) bool
 	singletonSubscriber bool
 	registerMu          sync.Mutex
 	parks               *parkRegistry
@@ -162,6 +163,7 @@ func New(cfg Config) (*Server, error) {
 		subscribe:           cfg.Subscribe,
 		subscriptions:       newSubscriptionRegistry(),
 		muteConsumer:        cfg.MuteConsumer,
+		withholdFrame:       cfg.WithholdFrame,
 		singletonSubscriber: cfg.SingletonSubscriber,
 		parks:               newParkRegistry(),
 		gateBlocks:          newGateBlockCounter(),
@@ -187,7 +189,7 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 	var muteFrame func(subjectID, consumer string, e event.Event) bool
-	if cfg.Subscribe != nil && cfg.MuteConsumer != "" {
+	if cfg.Subscribe != nil && cfg.MuteConsumer != "" || cfg.WithholdFrame != nil {
 		muteFrame = s.muteFrame
 	}
 	s.sse = sse.NewServer(s, sse.Config{

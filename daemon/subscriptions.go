@@ -169,10 +169,14 @@ func (s *Server) reconcileSubscriptions(ctx context.Context) error {
 	return nil
 }
 
-// muteFrame reports whether the event is withheld from consumer: only the
+// muteFrame reports whether the event is withheld from consumer: a frame
+// WithholdFrame withholds reaches no named consumer, and otherwise only the
 // configured mute consumer is affected, and only for a type a currently-present
 // subscriber owns. Presence lapsing (a dead handler) resumes delivery.
 func (s *Server) muteFrame(subjectID, consumer string, e event.Event) bool {
+	if s.withholdFrame != nil && s.withholdFrame(subjectID, e) {
+		return true
+	}
 	if consumer != s.muteConsumer {
 		return false
 	}

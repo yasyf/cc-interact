@@ -281,3 +281,21 @@ func TestChannelMutingEndToEnd(t *testing.T) {
 		t.Fatalf("watch missing events it must receive, got %v", watchTypes)
 	}
 }
+
+func TestWithholdFrameReachesNoNamedConsumer(t *testing.T) {
+	ended := func(_ string, e event.Event) bool { return strings.Contains(string(e.Payload), `"watch":"ended"`) }
+	s := newTestServer(t, Config{WithholdFrame: ended})
+	sub := seedSubject(t, s, "id1", "slug1", "sess1", "scopeA", 42, "open")
+	mustAppend(t, s, sub.ID, event.OriginHuman, "message.ended", `{"type":"message.ended","watch":"ended"}`)
+	mustAppend(t, s, sub.ID, event.OriginHuman, "message.live", `{"type":"message.live","watch":"live"}`)
+
+	srv := httptest.NewServer(s.sse.Handler())
+	defer srv.Close()
+
+	for _, consumer := range []string{"channel", "watch"} {
+		types := readSSETypes(t, srv.URL+"/events?session="+sub.ID+"&consumer="+consumer+"&claude_pid=42&exclude_origin=agent")
+		if hasType(types, "message.ended") || !hasType(types, "message.live") {
+			t.Fatalf("%s received %v, want message.live and never message.ended", consumer, types)
+		}
+	}
+}
