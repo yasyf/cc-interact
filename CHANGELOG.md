@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.5] - 2026-11-09
+
+### Added
+
+- **A daemon can withhold a logged event from every named stream.** `daemon.Config.WithholdFrame` reports whether an event no longer reaches any named consumer, such as a message on a watch its session has since ended. The cursor still advances past a withheld frame, so a stream that resumes from an old cursor delivers only what the consumer still wants. cc-slack uses it so a channel that comes back after days replays nothing on watches that ended in between.
+
 ## [0.40.4] - 2026-11-08
 
 ### Fixed

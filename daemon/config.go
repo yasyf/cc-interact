@@ -130,6 +130,12 @@ type Config struct {
 	// both surface the same event. Empty mutes nothing; other consumers are never
 	// muted, and every event still lands in the log.
 	MuteConsumer string
+	// WithholdFrame reports whether a logged event no longer reaches any named
+	// consumer, such as a message on a watch the consumer's session has since
+	// ended. The cursor still advances past a withheld frame, so a stream that
+	// resumes from an old cursor delivers only what the consumer still wants.
+	// nil withholds nothing.
+	WithholdFrame func(subjectID string, e event.Event) bool
 	// SingletonSubscriber enforces at most one live subscriber per (subject,
 	// agent_type): a newly subscribed agent supersedes every other running
 	// same-type subscriber — dropped from the registry and closed with a terminal
