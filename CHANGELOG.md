@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-11
+
+### Fixed
+
+- **A window keeps one channel stream: a channel server exits once a later-started one attaches for its window.** The channel command sends its process start time as `started` on `GET /events`. `daemon.Activity.Attach` ends every stream of that consumer in the window from an earlier-started process and answers one from an earlier-started process with 409 Conflict, and the channel command exits on that 409. A server a plugin reload left behind no longer holds a second stream, which made `Activity.Pushed` answer no span and every linked directive arrive twice. A stream that sends no `started`, as servers built before this release do, counts as started at 0.
+
+### Changed
+
+- `sse.Backend.Attach` and `daemon.Activity.Attach` take the connecting process's start time and return a `superseded` channel. `consume.StreamSource.Started` sends it, and `consume.ConsumeEvents` returns `consume.ErrSuperseded` once the daemon answers 409.
+
 ## [0.41.1] - 2026-11-10
 
 ### Fixed

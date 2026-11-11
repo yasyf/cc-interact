@@ -179,9 +179,9 @@ func TestDispatchChannelAck(t *testing.T) {
 func TestDispatchStatusReportsSubject(t *testing.T) {
 	s := newTestServer(t, Config{})
 	seedSubject(t, s, "id2", "slug2", "sess2", "scopeB", 9, "open")
-	s.activity.Attach("id2", "watch-100", 100, 0)
-	s.activity.Attach("id2", "watch-100", 200, 0)
-	s.activity.Attach("id2", "channel", 100, 0)
+	s.activity.Attach("id2", "watch-100", 100, 0, 0)
+	s.activity.Attach("id2", "watch-100", 200, 0, 0)
+	s.activity.Attach("id2", "channel", 100, 0, 0)
 	r := s.dispatch(context.Background(), Envelope{
 		Op: OpStatus, Scope: "scopeB", Session: "sess2", ClaudePID: 9,
 	})

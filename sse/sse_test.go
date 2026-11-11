@@ -32,6 +32,9 @@ type fakeBackend struct {
 	viewers   int
 	attached  chan string
 	detached  chan string
+
+	superseded chan struct{}
+	started    int64
 }
 
 func newFakeBackend() *fakeBackend {
@@ -92,10 +95,14 @@ func (b *fakeBackend) Subscribe(subjectID string) (<-chan struct{}, func()) {
 	return b.bus.Subscribe(subjectID)
 }
 
-func (b *fakeBackend) Attach(subjectID, consumer string, pid int, _ int64) (func(int64), func()) {
+func (b *fakeBackend) Attach(subjectID, consumer string, pid int, _, started int64) (func(int64), <-chan struct{}, func()) {
 	key := subjectID + "/" + consumer + "/" + strconv.Itoa(pid)
+	b.mu.Lock()
+	b.started = started
+	superseded := b.superseded
+	b.mu.Unlock()
 	b.attached <- key
-	return func(int64) {}, func() { b.detached <- key }
+	return func(int64) {}, superseded, func() { b.detached <- key }
 }
 
 func (b *fakeBackend) ConsumerConnected(string) bool {
@@ -174,6 +181,49 @@ func TestEventsRegistersNamedConsumer(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("consumer was never detached on disconnect")
+	}
+}
+
+func TestEventsRefusesAConsumerALaterProcessHolds(t *testing.T) {
+	b := newFakeBackend()
+	b.addSubject("s1id")
+	b.superseded = make(chan struct{})
+	close(b.superseded)
+	srv := startServer(t, b, Config{})
+
+	resp, err := http.Get(srv.URL + "/events?session=s1id&consumer=channel&claude_pid=4242&started=1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want %d for a consumer a later-started process holds", resp.StatusCode, http.StatusConflict)
+	}
+}
+
+func TestEventsEndsTheStreamOnceSuperseded(t *testing.T) {
+	b := newFakeBackend()
+	b.addSubject("s1id")
+	b.superseded = make(chan struct{})
+	srv := startServer(t, b, Config{})
+
+	resp := connectUntilLive(t, context.Background(), srv.URL+"/events?session=s1id&consumer=channel&claude_pid=4242&started=1000")
+	defer func() { _ = resp.Body.Close() }()
+	b.mu.Lock()
+	started := b.started
+	b.mu.Unlock()
+	if started != 1000 {
+		t.Fatalf("attached with started %d, want 1000", started)
+	}
+
+	close(b.superseded)
+	select {
+	case <-b.detached:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a superseded stream was never detached")
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("a superseded stream must end cleanly: %v", err)
 	}
 }
 

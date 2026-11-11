@@ -27,6 +27,8 @@ type attachKey struct {
 
 type pushSpan struct {
 	after, through int64
+	started        int64
+	superseded     chan struct{}
 }
 
 // NewActivity returns an empty registry.
@@ -43,18 +45,40 @@ func NewActivity() *Activity {
 
 // Attach records one open SSE connection for a consumer in a window, resuming
 // after cursor, and returns its pushed, which records that the connection has
-// written every frame through a seq, and its detach. Counting (not a flag) keeps
-// an overlapping reconnect attached; the subject's last detach stamps lastDrop
-// for AttachedWithin.
-func (a *Activity) Attach(subjectID, consumer string, pid int, cursor int64) (pushed func(seq int64), detach func()) {
+// written every frame through a seq, its superseded, and its detach. Counting
+// (not a flag) keeps an overlapping reconnect attached; the subject's last
+// detach stamps lastDrop for AttachedWithin.
+//
+// started is when the connecting process started, in Unix milliseconds, or 0
+// when it does not say. In a window (pid != 0) one process holds a consumer's
+// streams: a connection from a later-started process closes superseded on every
+// stream of the consumer from an earlier one and drops them from Pushed, and a
+// connection from an earlier-started process than one already attached is
+// refused, its superseded closed on return and nothing recorded.
+func (a *Activity) Attach(subjectID, consumer string, pid int, cursor, started int64) (pushed func(seq int64), superseded <-chan struct{}, detach func()) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	k := attachKey{consumer, pid}
+	if pid != 0 {
+		for span := range a.streams[subjectID][k] {
+			if span.started > started {
+				refused := make(chan struct{})
+				close(refused)
+				return func(int64) {}, refused, func() {}
+			}
+		}
+		for span := range a.streams[subjectID][k] {
+			if span.started < started {
+				close(span.superseded)
+				delete(a.streams[subjectID][k], span)
+			}
+		}
+	}
 	m := a.attached[subjectID]
 	if m == nil {
 		m = make(map[attachKey]int)
 		a.attached[subjectID] = m
 	}
-	k := attachKey{consumer, pid}
 	m[k]++
 	if a.streams[subjectID] == nil {
 		a.streams[subjectID] = make(map[attachKey]map[*pushSpan]struct{})
@@ -62,14 +86,14 @@ func (a *Activity) Attach(subjectID, consumer string, pid int, cursor int64) (pu
 	if a.streams[subjectID][k] == nil {
 		a.streams[subjectID][k] = make(map[*pushSpan]struct{})
 	}
-	span := &pushSpan{after: cursor, through: cursor}
+	span := &pushSpan{after: cursor, through: cursor, started: started, superseded: make(chan struct{})}
 	a.streams[subjectID][k][span] = struct{}{}
 	var once sync.Once
 	return func(seq int64) {
 			a.mu.Lock()
 			defer a.mu.Unlock()
 			span.through = max(span.through, seq)
-		}, func() {
+		}, span.superseded, func() {
 			once.Do(func() {
 				a.mu.Lock()
 				defer a.mu.Unlock()

@@ -54,10 +54,14 @@ type Backend interface {
 	// Attach records one open named-consumer SSE connection (consumer name +
 	// window pid, resuming after cursor) and returns its pushed, which the
 	// handler calls with each new high-water cursor once those frames are
-	// flushed, and its detach. It always runs for a named consumer, independent
-	// of presence emission, so the registry feeding ConsumerConnected stays
-	// accurate.
-	Attach(subjectID, consumer string, pid int, cursor int64) (pushed func(seq int64), detach func())
+	// flushed, its superseded, and its detach. It always runs for a named
+	// consumer, independent of presence emission, so the registry feeding
+	// ConsumerConnected stays accurate.
+	//
+	// started is when the connecting process started, in Unix milliseconds, or
+	// 0 when unknown. superseded closes once a later-started process of the
+	// consumer attaches in the window, and is closed on return when one had.
+	Attach(subjectID, consumer string, pid int, cursor, started int64) (pushed func(seq int64), superseded <-chan struct{}, detach func())
 
 	// ConsumerConnected reports whether a live named consumer is currently wired
 	// to the subject. It gates the presence-change transitions.
@@ -204,9 +208,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// timer; the consumer reconciles the stale connected:true at its next boot.
 	// Attach always runs so the registry feeding ConsumerConnected stays accurate;
 	// only the emit is gated on OnPresenceChange.
+	started, err := parseStarted(r)
+	if err != nil {
+		http.Error(w, "bad started", http.StatusBadRequest)
+		return
+	}
 	cursor := parseCursor(r)
 	var inject chan string
 	pushed := func(int64) {}
+	var superseded <-chan struct{}
 	if consumer != "" {
 		// Only a named consumer can receive solicited frames (Inject); a browser's
 		// inject channel stays nil, which never fires in the select. The queue
@@ -215,7 +225,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		defer s.detachInject(injectKey{subjectID, consumer, pid}, inject)
 		wasConnected := s.backend.ConsumerConnected(subjectID)
 		var detach func()
-		pushed, detach = s.backend.Attach(subjectID, consumer, pid, cursor)
+		pushed, superseded, detach = s.backend.Attach(subjectID, consumer, pid, cursor, started)
+		select {
+		case <-superseded:
+			http.Error(w, "superseded by a newer "+consumer+" in this window", http.StatusConflict)
+			return
+		default:
+		}
 		if !wasConnected {
 			s.announceConnect(r.Context(), subjectID)
 		}
@@ -254,6 +270,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-superseded:
 			return
 		case <-ka.C:
 			io.WriteString(w, ": keepalive\n\n")
@@ -431,6 +449,14 @@ func (s *Server) presenceChange(ctx context.Context, subjectID string, connected
 	if s.cfg.OnPresenceChange != nil {
 		s.cfg.OnPresenceChange(ctx, subjectID, connected)
 	}
+}
+
+func parseStarted(r *http.Request) (int64, error) {
+	v := r.URL.Query().Get("started")
+	if v == "" {
+		return 0, nil
+	}
+	return strconv.ParseInt(v, 10, 64)
 }
 
 func parseCursor(r *http.Request) int64 {
