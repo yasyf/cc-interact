@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Builds with Go 1.26.11, which fixes the `net/http` vulnerability GO-2026-6859 that govulncheck reports against Go 1.26.10.
+
 ## [0.42.0] - 2026-11-11
 
 ### Fixed
