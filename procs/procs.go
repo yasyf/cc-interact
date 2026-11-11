@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/shirou/gopsutil/v4/process"
@@ -99,7 +100,8 @@ func isClaude(argv []string) bool {
 	if len(argv) == 0 {
 		return false
 	}
-	switch filepath.Base(argv[0]) {
+	name, _, _ := strings.Cut(filepath.Base(argv[0]), " ")
+	switch name {
 	case "claude":
 		return true
 	case "node", "bun":
