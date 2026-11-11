@@ -19,7 +19,7 @@ func TestChannelState(t *testing.T) {
 	if got := s.ChannelState(hc, sub.ID, "channel"); got != ChannelPending {
 		t.Fatalf("polling consumer = %q, want pending", got)
 	}
-	_, detach := s.activity.Attach(sub.ID, "channel", pid, 0)
+	_, _, detach := s.activity.Attach(sub.ID, "channel", pid, 0, 0)
 	defer detach()
 	if got := s.ChannelState(hc, sub.ID, "channel"); got != ChannelPending {
 		t.Fatalf("attached unproven consumer = %q, want pending", got)

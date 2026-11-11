@@ -12,6 +12,7 @@ import (
 	"github.com/yasyf/cc-interact/consume"
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/cc-interact/event"
+	"github.com/yasyf/cc-interact/procs"
 )
 
 const headRetryDelay = time.Second
@@ -19,7 +20,8 @@ const headRetryDelay = time.Second
 // ChannelCmd is the hidden, opt-in stdio MCP channel server. Loaded at session
 // start, it advertises the consumer's domain tools and pushes each subject event
 // down the same pipe as a JSON-RPC notification, so the agent reacts without
-// polling while the loop answers tool calls.
+// polling while the loop answers tool calls. It exits once a later-started
+// channel server attaches for its window, so a window keeps one stream.
 func ChannelCmd(d Deps) *cobra.Command {
 	var (
 		session string
@@ -40,17 +42,28 @@ func ChannelCmd(d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			started, err := procs.StartTime(os.Getpid())
+			if err != nil {
+				return err
+			}
 			srv := channel.NewServer(channel.ServerInfo{Name: cmd.Root().Name(), Version: d.Version, Instructions: instructions}, tools)
 			streamCtx, cancelStream := context.WithCancel(ctx)
-			streamDone := make(chan struct{})
-			go func() {
-				defer close(streamDone)
-				streamToChannel(streamCtx, d, srv, session, scope, notifyMethod)
-			}()
-			err = srv.Serve(ctx, cmd.InOrStdin(), cmd.OutOrStdout())
-			cancelStream()
-			<-streamDone
-			return err
+			defer cancelStream()
+			streamed := make(chan error, 1)
+			go func() { streamed <- streamToChannel(streamCtx, d, srv, session, scope, notifyMethod, started) }()
+			served := make(chan error, 1)
+			go func() { served <- srv.Serve(ctx, cmd.InOrStdin(), cmd.OutOrStdout()) }()
+			select {
+			case err := <-served:
+				cancelStream()
+				<-streamed
+				return err
+			case err := <-streamed:
+				if errors.Is(err, consume.ErrSuperseded) {
+					return nil
+				}
+				return <-served
+			}
 		},
 	}
 	cmd.Flags().StringVar(&session, "session", "", "Claude session id (defaults to $CLAUDE_CODE_SESSION_ID)")
@@ -63,33 +76,35 @@ func ChannelCmd(d Deps) *cobra.Command {
 // session. The window pid is
 // resolved once at boot — the channel server lives as long as the window — and
 // keys the stream even when the session id is stale or unset. A resume moves the
-// stream onto the session's subject, so it resolves again when told to.
-func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, scope, notifyMethod string) {
+// stream onto the session's subject, so it resolves again when told to. It
+// returns consume.ErrSuperseded once a later-started channel server holds the
+// window's stream.
+func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, scope, notifyMethod string, started int64) error {
 	claudePID := d.ClaudePID()
 	connect := reuseIdentity(d.NewClient)
 	for {
 		subjectID, port := waitForSubject(ctx, connect, session, scope, claudePID, daemon.ChannelConsumer)
 		if subjectID == "" {
-			return
+			return nil
 		}
 		if d.ChannelResumesLive {
 			head, err := consume.StreamHead(ctx, port, subjectID, event.OriginAgent)
 			if err != nil {
 				select {
 				case <-ctx.Done():
-					return
+					return nil
 				case <-time.After(headRetryDelay):
 				}
 				continue
 			}
 			if err := consume.RaiseCursor(d.Paths, subjectID, daemon.ChannelConsumer, head); err != nil {
-				return
+				return err
 			}
 		}
 		src := consume.StreamSource{
 			Port: port, SubjectID: subjectID, Consumer: daemon.ChannelConsumer, ClaudePID: claudePID,
-			ExcludeOrigin: event.OriginAgent,
-			Paths:         d.Paths, WindowAlive: d.WindowAlive,
+			Started: started, ExcludeOrigin: event.OriginAgent,
+			Paths: d.Paths, WindowAlive: d.WindowAlive,
 			Refresh: refreshHandshake(connect, session, scope, claudePID, daemon.ChannelConsumer),
 		}
 		// No push at attach: an unsolicited tag wakes an idle agent for nothing. The
@@ -107,7 +122,7 @@ func streamToChannel(ctx context.Context, d Deps, srv *channel.Server, session, 
 			})
 		})
 		if !errors.Is(err, channel.ErrWindowMoved) {
-			return
+			return err
 		}
 	}
 }

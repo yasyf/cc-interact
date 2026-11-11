@@ -37,6 +37,10 @@ const caughtUpEvent = "event: caught-up"
 // triggers, never on keepalive comments.
 var livenessInterval = 5 * time.Second
 
+// ErrSuperseded ends a stream whose consumer process a later-started process of
+// the same consumer replaced in its window: the daemon answers 409 Conflict.
+var ErrSuperseded = errors.New("a later-started process of this consumer attached in this window")
+
 // EventHandler is invoked once per delivered event with its seq and raw data
 // payload. Returning stop=true ends consumption (e.g. on a terminal event).
 type EventHandler func(seq int64, data string) (stop bool, err error)
@@ -50,6 +54,11 @@ type StreamSource struct {
 	SubjectID string
 	Consumer  string
 	ClaudePID int
+	// Started, when non-zero, is when this consumer process started, in Unix
+	// milliseconds. The daemon keeps only the latest-started process's streams
+	// of a consumer in a window, so a stream from an earlier one ends with
+	// ErrSuperseded.
+	Started int64
 	// ExcludeOrigin, when set, drops events of that origin from the stream — set it
 	// to e.g. event.OriginAgent to suppress your own echo. The zero value observes
 	// all origins, so a browser or parent watcher sees every origin.
@@ -71,7 +80,8 @@ type StreamSource struct {
 // by default) to handle, persisting a per-consumer cursor so a restart resumes
 // without re-delivering. It reconnects on transient drops — refreshing the handshake
 // first, so the stream survives a daemon upgrade — and returns when handle
-// signals stop or ctx is cancelled. The cursor advances only after handle
+// signals stop or ctx is cancelled, or ErrSuperseded once a later-started
+// process of the same consumer holds the window's stream. The cursor advances only after handle
 // returns, so a crash mid-delivery re-delivers rather than skips (at-least-once).
 // Cursor persistence failures invoke src.Warn and streaming continues; a later
 // restart may therefore re-deliver already handled events.
@@ -103,7 +113,7 @@ func ConsumeEvents(ctx context.Context, src StreamSource, handle EventHandler) e
 		stop, next, fatal := readStream(connCtx, streamURL(src), cursor, cursorPath, src.Warn, handle)
 		cancel()
 		cursor = next
-		if stop || ctx.Err() != nil {
+		if stop || ctx.Err() != nil || errors.Is(fatal, ErrSuperseded) {
 			return fatal
 		}
 		// A liveness cancel and a transient drop both surface as fatal==nil, so
@@ -159,6 +169,9 @@ func streamURL(src StreamSource) string {
 	if src.ClaudePID != 0 {
 		u += "&claude_pid=" + strconv.Itoa(src.ClaudePID)
 	}
+	if src.Started != 0 {
+		u += "&started=" + strconv.FormatInt(src.Started, 10)
+	}
 	return u
 }
 
@@ -206,8 +219,9 @@ func StreamHead(ctx context.Context, port int, subjectID string, excludeOrigin e
 }
 
 // readStream consumes one SSE connection. A nil fatal means a transient drop
-// (reconnect); a non-nil fatal is a permanent failure (unknown subject, or an
-// event frame larger than the buffer) the caller should surface and stop on.
+// (reconnect); a non-nil fatal is a permanent failure (unknown subject, a
+// superseded consumer, or an event frame larger than the buffer) the caller
+// should surface and stop on.
 func readStream(ctx context.Context, base string, cursor int64, cursorPath string, warn func(error), handle EventHandler) (stop bool, next int64, fatal error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base, nil)
 	if err != nil {
@@ -221,6 +235,9 @@ func readStream(ctx context.Context, base string, cursor int64, cursorPath strin
 		return false, cursor, nil // transient: connection refused / reset → reconnect
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		return false, cursor, ErrSuperseded
+	}
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			return false, cursor, fmt.Errorf("events endpoint returned %d (unknown subject); stopping", resp.StatusCode)
