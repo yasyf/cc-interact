@@ -63,6 +63,17 @@ func TestWalk(t *testing.T) {
 			want:  200,
 		},
 		{
+			name: "bg session process title",
+			table: map[int32]fakeProc{
+				200: {ppid: 300, argv: []string{"/Users/me/.local/bin/cc-slack", "channel"}},
+				300: {ppid: 400, argv: []string{"claude bg-spare", "--bg-spare", "/tmp/cc-daemon-501/c25ff9d8/spare/3c9d2102.claim.sock"}},
+				400: {ppid: 500, argv: []string{"claude bg-pty-host"}},
+				500: {ppid: 1, argv: []string{"/Users/me/.local/bin/claude", "daemon", "run"}},
+			},
+			start: 200,
+			want:  300,
+		},
+		{
 			name: "claude hook path does not match",
 			table: map[int32]fakeProc{
 				200: {ppid: 300, argv: []string{"/bin/bash", "/Users/me/.claude/hooks/foo.sh"}},

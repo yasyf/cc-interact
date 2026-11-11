@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.1] - 2026-11-11
+
+### Fixed
+
+- **A `--bg` session is its own window.** Claude Code runs a `--bg` session in a process titled `claude bg-spare`, under a `claude bg-pty-host` process and the `claude daemon run` process, so `procs.isClaude` matched only the daemon and every `--bg` session under it resolved to the daemon's pid as its window. Since 0.42.0 a later-started channel server supersedes every earlier one in its window, so each new `--bg` session's channel server made the others' exit. `procs.isClaude` now matches the first space-separated word of the executable's base name, so `procs.ClaudePID` names the session process itself.
+
 ### Security
 
 - Builds with Go 1.26.11, which fixes the `net/http` vulnerability GO-2026-6859 that govulncheck reports against Go 1.26.10.
