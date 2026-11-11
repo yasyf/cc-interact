@@ -2,7 +2,7 @@ module github.com/yasyf/cc-interact
 
 go 1.26.5
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/bluekeyes/go-gitdiff v0.8.1
