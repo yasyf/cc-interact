@@ -19,7 +19,7 @@ const maxHops = 32
 type lookup func(pid int32) (ppid int32, argv []string, err error)
 
 var claudePID = sync.OnceValue(func() int {
-	return FindAncestor(os.Getppid(), isClaude)
+	return FindAncestor(os.Getppid(), IsClaude)
 })
 
 // ClaudePID returns the pid of the nearest claude ancestor of this process,
@@ -41,7 +41,7 @@ func LiveClaude(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return isClaude(argv)
+	return IsClaude(argv)
 }
 
 // StartTime returns when process pid started, in milliseconds since the epoch,
@@ -96,7 +96,9 @@ func procLookup(pid int32) (int32, []string, error) {
 	return ppid, argv, nil
 }
 
-func isClaude(argv []string) bool {
+// IsClaude reports whether argv is a Claude Code process, so a caller walking
+// another process's ancestors with FindAncestor names the window ClaudePID would.
+func IsClaude(argv []string) bool {
 	if len(argv) == 0 {
 		return false
 	}

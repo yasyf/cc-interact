@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.2] - 2026-11-12
+
+### Added
+
+- `procs.IsClaude` is exported, so a consumer that resolves the window of a process other than itself, as a daemon running a client's command does with `procs.FindAncestor(clientPID, procs.IsClaude)`, matches a `--bg` session's `claude bg-spare` process the way `procs.ClaudePID` does, instead of keeping its own copy of the matcher.
+
 ## [0.42.1] - 2026-11-11
 
 ### Fixed
