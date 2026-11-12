@@ -123,7 +123,7 @@ func TestWalk(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := walk(tc.start, fakeLookup(tc.table), isClaude); got != tc.want {
+			if got := walk(tc.start, fakeLookup(tc.table), IsClaude); got != tc.want {
 				t.Errorf("walk(%d) = %d, want %d", tc.start, got, tc.want)
 			}
 		})
