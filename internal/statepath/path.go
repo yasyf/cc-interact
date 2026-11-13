@@ -38,6 +38,18 @@ func WindowProof(p paths.Paths, pid int) string {
 	return filepath.Join(WindowProofs(p), strconv.Itoa(pid)+".proof")
 }
 
+// ChannelBeat returns the path whose mtime is when window pid's toolless
+// channel server last ran.
+func ChannelBeat(p paths.Paths, pid int) string {
+	return filepath.Join(WindowProofs(p), strconv.Itoa(pid)+".beat")
+}
+
+// ChannelReconnect returns the path whose mtime is when a reconnect of window
+// pid's channel server last started.
+func ChannelReconnect(p paths.Paths, pid int) string {
+	return filepath.Join(WindowProofs(p), strconv.Itoa(pid)+".reconnect")
+}
+
 // EnsureDir creates the exact v1 state directory.
 func EnsureDir(p paths.Paths) error {
 	if err := os.MkdirAll(Dir(p), 0o700); err != nil {

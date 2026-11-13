@@ -16,13 +16,18 @@
     }
   ],
   "mcpServers": {
+    "channel": {
+      "command": "{{BINARY_NAME}}",
+      "args": ["{{MCP_SUBCOMMAND}}", "--no-tools"],
+      "env": { "CLAUDE_PLUGIN_ROOT": "" }
+    },
     "{{MCP_SERVER_NAME}}": {
       "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-channel.sh"
     }
   },
   "channels": [
     {
-      "server": "{{MCP_SERVER_NAME}}",
+      "server": "channel",
       "displayName": "{{DISPLAY_NAME}}"
     }
   ]

@@ -35,6 +35,7 @@ type fakeBackend struct {
 
 	superseded chan struct{}
 	started    int64
+	toolless   bool
 }
 
 func newFakeBackend() *fakeBackend {
@@ -95,10 +96,11 @@ func (b *fakeBackend) Subscribe(subjectID string) (<-chan struct{}, func()) {
 	return b.bus.Subscribe(subjectID)
 }
 
-func (b *fakeBackend) Attach(subjectID, consumer string, pid int, _, started int64) (func(int64), <-chan struct{}, func()) {
+func (b *fakeBackend) Attach(subjectID, consumer string, pid int, _, started int64, toolless bool) (func(int64), <-chan struct{}, func()) {
 	key := subjectID + "/" + consumer + "/" + strconv.Itoa(pid)
 	b.mu.Lock()
 	b.started = started
+	b.toolless = toolless
 	superseded := b.superseded
 	b.mu.Unlock()
 	b.attached <- key
@@ -207,13 +209,13 @@ func TestEventsEndsTheStreamOnceSuperseded(t *testing.T) {
 	b.superseded = make(chan struct{})
 	srv := startServer(t, b, Config{})
 
-	resp := connectUntilLive(t, context.Background(), srv.URL+"/events?session=s1id&consumer=channel&claude_pid=4242&started=1000")
+	resp := connectUntilLive(t, context.Background(), srv.URL+"/events?session=s1id&consumer=channel&claude_pid=4242&started=1000&toolless=1")
 	defer func() { _ = resp.Body.Close() }()
 	b.mu.Lock()
-	started := b.started
+	started, toolless := b.started, b.toolless
 	b.mu.Unlock()
-	if started != 1000 {
-		t.Fatalf("attached with started %d, want 1000", started)
+	if started != 1000 || !toolless {
+		t.Fatalf("attached with started %d toolless %v, want 1000 toolless", started, toolless)
 	}
 
 	close(b.superseded)

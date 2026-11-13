@@ -13,6 +13,7 @@ import (
 	"os"
 
 	"github.com/yasyf/cc-interact/channel"
+	"github.com/yasyf/cc-interact/channelsetup"
 	"github.com/yasyf/cc-interact/daemon"
 	"github.com/yasyf/daemonkit/paths"
 )
@@ -26,6 +27,10 @@ type Deps struct {
 	// Version is this binary's build version, advertised in the channel server's
 	// initialize handshake.
 	Version string
+	// Plugin is the Claude Code plugin this binary ships in. A toolless channel
+	// server finds newer installs of it in the plugin cache, and ChannelCheckCmd
+	// reconnects its ChannelServer.
+	Plugin channelsetup.Plugin
 	// NewClient opens an exact-build persistent control session.
 	NewClient func(ctx context.Context) (*daemon.Client, error)
 	// EnsureCurrent lazily starts or upgrades the daemon, blocking until a

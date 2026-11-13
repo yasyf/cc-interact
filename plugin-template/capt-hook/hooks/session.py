@@ -10,3 +10,8 @@ install_binary("../../scripts/install-binary.sh")
 @on(Event.SessionStart, async_=True)
 def session_record(evt: BaseHookEvent) -> None:
     common.call_bin(evt, "session-record")
+
+
+@on(Event.Stop)
+def channel_check(evt: BaseHookEvent) -> None:
+    common.call_bin(evt, "channel-check")

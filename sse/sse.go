@@ -59,9 +59,10 @@ type Backend interface {
 	// ConsumerConnected stays accurate.
 	//
 	// started is when the connecting process started, in Unix milliseconds, or
-	// 0 when unknown. superseded closes once a later-started process of the
-	// consumer attaches in the window, and is closed on return when one had.
-	Attach(subjectID, consumer string, pid int, cursor, started int64) (pushed func(seq int64), superseded <-chan struct{}, detach func())
+	// 0 when unknown, and toolless marks a process serving no tools. superseded
+	// closes once a process of the consumer that outranks this one attaches in
+	// the window, and is closed on return when one had.
+	Attach(subjectID, consumer string, pid int, cursor, started int64, toolless bool) (pushed func(seq int64), superseded <-chan struct{}, detach func())
 
 	// ConsumerConnected reports whether a live named consumer is currently wired
 	// to the subject. It gates the presence-change transitions.
@@ -225,7 +226,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		defer s.detachInject(injectKey{subjectID, consumer, pid}, inject)
 		wasConnected := s.backend.ConsumerConnected(subjectID)
 		var detach func()
-		pushed, superseded, detach = s.backend.Attach(subjectID, consumer, pid, cursor, started)
+		pushed, superseded, detach = s.backend.Attach(subjectID, consumer, pid, cursor, started, r.URL.Query().Get("toolless") == "1")
 		select {
 		case <-superseded:
 			http.Error(w, "superseded by a newer "+consumer+" in this window", http.StatusConflict)

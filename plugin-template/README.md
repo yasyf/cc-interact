@@ -10,8 +10,8 @@ The binary installer is the one piece this template consumes rather than owns: e
 
 ```
 plugin-template/
-├── .claude-plugin/plugin.json   # manifest: name, mcpServers (channel) key, channels, captain-hook dependency
-├── scripts/mcp-channel.sh       # MCP stdio entrypoint → `<binary> <mcp-subcommand>`
+├── .claude-plugin/plugin.json   # manifest: name, mcpServers (toolless channel + tools), channels, captain-hook dependency
+├── scripts/mcp-channel.sh       # tools server's MCP stdio entrypoint → `<binary> tools`
 ├── capt-hook/                   # capt-hook v11 pack — discovered from the enabled plugin; no hooks.json
 │   ├── pack.toml                # pack descriptor (empty — identity derives from plugin.json)
 │   └── hooks/
@@ -37,25 +37,25 @@ plugin-template/
 | `{{DISPLAY_NAME}}` | human-facing label (manifest description, channel `displayName`, skill prose) | `cc-review` |
 | `{{BINARY_NAME}}` | the installed binary's file name and how the scripts/hooks invoke it | `cc-review` |
 | `{{RELEASE_REPO}}` | GitHub `owner/repo`, the manifest's `homepage` | `yasyf/cc-review` |
-| `{{MCP_SUBCOMMAND}}` | the binary subcommand `mcp-channel.sh` execs to run the channel server | `mcp-channel` |
+| `{{MCP_SUBCOMMAND}}` | the binary subcommand that runs the channel server | `mcp-channel` |
 | `{{SKILL_NAME}}` | the start skill's invocation id (`<plugin>:start`) | `cc-review:start` |
-| `{{MCP_SERVER_NAME}}` | the `mcpServers` key in `plugin.json` and the server segment of MCP tool names; usually equals `{{PLUGIN_NAME}}` | `cc-review` |
+| `{{MCP_SERVER_NAME}}` | the tools server's `mcpServers` key in `plugin.json` and the server segment of MCP tool names; usually equals `{{PLUGIN_NAME}}` | `cc-review` |
 
 ### Where each is used
 
 - `{{PLUGIN_NAME}}` — `plugin.json` `name` (the pack's identity derives from it — the v11 descriptor carries no name); `agents/example-agent.md` (`subagent_type`, the `mcp__plugin_<PLUGIN_NAME>_…` tool prefix); `SKILL.md` (`--channels plugin:<PLUGIN_NAME>@<PLUGIN_NAME>`); the installer's default data-dir path.
 - `{{DISPLAY_NAME}}` — `plugin.json` `description` + channel `displayName`; `SKILL.md` (description + prose); `agents/example-agent.md`.
-- `{{BINARY_NAME}}` — `scripts/mcp-channel.sh`, `capt-hook/hooks/common.py` (the `bin/` path every pack hook calls), `SKILL.md` (every `${CLAUDE_PLUGIN_ROOT}/bin/<BINARY_NAME>` invocation).
+- `{{BINARY_NAME}}` — `plugin.json` (the channel server's `command`, found on PATH), `scripts/mcp-channel.sh`, `capt-hook/hooks/common.py` (the `bin/` path every pack hook calls), `SKILL.md` (every `${CLAUDE_PLUGIN_ROOT}/bin/<BINARY_NAME>` invocation).
 - `{{RELEASE_REPO}}` — `plugin.json` `homepage`.
-- `{{MCP_SUBCOMMAND}}` — `scripts/mcp-channel.sh` (`exec "$BIN" <MCP_SUBCOMMAND>`); `agents/example-agent.md` (prose).
+- `{{MCP_SUBCOMMAND}}` — `plugin.json` (the channel server's `args`).
 - `{{SKILL_NAME}}` — `SKILL.md` (heading + "later rounds" prose); `agents/example-agent.md` (which skill dispatches it).
-- `{{MCP_SERVER_NAME}}` — `plugin.json` (`mcpServers` key + channel `server`); `SKILL.md` (`<channel source="…">` tag); `agents/example-agent.md` (the server segment of the tool prefix).
+- `{{MCP_SERVER_NAME}}` — `plugin.json` (the tools server's `mcpServers` key); `agents/example-agent.md` (the server segment of the tool prefix).
 
 ## How to fill
 
 1. **Pick your values** and render the tree (see `render.sh` below). The substrate (`capt-hook/hooks/session.py`, `capt-hook/hooks/guard_edit.py`, the channel wiring) works as-is once the vars are set.
 2. **Edit the plain metadata** the template left as placeholders, not vars: `plugin.json` `version` (start at `0.1.0`; the pinned installer resolves the release tag `v<version>` from it), `author`, and `license`.
-3. **Wire the subcommands.** cc-interact's `cmd` layer provides `session-record`, `guard-edit`, `watch`, `channel-ack`, `setup-channels` (`cmd.SetupChannelsCmd`), and the channel server (`cmd.ChannelCmd` — set its `Use` to `{{MCP_SUBCOMMAND}}` when that isn't `channel`, keeping `channel` as an alias); implement the domain commands — `start`, `feedback`, `reply` — in your binary. The pack hooks and skill call all of these by name.
+3. **Wire the subcommands.** cc-interact's `cmd` layer provides `session-record`, `guard-edit`, `watch`, `channel-ack`, `setup-channels` (`cmd.SetupChannelsCmd`), the channel server (`cmd.ChannelCmd` — set its `Use` to `{{MCP_SUBCOMMAND}}` when that isn't `channel`, keeping `channel` as an alias), its tools server (`cmd.ToolsCmd`), and `channel-check` (`cmd.ChannelCheckCmd`), with `Deps.Plugin` set to your marketplace and plugin name; implement the domain commands — `start`, `feedback`, `reply` — in your binary. The pack hooks and skill call all of these by name.
 4. **Decide on the optional hooks.** `capt-hook/hooks/turn_hooks.py` needs `turn-start`/`turn-end` handlers in your binary, and `capt-hook/hooks/agent_plane.py` needs the agent plane (see `SKILL.md` §6); each is one file — keep it or delete it.
 5. **Fill the domain markers** in `SKILL.md` (the `<domain ...>` placeholders: your event types, reply kinds, and any background agent) and replace `agents/example-agent.md` with your real agent (or delete it if you dispatch none).
 6. **Add reference docs** under `skills/start/reference/` if you want them — they are domain-specific (event schema, CLI cheatsheet, channel notes) and intentionally not templated here.

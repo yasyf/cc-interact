@@ -37,9 +37,10 @@ const caughtUpEvent = "event: caught-up"
 // triggers, never on keepalive comments.
 var livenessInterval = 5 * time.Second
 
-// ErrSuperseded ends a stream whose consumer process a later-started process of
-// the same consumer replaced in its window: the daemon answers 409 Conflict.
-var ErrSuperseded = errors.New("a later-started process of this consumer attached in this window")
+// ErrSuperseded ends a stream whose consumer process a process of the same
+// consumer that outranks it replaced in its window: the daemon answers 409
+// Conflict.
+var ErrSuperseded = errors.New("a process of this consumer that outranks this one attached in this window")
 
 // EventHandler is invoked once per delivered event with its seq and raw data
 // payload. Returning stop=true ends consumption (e.g. on a terminal event).
@@ -55,10 +56,13 @@ type StreamSource struct {
 	Consumer  string
 	ClaudePID int
 	// Started, when non-zero, is when this consumer process started, in Unix
-	// milliseconds. The daemon keeps only the latest-started process's streams
-	// of a consumer in a window, so a stream from an earlier one ends with
-	// ErrSuperseded.
-	Started int64
+	// milliseconds, and Toolless marks a consumer process that serves no tools.
+	// The daemon keeps only the top-ranked process's streams of a consumer in a
+	// window, a toolless process above one serving tools and the later-started
+	// above the earlier among one kind, so a stream from a lower-ranked one ends
+	// with ErrSuperseded.
+	Started  int64
+	Toolless bool
 	// ExcludeOrigin, when set, drops events of that origin from the stream — set it
 	// to e.g. event.OriginAgent to suppress your own echo. The zero value observes
 	// all origins, so a browser or parent watcher sees every origin.
@@ -171,6 +175,9 @@ func streamURL(src StreamSource) string {
 	}
 	if src.Started != 0 {
 		u += "&started=" + strconv.FormatInt(src.Started, 10)
+	}
+	if src.Toolless {
+		u += "&toolless=1"
 	}
 	return u
 }
