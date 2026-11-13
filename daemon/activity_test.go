@@ -8,8 +8,8 @@ import (
 
 func TestActivityAttachDetachCounts(t *testing.T) {
 	a := NewActivity()
-	_, _, d1 := a.Attach("s1", "channel", 100, 0, 0)
-	_, _, d2 := a.Attach("s1", "channel", 100, 0, 0)
+	_, _, d1 := a.Attach("s1", "channel", 100, 0, 0, false)
+	_, _, d2 := a.Attach("s1", "channel", 100, 0, 0, false)
 
 	if !a.Attached("s1", "channel", 100) {
 		t.Fatal("attached after two attaches")
@@ -30,11 +30,11 @@ func TestActivityAttachDetachCounts(t *testing.T) {
 
 func TestActivityCounts(t *testing.T) {
 	a := NewActivity()
-	_, _, d1 := a.Attach("s1", "watch", 100, 0, 0)
-	_, _, d2 := a.Attach("s1", "watch", 200, 0, 0)
-	_, _, overlap := a.Attach("s1", "watch", 100, 0, 0)
-	_, _, dChannel := a.Attach("s1", "channel", 100, 0, 0)
-	_, _, dOther := a.Attach("s2", "watch", 100, 0, 0)
+	_, _, d1 := a.Attach("s1", "watch", 100, 0, 0, false)
+	_, _, d2 := a.Attach("s1", "watch", 200, 0, 0, false)
+	_, _, overlap := a.Attach("s1", "watch", 100, 0, 0, false)
+	_, _, dChannel := a.Attach("s1", "channel", 100, 0, 0, false)
+	_, _, dOther := a.Attach("s2", "watch", 100, 0, 0, false)
 	defer dOther()
 
 	for _, tc := range []struct {
@@ -88,8 +88,8 @@ func TestActivityAttachedWithinGrace(t *testing.T) {
 	if a.AttachedWithin("s1", 10*time.Second) {
 		t.Fatal("never-attached subject must read unattached")
 	}
-	_, _, dChannel := a.Attach("s1", "channel", 100, 0, 0)
-	_, _, dWatch := a.Attach("s1", "watch", 200, 0, 0)
+	_, _, dChannel := a.Attach("s1", "channel", 100, 0, 0, false)
+	_, _, dWatch := a.Attach("s1", "watch", 200, 0, 0, false)
 	if !a.AttachedWithin("s1", 10*time.Second) {
 		t.Fatal("a live attachment of any consumer must count")
 	}
@@ -119,12 +119,12 @@ func TestPushedSpanBelongsToTheOneOpenStream(t *testing.T) {
 	if _, _, ok := a.Pushed("s1", "channel", 100); ok {
 		t.Fatal("a window with no stream reported a pushed span")
 	}
-	pushedA, _, detachA := a.Attach("s1", "channel", 100, 100, 0)
+	pushedA, _, detachA := a.Attach("s1", "channel", 100, 100, 0, false)
 	pushedA(140)
 	if after, through, ok := a.Pushed("s1", "channel", 100); !ok || after != 100 || through != 140 {
 		t.Fatalf("pushed = (%d, %d], %v; want (100, 140], true", after, through, ok)
 	}
-	_, _, detachB := a.Attach("s1", "channel", 100, 0, 0)
+	_, _, detachB := a.Attach("s1", "channel", 100, 0, 0, false)
 	if _, _, ok := a.Pushed("s1", "channel", 100); ok {
 		t.Fatal("overlapping streams reported one pushed span")
 	}
@@ -148,24 +148,24 @@ func TestALaterStartedProcessHoldsTheWindowsStream(t *testing.T) {
 		}
 	}
 	a := NewActivity()
-	_, legacy, detachLegacy := a.Attach("s1", "channel", 100, 0, 0)
-	_, older, detachOlder := a.Attach("s1", "channel", 100, 0, 1000)
-	_, overlap, detachOverlap := a.Attach("s1", "channel", 100, 0, 1000)
+	_, legacy, detachLegacy := a.Attach("s1", "channel", 100, 0, 0, false)
+	_, older, detachOlder := a.Attach("s1", "channel", 100, 0, 1000, false)
+	_, overlap, detachOverlap := a.Attach("s1", "channel", 100, 0, 1000, false)
 	if !closed(legacy) || closed(older) || closed(overlap) {
 		t.Fatal("a started process must supersede the window's legacy stream and keep its own reconnect overlap")
 	}
-	_, otherWindow, detachOtherWindow := a.Attach("s1", "channel", 200, 0, 500)
-	_, pidless, detachPidless := a.Attach("s1", "channel", 0, 0, 500)
-	_, laterPidless, detachLaterPidless := a.Attach("s1", "channel", 0, 0, 3000)
+	_, otherWindow, detachOtherWindow := a.Attach("s1", "channel", 200, 0, 500, false)
+	_, pidless, detachPidless := a.Attach("s1", "channel", 0, 0, 500, false)
+	_, laterPidless, detachLaterPidless := a.Attach("s1", "channel", 0, 0, 3000, false)
 
-	pushed, newer, detachNewer := a.Attach("s1", "channel", 100, 40, 2000)
+	pushed, newer, detachNewer := a.Attach("s1", "channel", 100, 40, 2000, false)
 	if !closed(older) || !closed(overlap) || closed(newer) {
 		t.Fatal("a later-started process must supersede every earlier stream in its window")
 	}
 	if closed(otherWindow) || closed(pidless) || closed(laterPidless) {
 		t.Fatal("supersede leaked across windows or onto pid-less consumers")
 	}
-	_, stale, _ := a.Attach("s1", "channel", 100, 0, 1500)
+	_, stale, _ := a.Attach("s1", "channel", 100, 0, 1500, false)
 	if !closed(stale) || closed(newer) {
 		t.Fatal("an earlier-started process attaching after a later one must be refused")
 	}
@@ -190,4 +190,35 @@ func TestALaterStartedProcessHoldsTheWindowsStream(t *testing.T) {
 	if a.Attached("s1", "channel", 100) {
 		t.Fatal("detached after the last stream closed")
 	}
+}
+
+func TestAToollessProcessOutranksOneServingTools(t *testing.T) {
+	closed := func(c <-chan struct{}) bool {
+		select {
+		case <-c:
+			return true
+		default:
+			return false
+		}
+	}
+	a := NewActivity()
+	_, combined, detachCombined := a.Attach("s1", "channel", 100, 0, 3000, false)
+	_, toolless, detachToolless := a.Attach("s1", "channel", 100, 0, 1000, true)
+	if !closed(combined) || closed(toolless) {
+		t.Fatal("a toolless process must supersede a later-started one serving tools")
+	}
+	_, laterCombined, _ := a.Attach("s1", "channel", 100, 0, 5000, false)
+	if !closed(laterCombined) || closed(toolless) {
+		t.Fatal("a process serving tools must be refused while a toolless one holds the window")
+	}
+	_, newerToolless, detachNewerToolless := a.Attach("s1", "channel", 100, 0, 2000, true)
+	if !closed(toolless) || closed(newerToolless) {
+		t.Fatal("among toolless processes the later-started must hold the window")
+	}
+	detachCombined()
+	detachToolless()
+	if after, through, ok := a.Pushed("s1", "channel", 100); !ok || after != 0 || through != 0 {
+		t.Fatalf("pushed = (%d, %d], %v; want the newer toolless stream alone", after, through, ok)
+	}
+	detachNewerToolless()
 }

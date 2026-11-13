@@ -460,12 +460,12 @@ func TestConsumeEventsStopsOnceSuperseded(t *testing.T) {
 	p := paths.Paths{App: ".cc-interact-test"}
 	var sawStarted atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawStarted.Store(r.URL.Query().Get("started"))
+		sawStarted.Store(r.URL.Query().Get("started") + "/" + r.URL.Query().Get("toolless"))
 		http.Error(w, "superseded", http.StatusConflict)
 	}))
 	t.Cleanup(srv.Close)
 	src := StreamSource{
-		Port: ssePort(t, srv), SubjectID: "superseded", Consumer: "channel", ClaudePID: 4242, Started: 1000, Paths: p,
+		Port: ssePort(t, srv), SubjectID: "superseded", Consumer: "channel", ClaudePID: 4242, Started: 1000, Toolless: true, Paths: p,
 		Refresh: func(context.Context) (int, error) {
 			t.Error("a superseded stream refreshed instead of stopping")
 			return 0, nil
@@ -480,7 +480,7 @@ func TestConsumeEventsStopsOnceSuperseded(t *testing.T) {
 	if !errors.Is(err, ErrSuperseded) {
 		t.Fatalf("ConsumeEvents = %v, want ErrSuperseded", err)
 	}
-	if got := sawStarted.Load(); got != "1000" {
-		t.Fatalf("started param = %v, want 1000", got)
+	if got := sawStarted.Load(); got != "1000/1" {
+		t.Fatalf("started/toolless params = %v, want 1000/1", got)
 	}
 }

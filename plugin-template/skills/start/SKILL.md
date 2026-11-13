@@ -21,7 +21,7 @@ It prints the session URL first, then a `channel:` line (`active|pending|inactiv
 
 ## 2. Wire up event delivery — then keep working
 
-- **`channel: active`** — this window's channel is proven and streaming. Do **not** arm a Monitor (you would receive every event twice). Events arrive as `<channel source="{{MCP_SERVER_NAME}}">` tags carrying the JSON event payloads.
+- **`channel: active`** — this window's channel is proven and streaming. Do **not** arm a Monitor (you would receive every event twice). Events arrive as `<channel source="plugin:{{PLUGIN_NAME}}:channel">` tags carrying the JSON event payloads.
 - **`channel: pending`** or **`channel: inactive`** — launch a **Monitor** (persistent) wrapping:
 
   ```bash
@@ -30,7 +30,7 @@ It prints the session URL first, then a `channel:` line (`active|pending|inactiv
 
   Use the Monitor tool with `persistent: true`. Each line it prints is one JSON event. `pending` means the channel is wired but unproven — Claude Code may be silently dropping its notifications — so the Monitor is the route.
 
-If a `<channel source="{{MCP_SERVER_NAME}}">` tag arrives while the Monitor is armed, run `"${CLAUDE_PLUGIN_ROOT}/bin/{{BINARY_NAME}}" channel-ack --session "$CLAUDE_CODE_SESSION_ID" --cwd "$PWD"`, stop the Monitor with **TaskStop**, and rely on tags from then on. Delivery is at-least-once: dedupe by event id.
+If a `<channel source="plugin:{{PLUGIN_NAME}}:channel">` tag arrives while the Monitor is armed, run `"${CLAUDE_PLUGIN_ROOT}/bin/{{BINARY_NAME}}" channel-ack --session "$CLAUDE_CODE_SESSION_ID" --cwd "$PWD"`, stop the Monitor with **TaskStop**, and rely on tags from then on. Delivery is at-least-once: dedupe by event id.
 
 Either way: **do not block waiting.** Tell the user you're watching and let their feedback arrive.
 
@@ -92,6 +92,6 @@ Four hooks in one capt-hook pack module, `hooks/agent_plane.py`, wire this windo
 
 A child that has finished its own work but should stay reachable calls the **`await`** MCP tool with its own `agent_id` (named in the greeting) to long-poll the channel for new directives. Add it to your channel tools with `channel.NewAwaitTool(channel.AwaitSpec{Resolve: ..., Timeout: ...})`.
 
-The **parent** learns the wake-only relay contract from `channel.RelayStep("{{MCP_SERVER_NAME}}")`, appended to your channel instructions after the `ReceiveProtocol` steps: when a `<channel source="{{MCP_SERVER_NAME}}">` tag carries an `agent.relay` event naming an `agent_id`, the parent SendMessages that child a **wake only** — the mailbox is the sole delivery path, so the wake carries no directive content, and a repeated relay tag is safe to re-nudge.
+The **parent** learns the wake-only relay contract from `channel.RelayStep("plugin:{{PLUGIN_NAME}}:channel")`, appended to your channel instructions after the `ReceiveProtocol` steps: when a `<channel source="plugin:{{PLUGIN_NAME}}:channel">` tag carries an `agent.relay` event naming an `agent_id`, the parent SendMessages that child a **wake only** — the mailbox is the sole delivery path, so the wake carries no directive content, and a repeated relay tag is safe to re-nudge.
 
 An operator enqueues a directive through the daemon's `agent-direct` op, addressed by `agent_id`; an empty id targets the top-level agent through the same mailbox.

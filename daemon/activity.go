@@ -28,7 +28,15 @@ type attachKey struct {
 type pushSpan struct {
 	after, through int64
 	started        int64
+	toolless       bool
 	superseded     chan struct{}
+}
+
+func (s *pushSpan) outranks(started int64, toolless bool) bool {
+	if s.toolless != toolless {
+		return s.toolless
+	}
+	return s.started > started
 }
 
 // NewActivity returns an empty registry.
@@ -50,25 +58,28 @@ func NewActivity() *Activity {
 // detach stamps lastDrop for AttachedWithin.
 //
 // started is when the connecting process started, in Unix milliseconds, or 0
-// when it does not say. In a window (pid != 0) one process holds a consumer's
-// streams: a connection from a later-started process closes superseded on every
-// stream of the consumer from an earlier one and drops them from Pushed, and a
-// connection from an earlier-started process than one already attached is
-// refused, its superseded closed on return and nothing recorded.
-func (a *Activity) Attach(subjectID, consumer string, pid int, cursor, started int64) (pushed func(seq int64), superseded <-chan struct{}, detach func()) {
+// when it does not say, and toolless marks a process that serves no tools. In a
+// window (pid != 0) one process holds a consumer's streams: a toolless process
+// outranks one serving tools, and among processes of one kind the later-started
+// outranks the earlier. A connection closes superseded on every stream of the
+// consumer from a process it outranks and drops them from Pushed, and a
+// connection from a process an attached one outranks is refused, its superseded
+// closed on return and nothing recorded.
+func (a *Activity) Attach(subjectID, consumer string, pid int, cursor, started int64, toolless bool) (pushed func(seq int64), superseded <-chan struct{}, detach func()) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	k := attachKey{consumer, pid}
 	if pid != 0 {
 		for span := range a.streams[subjectID][k] {
-			if span.started > started {
+			if span.outranks(started, toolless) {
 				refused := make(chan struct{})
 				close(refused)
 				return func(int64) {}, refused, func() {}
 			}
 		}
+		newcomer := &pushSpan{started: started, toolless: toolless}
 		for span := range a.streams[subjectID][k] {
-			if span.started < started {
+			if newcomer.outranks(span.started, span.toolless) {
 				close(span.superseded)
 				delete(a.streams[subjectID][k], span)
 			}
@@ -86,7 +97,7 @@ func (a *Activity) Attach(subjectID, consumer string, pid int, cursor, started i
 	if a.streams[subjectID][k] == nil {
 		a.streams[subjectID][k] = make(map[*pushSpan]struct{})
 	}
-	span := &pushSpan{after: cursor, through: cursor, started: started, superseded: make(chan struct{})}
+	span := &pushSpan{after: cursor, through: cursor, started: started, toolless: toolless, superseded: make(chan struct{})}
 	a.streams[subjectID][k][span] = struct{}{}
 	var once sync.Once
 	return func(seq int64) {

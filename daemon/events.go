@@ -49,8 +49,8 @@ func (s *Server) Subscribe(subjectID string) (<-chan struct{}, func()) {
 
 // Attach registers a named SSE stream consumer for a subject, resuming after
 // cursor, and returns its pushed, superseded and detach. Satisfies sse.Backend.
-func (s *Server) Attach(subjectID, consumer string, pid int, cursor, started int64) (func(int64), <-chan struct{}, func()) {
-	return s.activity.Attach(subjectID, consumer, pid, cursor, started)
+func (s *Server) Attach(subjectID, consumer string, pid int, cursor, started int64, toolless bool) (func(int64), <-chan struct{}, func()) {
+	return s.activity.Attach(subjectID, consumer, pid, cursor, started, toolless)
 }
 
 // ConsumerConnected reports whether any named stream consumer is attached to the

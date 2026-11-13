@@ -14,7 +14,7 @@ Every tool your channel MCP server exposes is addressable as:
 mcp__plugin_{{PLUGIN_NAME}}_{{MCP_SERVER_NAME}}__<tool_name>
 ```
 
-where `{{PLUGIN_NAME}}` is the plugin manifest `name`, `{{MCP_SERVER_NAME}}` is the key under `mcpServers` in `plugin.json` (both set in `.claude-plugin/plugin.json`), and `<tool_name>` is the tool registered by `{{BINARY_NAME}} {{MCP_SUBCOMMAND}}`. List exactly the tools this agent needs in the `tools:` frontmatter above — the agent is sandboxed to that allowlist. `reply` (post back into the session) is provided by the channel substrate; the rest are your domain's tools.
+where `{{PLUGIN_NAME}}` is the plugin manifest `name`, `{{MCP_SERVER_NAME}}` is the key under `mcpServers` in `plugin.json` (both set in `.claude-plugin/plugin.json`), and `<tool_name>` is the tool registered by `{{BINARY_NAME}} tools`. List exactly the tools this agent needs in the `tools:` frontmatter above — the agent is sandboxed to that allowlist. `reply` (post back into the session) is provided by the channel substrate; the rest are your domain's tools.
 
 ## What to do
 

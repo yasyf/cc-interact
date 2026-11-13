@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 )
 
 // mcpProtocolVersion is the MCP version advertised when the client omits one.
@@ -144,6 +146,15 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 // so the consumer's cursor does not advance past an undelivered event.
 func (s *Server) Notify(method string, params any) error {
 	return s.write(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+}
+
+// Exec replaces this process with path run as argv, on the same stdio and
+// environment, holding the writer so no frame is cut short. It returns only
+// when the exec fails.
+func (s *Server) Exec(path string, argv []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return syscall.Exec(path, argv, os.Environ())
 }
 
 func (s *Server) toolSchemas() []any {

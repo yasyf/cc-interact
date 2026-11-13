@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-11-13
+
+### Added
+
+- **A channel server a plugin reload keeps.** Claude Code restarts a plugin's MCP server on reload whenever its config changes, and a `${CLAUDE_PLUGIN_ROOT}` path changes with every version, so a reload used to cut the channel's stream. `channel --no-tools` serves the stream alone, so a plugin runs it from PATH with `CLAUDE_PLUGIN_ROOT` emptied, a config that stays the same across versions, and serves its tools from a second server running the new `tools` command (`cmd.ToolsCmd`). The toolless server re-executes on the newest install in Claude Code's plugin cache that Claude Code has not orphaned, once that install's binary reports a newer release, so its PATH copy never pins a session to an old build. `Deps.Plugin` names the plugin it looks for.
+- **A stopped channel server is reconnected.** Claude Code never restarts a stdio server that exits. The toolless server stamps `cc-interact-v1/windows/<claude pid>.beat` every 15 seconds, and the new `channel-check` Stop hook (`cmd.ChannelCheckCmd`), in a session inside Orca whose beat went stale for a minute, starts a detached copy that waits for the prompt to sit idle with an empty draft and types `/mcp reconnect plugin:<plugin>:channel`, at most once every 5 minutes. `cmd.ChannelServer` is the `channel` server name it reconnects.
+
+### Changed
+
+- **A toolless channel server outranks one serving tools.** `daemon.Activity.Attach`, `sse.Backend.Attach` and `consume.StreamSource` carry `toolless`, sent as `toolless=1` on `GET /events`, and a window's stream goes to a toolless process over one serving tools before start times count, so a server that a background agent starts from a plugin config older than the split never takes the stream from the window's toolless one. A channel server serving tools that is outranked keeps serving its tools instead of exiting; a toolless one still exits.
+
 ## [0.42.2] - 2026-11-12
 
 ### Added

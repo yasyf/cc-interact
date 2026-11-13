@@ -71,7 +71,7 @@ class PackTest(unittest.TestCase):
 
     def test_discover_pack_loads_every_module_and_hook(self) -> None:
         self.assertEqual(app._state.load_errors, [])
-        self.assertEqual(len(app._state.hooks), 9)
+        self.assertEqual(len(app._state.hooks), 10)
         for module in ("agent_plane", "common", "guard_edit", "session", "turn_hooks"):
             self.assertIn(f"{self.package}.{module}", sys.modules)
 
@@ -88,6 +88,7 @@ class PackTest(unittest.TestCase):
             "session_record": (Event.SessionStart, True, True),
             "turn_start": (Event.UserPromptSubmit, False, True),
             "turn_end": (Event.Stop, False, True),
+            "channel_check": (Event.Stop, False, True),
         }
         actual = {
             hook.name: (hook.spec.events, hook.spec.async_, hook.spec.skip_planning_agents)
@@ -148,6 +149,7 @@ class PackTest(unittest.TestCase):
             (self.agent_plane.agent_report, "agent-report", mock_event(Event.PostToolUse, tool="Task", prompt="inspect")),
             (self.turn_hooks.turn_start, "turn-start", mock_event(Event.UserPromptSubmit, prompt="begin")),
             (self.turn_hooks.turn_end, "turn-end", mock_event(Event.Stop)),
+            (self.session.channel_check, "channel-check", mock_event(Event.Stop)),
             (self.session.session_record, "session-record", mock_event(Event.SessionStart, source="startup")),
         )
         for hook, subcommand, evt in cases:
