@@ -43,9 +43,9 @@ plugin-template/
 
 ### Where each is used
 
-- `{{PLUGIN_NAME}}` — `plugin.json` `name` (the pack's identity derives from it — the v11 descriptor carries no name); `agents/example-agent.md` (`subagent_type`, the `mcp__plugin_<PLUGIN_NAME>_…` tool prefix); `SKILL.md` (`--channels plugin:<PLUGIN_NAME>@<PLUGIN_NAME>`); the installer's default data-dir path.
+- `{{PLUGIN_NAME}}` — `plugin.json` `name` (the pack's identity derives from it — the v11 descriptor carries no name) and the channel server's launcher, which finds the plugin's installs under `<PLUGIN_NAME>@<PLUGIN_NAME>` in Claude Code's `installed_plugins.json`; `agents/example-agent.md` (`subagent_type`, the `mcp__plugin_<PLUGIN_NAME>_…` tool prefix); `SKILL.md` (`--channels plugin:<PLUGIN_NAME>@<PLUGIN_NAME>`); the installer's default data-dir path.
 - `{{DISPLAY_NAME}}` — `plugin.json` `description` + channel `displayName`; `SKILL.md` (description + prose); `agents/example-agent.md`.
-- `{{BINARY_NAME}}` — `plugin.json` (the channel server's `command`, found on PATH), `scripts/mcp-channel.sh`, `capt-hook/hooks/common.py` (the `bin/` path every pack hook calls), `SKILL.md` (every `${CLAUDE_PLUGIN_ROOT}/bin/<BINARY_NAME>` invocation).
+- `{{BINARY_NAME}}` — `plugin.json` (the binary the channel server's launcher execs from the newest install's `bin/`), `scripts/mcp-channel.sh`, `capt-hook/hooks/common.py` (the `bin/` path every pack hook calls), `SKILL.md` (every `${CLAUDE_PLUGIN_ROOT}/bin/<BINARY_NAME>` invocation).
 - `{{RELEASE_REPO}}` — `plugin.json` `homepage`.
 - `{{MCP_SUBCOMMAND}}` — `plugin.json` (the channel server's `args`).
 - `{{SKILL_NAME}}` — `SKILL.md` (heading + "later rounds" prose); `agents/example-agent.md` (which skill dispatches it).

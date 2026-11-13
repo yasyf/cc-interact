@@ -17,8 +17,14 @@
   ],
   "mcpServers": {
     "channel": {
-      "command": "{{BINARY_NAME}}",
-      "args": ["{{MCP_SUBCOMMAND}}", "--no-tools"],
+      "command": "python3",
+      "args": [
+        "-I",
+        "-c",
+        "import json, os, pathlib, subprocess, sys\nconfig = pathlib.Path(os.environ.get(\"CLAUDE_CONFIG_DIR\") or pathlib.Path.home() / \".claude\")\ninstalls = json.loads((config / \"plugins\" / \"installed_plugins.json\").read_text())[\"plugins\"].get(\"{{PLUGIN_NAME}}@{{PLUGIN_NAME}}\")\nif not installs:\n    raise SystemExit(\"{{BINARY_NAME}}: the {{PLUGIN_NAME}}@{{PLUGIN_NAME}} plugin is not installed\")\nnewest = max(installs, key=lambda entry: entry.get(\"lastUpdated\") or entry.get(\"installedAt\") or \"\")\nbinary = str(pathlib.Path(newest[\"installPath\"]) / \"bin\" / \"{{BINARY_NAME}}\")\nsubprocess.run([binary, \"--version\"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\nos.execv(binary, [binary, *sys.argv[1:]])\n",
+        "{{MCP_SUBCOMMAND}}",
+        "--no-tools"
+      ],
       "env": { "CLAUDE_PLUGIN_ROOT": "" }
     },
     "{{MCP_SERVER_NAME}}": {

@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The plugin template's channel server runs the plugin's own binary.** Its `channel` entry ran `{{BINARY_NAME}}` from PATH, which resolves to a copy outside the plugin, such as a Homebrew one, so a plugin update that reached a session before that copy did named a flag the copy rejected, and the server never started. The entry now runs `python3` with a launcher that reads Claude Code's `installed_plugins.json` and execs the newest install's own `bin/{{BINARY_NAME}}`, so the binary always ships with the manifest naming its flags, and the entry still names no plugin version, so a reload keeps the server.
+
 ## [0.43.0] - 2026-11-13
 
 ### Added
