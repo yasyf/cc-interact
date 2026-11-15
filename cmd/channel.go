@@ -42,9 +42,10 @@ const (
 // later-started outranks the earlier. An outranked server serving tools keeps
 // serving them; a toolless one exits.
 //
-// With --no-tools it serves only the stream, so a plugin runs it from PATH with
-// CLAUDE_PLUGIN_ROOT emptied, a config a plugin reload keeps, and its tools on
-// ToolsCmd's server. It stamps its window's beat for ChannelCheckCmd and
+// With --no-tools it serves only the stream, so a plugin starts it through a
+// launcher that names no plugin version and execs the newest install's own
+// binary, with CLAUDE_PLUGIN_ROOT emptied, a config a plugin reload keeps, and
+// its tools on ToolsCmd's server. It stamps its window's beat for ChannelCheckCmd and
 // re-executes on the newest install in Claude Code's plugin cache once that
 // install runs a newer release.
 func ChannelCmd(d Deps) *cobra.Command {
