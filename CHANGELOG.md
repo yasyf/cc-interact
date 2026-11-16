@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-11-16
+
+### Changed
+
+- **No launcher places a build older than the newest one already placed.** Under `ensure.lock`, before it places anything, a launcher reads the high-water mark at `<state dir>/newest-placed-build`. When the mark names a newer release, the launcher gets `ErrIncumbentNewer`, also when no daemon is running or the incumbent is leaving, where the incumbent cannot report its release. Otherwise, it raises the mark to its own release before placing it. A dev build never raises the mark, because every dev build outranks every release. Clients built on 0.44.0 or older still place their own binary, so the rule covers only launchers built on this release or later.
+
+### Added
+
+- `version.IsRelease` reports whether a build string is a release rather than a dev build.
+
 ## [0.44.0] - 2026-11-16
 
 ### Changed

@@ -319,3 +319,52 @@ func TestTransitionBudgetCoversTheIncumbentsDrainThenTheBoot(t *testing.T) {
 		})
 	}
 }
+
+func TestALauncherNeverPlacesBelowTheNewestPlacedRelease(t *testing.T) {
+	shortHome(t)
+	launcher := exactLauncher(testLauncherSpec("cci-launcher-high-water"))
+	if err := launcher.Paths.EnsureStateDir(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newestPlacedPath(launcher.Paths), []byte("2.0.0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := launcher.EnsureCurrent(context.Background()); !errors.Is(err, ErrIncumbentNewer) {
+		t.Fatalf("EnsureCurrent from 1.0.0 with 2.0.0 already placed and nothing running = %v, want ErrIncumbentNewer", err)
+	}
+}
+
+func TestClaimPlacementKeepsTheNewestRelease(t *testing.T) {
+	for _, tt := range []struct {
+		name, recorded, build, want string
+	}{
+		{"first release is recorded", "", "1.0.0", "1.0.0"},
+		{"a newer release raises the mark", "1.0.0", "2.0.0", "2.0.0"},
+		{"an older release leaves it", "2.0.0", "1.0.0", "2.0.0"},
+		{"a dev build never records", "1.0.0", "dev", "1.0.0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			shortHome(t)
+			launcher := exactLauncher(testLauncherSpec("cci-launcher-record"))
+			launcher.RuntimeBuild = tt.build
+			if err := launcher.Paths.EnsureStateDir(); err != nil {
+				t.Fatal(err)
+			}
+			if tt.recorded != "" {
+				if err := os.WriteFile(newestPlacedPath(launcher.Paths), []byte(tt.recorded), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := launcher.claimPlacement(true); err != nil {
+				t.Fatal(err)
+			}
+			got, err := launcher.newestPlaced()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("newest placed after %s over %q = %q, want %q", tt.build, tt.recorded, got, tt.want)
+			}
+		})
+	}
+}

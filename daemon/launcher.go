@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/yasyf/cc-interact/version"
 	"github.com/yasyf/daemonkit"
+	"github.com/yasyf/daemonkit/durable"
 	"github.com/yasyf/daemonkit/paths"
 )
 
@@ -111,12 +113,43 @@ func (l Launcher) ensure(ctx context.Context, coldStart bool) error {
 	default:
 		return err
 	}
+	if err := l.claimPlacement(current); err != nil {
+		return err
+	}
 	transitionCtx, cancelTransition := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancelTransition()
 	if _, err := client.Ensure(transitionCtx); err != nil {
 		return fmt.Errorf("daemon: ensure: %w", err)
 	}
 	return nil
+}
+
+func (l Launcher) claimPlacement(current bool) error {
+	newest, err := l.newestPlaced()
+	if err != nil {
+		return err
+	}
+	if !current && newest != "" && version.Newer(newest, l.RuntimeBuild) {
+		return fmt.Errorf("%w: %s was already placed, so this build %s never replaces it", ErrIncumbentNewer, newest, l.RuntimeBuild)
+	}
+	if !version.IsRelease(l.RuntimeBuild) || (newest != "" && !version.Newer(l.RuntimeBuild, newest)) {
+		return nil
+	}
+	if err := durable.WriteFile(newestPlacedPath(l.Paths), []byte(l.RuntimeBuild), 0o600); err != nil {
+		return fmt.Errorf("daemon: record the newest placed build: %w", err)
+	}
+	return nil
+}
+
+func (l Launcher) newestPlaced() (string, error) {
+	data, err := os.ReadFile(newestPlacedPath(l.Paths))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("daemon: read the newest placed build: %w", err)
+	}
+	return string(data), nil
 }
 
 func affords(ctx context.Context, budget time.Duration) bool {
@@ -156,6 +189,8 @@ const (
 )
 
 func ensureLockPath(p paths.Paths) string { return filepath.Join(p.LockDir(), "ensure.lock") }
+
+func newestPlacedPath(p paths.Paths) string { return filepath.Join(p.StateDir(), "newest-placed-build") }
 
 // probeIncumbent passes daemonkit's ErrAbsent, ErrDraining, and
 // ErrProtocolMismatch back unwrapped, so each ensure path classifies an

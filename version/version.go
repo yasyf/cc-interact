@@ -11,3 +11,9 @@ import dkversion "github.com/yasyf/daemonkit/version"
 // daemonkit's Release/Dev taxonomy so the rollback guard and the client version
 // gate share one polarity: every dev build outranks every release, ties never win.
 func Newer(a, b string) bool { return dkversion.Newer(a, b) }
+
+// IsRelease reports whether build is a release rather than a dev build.
+func IsRelease(build string) bool {
+	_, ok := dkversion.Parse(build).(dkversion.Release)
+	return ok
+}

@@ -33,3 +33,22 @@ func TestNewerPolarity(t *testing.T) {
 		})
 	}
 }
+
+func TestIsRelease(t *testing.T) {
+	for _, tc := range []struct {
+		build string
+		want  bool
+	}{
+		{"v0.20.176", true},
+		{"0.20.176", true},
+		{"dev", false},
+		{"", false},
+		{"9999.100.0-dev", false},
+	} {
+		t.Run(tc.build, func(t *testing.T) {
+			if got := IsRelease(tc.build); got != tc.want {
+				t.Fatalf("IsRelease(%q) = %v, want %v", tc.build, got, tc.want)
+			}
+		})
+	}
+}
