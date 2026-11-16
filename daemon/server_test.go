@@ -940,13 +940,11 @@ func TestADrainExitsByItselfPastAWorkerThatIgnoresCancellation(t *testing.T) {
 	t.Cleanup(func() { close(stuck) })
 	spec := testServeSpec()
 	spec.Shutdown = daemonkit.Grace(2 * time.Second)
-	booted := make(chan struct{})
 	s, err := New(Config{
 		AppName: "cc-interact-test", Paths: testPaths(),
 		Daemon: spec, RuntimeBuild: "0.0.1", ActiveStatuses: []string{"open"},
 		BootReconcile: func(_ context.Context, s *Server) error {
 			s.Background(func(context.Context) { <-stuck })
-			close(booted)
 			return nil
 		},
 	})
@@ -956,10 +954,12 @@ func TestADrainExitsByItselfPastAWorkerThatIgnoresCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	served := make(chan error, 1)
 	go func() { served <- s.Serve(ctx) }()
-	select {
-	case <-booted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("boot reconciliation did not run")
+	ready := time.Now().Add(5 * time.Second)
+	for !s.serving.Load() {
+		if time.Now().After(ready) {
+			t.Fatal("the daemon never started serving")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
 	select {
