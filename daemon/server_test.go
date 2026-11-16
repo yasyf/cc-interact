@@ -933,3 +933,41 @@ func TestStartHTTPWaitsForOnHTTPStartCleanup(t *testing.T) {
 		t.Fatal("onHTTPStart cleanup did not run")
 	}
 }
+
+func TestADrainExitsByItselfPastAWorkerThatIgnoresCancellation(t *testing.T) {
+	shortHome(t)
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	spec := testServeSpec()
+	spec.Shutdown = daemonkit.Grace(2 * time.Second)
+	booted := make(chan struct{})
+	s, err := New(Config{
+		AppName: "cc-interact-test", Paths: testPaths(),
+		Daemon: spec, RuntimeBuild: "0.0.1", ActiveStatuses: []string{"open"},
+		BootReconcile: func(_ context.Context, s *Server) error {
+			s.Background(func(context.Context) { <-stuck })
+			close(booted)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- s.Serve(ctx) }()
+	select {
+	case <-booted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("boot reconciliation did not run")
+	}
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Serve = %v, want a settled drain", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve parked past its 2s shutdown grace over a worker that ignores cancellation")
+	}
+}

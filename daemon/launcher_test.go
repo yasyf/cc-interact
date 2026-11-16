@@ -223,3 +223,99 @@ func TestEnsuresWithNoDeadlineReleaseEverySessionTheyProbeWith(t *testing.T) {
 		t.Fatalf("Do after %d ensures = %v, want a free session", maxSessions+1, err)
 	}
 }
+
+func TestAnOlderLauncherRefusesToRollBackANewerDaemonStillStarting(t *testing.T) {
+	shortHome(t)
+	bootEntered := make(chan struct{})
+	releaseBoot := make(chan struct{})
+	s, err := New(Config{
+		AppName: "cc-interact-test", Paths: testPaths(),
+		Daemon: testServeSpec(), RuntimeBuild: "2.0.0", ActiveStatuses: []string{"open"},
+		BootReconcile: func(context.Context, *Server) error {
+			close(bootEntered)
+			<-releaseBoot
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- s.Serve(ctx) }()
+	t.Cleanup(func() {
+		close(releaseBoot)
+		cancel()
+		select {
+		case <-served:
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return")
+		}
+	})
+	select {
+	case <-bootEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("start did not reach boot reconciliation")
+	}
+	older := Launcher{Daemon: testServeSpec(), Paths: testPaths(), RuntimeBuild: "1.0.0"}
+	for _, tt := range []struct {
+		name   string
+		ensure func(context.Context) error
+	}{
+		{"EnsureCurrent", older.EnsureCurrent},
+		{"EnsureCurrentIfRunning", older.EnsureCurrentIfRunning},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.ensure(context.Background()); !errors.Is(err, ErrIncumbentNewer) {
+				t.Fatalf("%s from 1.0.0 against a 2.0.0 daemon still starting = %v, want ErrIncumbentNewer", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestAnUpgradeTheCallerCannotSeeThroughNeverStarts(t *testing.T) {
+	spec, _ := serveStubDaemon(t, "cci-launcher-deferred", replyWith(Reply{OK: true}))
+	launcher := exactLauncher(spec)
+	for _, tt := range []struct {
+		name   string
+		ensure func(context.Context) error
+	}{
+		{"EnsureCurrent", launcher.EnsureCurrent},
+		{"EnsureCurrentIfRunning", launcher.EnsureCurrentIfRunning},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), launcher.TransitionBudget()/2)
+			defer cancel()
+			if err := tt.ensure(ctx); !errors.Is(err, ErrUpgradeDeferred) {
+				t.Fatalf("%s with half a transition left = %v, want ErrUpgradeDeferred", tt.name, err)
+			}
+			client, err := NewClient(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			if _, err := client.Do(ctx, Envelope{Op: "probe"}); err != nil {
+				t.Fatalf("Do after a deferred upgrade = %v, want the incumbent still serving", err)
+			}
+		})
+	}
+}
+
+func TestTransitionBudgetCoversTheIncumbentsDrainThenTheBoot(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		shutdown daemonkit.Grace
+		want     time.Duration
+	}{
+		{"default grace", 0, 60 * time.Second},
+		{"grace under the boot allowance", daemonkit.Grace(10 * time.Second), 40 * time.Second},
+		{"grace over the boot allowance", daemonkit.Grace(45 * time.Second), 90 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			launcher := exactLauncher(Spec(daemonkit.Daemon{Label: "cci-launcher-budget", Shutdown: tt.shutdown}))
+			if got := launcher.TransitionBudget(); got != tt.want {
+				t.Fatalf("TransitionBudget with Shutdown %s = %s, want %s", time.Duration(tt.shutdown), got, tt.want)
+			}
+		})
+	}
+}

@@ -71,3 +71,9 @@ func (g *workerGroup) done() {
 		close(g.drained)
 	}
 }
+
+func (g *workerGroup) Active() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active
+}
