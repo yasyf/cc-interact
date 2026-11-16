@@ -47,6 +47,11 @@ const (
 // for it to still report as connected in status.
 const attachGrace = 10 * time.Second
 
+// drainSettleReserve is the share of its drain budget the product hands back
+// unspent: daemonkit abandons a stage that returns at its deadline and parks,
+// holding the flock until launchd kills the process.
+const drainSettleReserve = 0.1
+
 // subscriberPresenceWindow is how long after a subscriber's last mailbox drain it
 // still counts as present for muting, bridging the gap between a delivering await
 // and the next park so a live handler's events stay muted from the channel.
@@ -251,6 +256,7 @@ func (s *Server) Background(fn func(context.Context)) {
 func (s *Server) Serve(parent context.Context) error {
 	s.freezeHandlers()
 	start := func(c daemonkit.Ctx) (daemonkit.Product, error) {
+		c.Report(s.healthDetail())
 		if err := s.activateState(c.Context); err != nil {
 			return nil, err
 		}
@@ -258,7 +264,6 @@ func (s *Server) Serve(parent context.Context) error {
 			return nil, errors.Join(err, s.settleFailedStart())
 		}
 		s.serving.Store(true)
-		c.Report(s.healthDetail())
 		return product{s}, nil
 	}
 	_, err := daemonkit.Serve(parent, s.daemon, start)
@@ -267,7 +272,8 @@ func (s *Server) Serve(parent context.Context) error {
 }
 
 // healthDetail is what the launcher reads back off daemonkit's health verb to
-// order this daemon against its own build.
+// order this daemon against its own build. start reports it before any
+// activation, so a launcher probing a daemon still booting can order it.
 func (s *Server) healthDetail() []byte {
 	detail, _ := json.Marshal(HealthDetail{RuntimeBuild: s.runtimeBuild})
 	return detail
@@ -316,9 +322,13 @@ func (p product) Drain(b daemonkit.Budget) error {
 		cancel()
 	}
 	s.workers.Close()
-	ctx, done := b.Context(context.Background())
+	work, _ := b.Reserve("settle", drainSettleReserve)
+	ctx, done := work.Context(context.Background())
 	defer done()
-	return s.workers.Wait(ctx)
+	if err := s.workers.Wait(ctx); err != nil {
+		return fmt.Errorf("daemon: %d workers outlived the drain; exiting without them: %w", s.workers.Active(), err)
+	}
+	return nil
 }
 
 func (p product) Close(b daemonkit.Budget) error {

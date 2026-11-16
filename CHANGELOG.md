@@ -6,8 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-11-16
+
 ### Changed
 
+- **A starting daemon already says which release it is.** `Server.Serve` reports `HealthDetail.RuntimeBuild` before it opens state or runs `BootReconcile`, where it used to report it last. A launcher probing a daemon that is still booting now reads its release, so an older launcher gets `ErrIncumbentNewer` instead of placing its own binary and restarting a newer daemon mid-boot. Launchers already deployed run the same `refuseRollback`, so they stop rolling back too.
+- **An upgrade gets the time it needs, and does not start without it.** `Launcher.EnsureCurrent(ctx)`, `Launcher.EnsureCurrentIfRunning(ctx)` and `Launcher.Stop(ctx)` take no timeout, and `daemon.UpgradeTimeout` is removed. A transition runs on `Launcher.TransitionBudget`: the daemon's Shutdown grace (its drain bound and launchd's ExitTimeOut) plus the larger of that grace and the new `BootAllowance` (30s), so daemonkit's eviction can wait out the whole drain and the replacement still has its boot. The transition ignores the caller's cancellation and holds `ensure.lock` until the replacement is Ready or has failed. A caller whose deadline is shorter than the budget gets the new `ErrUpgradeDeferred` before anything drains, and the incumbent keeps serving.
+- **A draining daemon exits by itself.** The product's drain stage waits for workers for all but a tenth of its share of the Shutdown budget, then returns an error naming how many are still running. daemonkit settles the stage and the process exits, where a worker that ignored cancellation used to run the stage to its deadline, after which daemonkit abandoned it and parked holding the flock until launchd killed the process.
 - **The plugin template's channel server runs the plugin's own binary.** Its `channel` entry ran `{{BINARY_NAME}}` from PATH, which resolves to a copy outside the plugin, such as a Homebrew one, so a plugin update that reached a session before that copy did named a flag the copy rejected, and the server never started. The entry now runs `python3` with a launcher that reads Claude Code's `installed_plugins.json` and execs the newest install's own `bin/{{BINARY_NAME}}`, so the binary always ships with the manifest naming its flags, and the entry still names no plugin version, so a reload keeps the server.
 
 ## [0.43.0] - 2026-11-13

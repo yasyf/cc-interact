@@ -14,11 +14,18 @@ import (
 	"github.com/yasyf/daemonkit/paths"
 )
 
-// UpgradeTimeout bounds an exact-build daemon transition.
-const UpgradeTimeout = 30 * time.Second
+// BootAllowance is how long a replacement daemon may take, once the incumbent
+// has left, to boot and report Ready.
+const BootAllowance = 30 * time.Second
 
 // ErrNoPeer is daemonkit's proven-absence refusal: no daemon is listening.
 var ErrNoPeer = daemonkit.ErrAbsent
+
+// ErrUpgradeDeferred refuses to begin replacing a serving daemon when the
+// caller's deadline cannot cover the whole transition. The incumbent keeps
+// serving, rather than draining under a caller killed before its replacement
+// is Ready.
+var ErrUpgradeDeferred = errors.New("daemon: no time to finish an upgrade")
 
 // ErrIncumbentNewer refuses an upgrade that would put an older release back in
 // a newer one's place. daemonkit converges on Health.Build, which proves two
@@ -50,61 +57,71 @@ func (l Launcher) NewClient() (*Client, error) {
 // incumbent refuses with ErrIncumbentNewer instead of being rolled back.
 // Ensures of one daemon run one at a time, so a launcher that probes while
 // another replaces the daemon reads the build that replacement left serving
-// rather than the gap before it.
-func (l Launcher) EnsureCurrent(ctx context.Context, timeout time.Duration) error {
-	client, err := l.open()
-	if err != nil {
-		return err
-	}
-	defer closeProbe(client)
-	operationCtx, cancel := boundedContext(ctx, timeout)
-	defer cancel()
-	release, err := l.awaitEnsureTurn(operationCtx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	switch err := l.probeIncumbent(operationCtx, client); {
-	case err == nil, errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining), errors.Is(err, daemonkit.ErrProtocolMismatch):
-	default:
-		return err
-	}
-	if _, err := client.Ensure(operationCtx); err != nil {
-		return fmt.Errorf("daemon: ensure: %w", err)
-	}
-	return nil
+// rather than the gap before it. A transition runs on TransitionBudget,
+// whatever the caller's own deadline, and holds the turn until the
+// replacement is Ready or has failed; a caller whose deadline cannot cover it
+// gets ErrUpgradeDeferred before anything is drained.
+func (l Launcher) EnsureCurrent(ctx context.Context) error {
+	return l.ensure(ctx, true)
 }
 
 // EnsureCurrentIfRunning upgrades a running daemon without cold-starting one,
 // returning ErrNoPeer for proven absence. An incumbent that is already leaving
 // is running, not absent: Ensure's own drain-observation ladder settles it and
 // starts the wanted build in its place. A newer incumbent refuses with
-// ErrIncumbentNewer. It waits its turn behind any other ensure of the daemon,
-// as EnsureCurrent does.
+// ErrIncumbentNewer. It waits its turn, budgets, and defers as EnsureCurrent
+// does.
 func (l Launcher) EnsureCurrentIfRunning(ctx context.Context) error {
+	return l.ensure(ctx, false)
+}
+
+// TransitionBudget is how long replacing a serving daemon may take: its drain,
+// which daemonkit bounds by the daemon's Shutdown grace (launchd's ExitTimeOut)
+// and observes on half of what an eviction has left, then the replacement's
+// BootAllowance.
+func (l Launcher) TransitionBudget() time.Duration {
+	drain := time.Duration(l.Daemon.ShutdownGrace())
+	return drain + max(drain, BootAllowance)
+}
+
+func (l Launcher) ensure(ctx context.Context, coldStart bool) error {
 	client, err := l.open()
 	if err != nil {
 		return err
 	}
 	defer closeProbe(client)
-	operationCtx, cancel := boundedContext(ctx, UpgradeTimeout)
+	budget := l.TransitionBudget()
+	turnCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	release, err := l.awaitEnsureTurn(operationCtx)
+	release, err := l.awaitEnsureTurn(turnCtx)
 	if err != nil {
 		return err
 	}
 	defer release()
-	switch err := l.probeIncumbent(operationCtx, client); {
+	current, err := l.probeIncumbent(turnCtx, client)
+	switch {
 	case err == nil, errors.Is(err, daemonkit.ErrDraining), errors.Is(err, daemonkit.ErrProtocolMismatch):
+		if !current && !affords(ctx, budget) {
+			return fmt.Errorf("%w: the caller's deadline leaves less than the %s a transition takes", ErrUpgradeDeferred, budget)
+		}
 	case errors.Is(err, daemonkit.ErrAbsent):
-		return ErrNoPeer
+		if !coldStart {
+			return ErrNoPeer
+		}
 	default:
 		return err
 	}
-	if _, err := client.Ensure(operationCtx); err != nil {
+	transitionCtx, cancelTransition := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	defer cancelTransition()
+	if _, err := client.Ensure(transitionCtx); err != nil {
 		return fmt.Errorf("daemon: ensure: %w", err)
 	}
 	return nil
+}
+
+func affords(ctx context.Context, budget time.Duration) bool {
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Until(deadline) >= budget
 }
 
 func (l Launcher) awaitEnsureTurn(ctx context.Context) (func(), error) {
@@ -142,17 +159,22 @@ func ensureLockPath(p paths.Paths) string { return filepath.Join(p.LockDir(), "e
 
 // probeIncumbent passes daemonkit's ErrAbsent, ErrDraining, and
 // ErrProtocolMismatch back unwrapped, so each ensure path classifies an
-// absence, a departure, or an older wire protocol on its own terms.
-func (l Launcher) probeIncumbent(ctx context.Context, client *daemonkit.Client) error {
+// absence, a departure, or an older wire protocol on its own terms. It reports
+// whether the incumbent already serves this launcher's release, Ready.
+func (l Launcher) probeIncumbent(ctx context.Context, client *daemonkit.Client) (bool, error) {
 	health, err := client.Health(ctx)
 	switch {
 	case err == nil:
 	case errors.Is(err, daemonkit.ErrAbsent), errors.Is(err, daemonkit.ErrDraining), errors.Is(err, daemonkit.ErrProtocolMismatch):
-		return err
+		return false, err
 	default:
-		return fmt.Errorf("daemon: probe incumbent: %w", err)
+		return false, fmt.Errorf("daemon: probe incumbent: %w", err)
 	}
-	return l.refuseRollback(health)
+	if err := l.refuseRollback(health); err != nil {
+		return false, err
+	}
+	incumbent, _ := reportedBuild(health.Detail)
+	return health.Phase == daemonkit.PhaseReady && incumbent == l.RuntimeBuild, nil
 }
 
 // refuseRollback refuses only a rollback this launcher can prove. Detail that
@@ -192,7 +214,7 @@ func reportedBuild(detail []byte) (string, bool) {
 // hands its absence proof an executable Ensure alone ever places — and on a
 // machine that never ensured this era, resolving that unplaced path fails
 // before the agent is ever removed.
-func (l Launcher) Stop(ctx context.Context, timeout time.Duration) error {
+func (l Launcher) Stop(ctx context.Context) error {
 	if err := l.validate(); err != nil {
 		return err
 	}
@@ -202,7 +224,7 @@ func (l Launcher) Stop(ctx context.Context, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	stopCtx, cancel := boundedContext(ctx, timeout)
+	stopCtx, cancel := context.WithTimeout(ctx, l.TransitionBudget())
 	defer cancel()
 	if err := client.Stop(stopCtx); err != nil {
 		return fmt.Errorf("daemon: stop: %w", err)
@@ -234,11 +256,4 @@ func closeProbe(client *daemonkit.Client) {
 	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
 	_ = client.Close(ctx)
-}
-
-func boundedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
-		timeout = UpgradeTimeout
-	}
-	return context.WithTimeout(ctx, timeout)
 }

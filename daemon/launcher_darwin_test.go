@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/yasyf/daemonkit"
 	"github.com/yasyf/daemonkit/launchd"
@@ -32,7 +31,7 @@ func TestStopRemovesTheAgentWithoutAPlacedProgram(t *testing.T) {
 	if _, err := os.Stat(programPath(label)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("program leaf exists before any Ensure: err = %v", err)
 	}
-	if err := launcher.Stop(context.Background(), 30*time.Second); err != nil {
+	if err := launcher.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() = %v, want the LaunchAgent removed", err)
 	}
 	if _, err := os.Stat(plist); !errors.Is(err, os.ErrNotExist) {
