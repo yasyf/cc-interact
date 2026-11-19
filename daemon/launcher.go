@@ -190,7 +190,9 @@ const (
 
 func ensureLockPath(p paths.Paths) string { return filepath.Join(p.LockDir(), "ensure.lock") }
 
-func newestPlacedPath(p paths.Paths) string { return filepath.Join(p.StateDir(), "newest-placed-build") }
+func newestPlacedPath(p paths.Paths) string {
+	return filepath.Join(p.StateDir(), "newest-placed-build")
+}
 
 // probeIncumbent passes daemonkit's ErrAbsent, ErrDraining, and
 // ErrProtocolMismatch back unwrapped, so each ensure path classifies an
