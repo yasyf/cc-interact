@@ -58,7 +58,7 @@ const (
 	eventReply = "echo.reply" // agent-posted over the channel, OriginAgent
 	eventDone  = "echo.done"  // terminal event a watch stops on
 
-	notifyMethod = "notifications/echo/channel"
+	notifyMethod = "notifications/claude/channel"
 
 	// awaitConsumer names the await tool's presence when it resolves the subject.
 	awaitConsumer = "await"

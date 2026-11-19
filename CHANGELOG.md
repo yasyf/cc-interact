@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The echo example pushes its events under `notifications/claude/channel`. It used `notifications/echo/channel`, which Claude Code drops without an error, so a consumer copying it got a channel that never delivered a tag, as cc-present's did until v0.61.6. The `Deps.ChannelTools` doc names the method Claude Code requires.
+
 ## [0.45.0] - 2026-11-16
 
 ### Changed

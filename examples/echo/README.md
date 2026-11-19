@@ -26,7 +26,7 @@ human ◀──── /events ◀──── Append(echo.reply, OriginAgent) �
 | op `reply` | domain op: appends `echo.reply` (`OriginAgent`); the channel tool round-trips to it |
 | `POST /api/items` | REST mount on the daemon's `Mux()`; appends `echo.item` (`OriginHuman`) |
 | channel tool `reply` | the one MCP tool; pushes the agent's reply down op `reply` |
-| `notifications/echo/channel` | the JSON-RPC method each subject event is pushed under |
+| `notifications/claude/channel` | the JSON-RPC method each subject event is pushed under, the only one Claude Code turns into a `<channel>` tag |
 | terminal event | `echo.done` (a `watch` stops on it) |
 
 Two consumer roles read the same `/events` plane differently:
