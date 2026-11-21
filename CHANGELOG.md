@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-11-20
+
 ### Changed
 
 - **`store.Open` builds each schema once per process.** The first open of a schema builds it in memory and keeps its `sqlite_schema` fingerprint and a serialized image. A later open verifies against the kept fingerprint, and a new store is written from the image to a temp file and linked into place, so a half-written file never appears at the store path. An existing store opens as before. A test suite that opens hundreds of stores spent most of its CPU rebuilding the schema twice per open.
