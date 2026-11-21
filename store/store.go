@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yasyf/cc-interact/internal/statepath"
@@ -350,7 +351,12 @@ func createSchema(ctx context.Context, db *sql.DB, core string, extension Schema
 	return nil
 }
 
+var expectedSQLiteSchemaFingerprints sync.Map
+
 func expectedSQLiteSchemaFingerprint(ctx context.Context, core string, extension Schema, fingerprint string) (string, error) {
+	if value, ok := expectedSQLiteSchemaFingerprints.Load(fingerprint); ok {
+		return value.(string), nil
+	}
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return "", fmt.Errorf("open expected sqlite_schema: %w", err)
@@ -364,6 +370,7 @@ func expectedSQLiteSchemaFingerprint(ctx context.Context, core string, extension
 	if err != nil {
 		return "", fmt.Errorf("fingerprint expected sqlite_schema: %w", err)
 	}
+	expectedSQLiteSchemaFingerprints.Store(fingerprint, value)
 	return value, nil
 }
 
