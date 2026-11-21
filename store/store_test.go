@@ -73,6 +73,17 @@ func TestOpenCreatesAndVerifiesExactSchema(t *testing.T) {
 	if fingerprint != wantFingerprint {
 		t.Fatalf("fingerprint = %q, want %q", fingerprint, wantFingerprint)
 	}
+	var journal string
+	if err := s.DB().QueryRow(`PRAGMA journal_mode`).Scan(&journal); err != nil || journal != "wal" {
+		t.Fatalf("journal_mode = %q, %v; want wal, nil", journal, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("store mode = %v, want 0600", info.Mode().Perm())
+	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +92,18 @@ func TestOpenCreatesAndVerifiesExactSchema(t *testing.T) {
 		t.Fatalf("reopen exact store: %v", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
+	var widgets int
+	if err := reopened.DB().QueryRow(`SELECT COUNT(*) FROM widgets`).Scan(&widgets); err != nil || widgets != 1 {
+		t.Fatalf("reopened widgets = %d, %v; want 1, nil", widgets, err)
+	}
+	other, err := Open(ctx, filepath.Join(t.TempDir(), "other.db"), Schema{DDL: `CREATE TABLE gadgets (id TEXT PRIMARY KEY);`})
+	if err != nil {
+		t.Fatalf("open a second schema: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	if _, err := other.DB().Exec(`INSERT INTO gadgets(id) VALUES('g1')`); err != nil {
+		t.Fatalf("second schema did not create gadgets: %v", err)
+	}
 }
 
 func TestOpenRejectsSchemaDriftWithoutMutation(t *testing.T) {
