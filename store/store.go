@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yasyf/cc-interact/internal/statepath"
@@ -163,7 +164,7 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 	if err != nil {
 		return nil, err
 	}
-	sqliteSchemaFingerprint, err := expectedSQLiteSchemaFingerprint(ctx, coreSchema, extension, fingerprint)
+	fresh, err := freshSchemaFor(ctx, coreSchema, extension, fingerprint)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +184,7 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 		if err != nil {
 			return nil, err
 		}
-		verr := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint)
+		verr := verifySchema(ctx, db, fingerprint, fresh.sqliteSchemaFingerprint)
 		if verr == nil {
 			return &Store{db: db}, nil
 		}
@@ -202,9 +203,9 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 		// the archive policy serializes the reset so concurrent openers produce
 		// exactly one archive and one fresh store, with every loser riding the
 		// winner's fresh store.
-		return createStore(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint)
+		return createStore(ctx, dbPath, fingerprint, fresh)
 	}
-	return openUnderLock(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint, config.unsupportedSchema)
+	return openUnderLock(ctx, dbPath, extension, fingerprint, fresh, config.unsupportedSchema)
 }
 
 // openUnderLock takes the per-store lock and re-evaluates the on-disk store under
@@ -212,7 +213,7 @@ func Open(ctx context.Context, dbPath string, extension Schema, opts ...Option) 
 // definitive mismatch is archived for an archive-opted caller, then a fresh
 // store is created. Holding the lock across the whole sequence lets a concurrent
 // opener that acquires it afterward find and ride the result.
-func openUnderLock(ctx context.Context, dbPath string, extension Schema, fingerprint, sqliteSchemaFingerprint string, policy UnsupportedSchemaPolicy) (*Store, error) {
+func openUnderLock(ctx context.Context, dbPath string, extension Schema, fingerprint string, fresh freshSchema, policy UnsupportedSchemaPolicy) (*Store, error) {
 	lockCtx, cancel := context.WithTimeout(ctx, archiveLockTimeout)
 	defer cancel()
 	lock, err := durable.AcquireLock(lockCtx, dbPath+archiveLockSuffix)
@@ -228,12 +229,12 @@ func openUnderLock(ctx context.Context, dbPath string, extension Schema, fingerp
 		if err != nil {
 			return nil, err
 		}
-		verr := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint)
+		verr := verifySchema(ctx, db, fingerprint, fresh.sqliteSchemaFingerprint)
 		if verr == nil {
 			return &Store{db: db}, nil
 		}
 		if errors.Is(verr, ErrUnsupportedSchema) {
-			migrated, err := migrateBaseCore(ctx, db, extension, fingerprint, sqliteSchemaFingerprint)
+			migrated, err := migrateBaseCore(ctx, db, extension, fingerprint, fresh.sqliteSchemaFingerprint)
 			if err != nil {
 				_ = db.Close()
 				return nil, err
@@ -257,7 +258,7 @@ func openUnderLock(ctx context.Context, dbPath string, extension Schema, fingerp
 	case !os.IsNotExist(statErr):
 		return nil, fmt.Errorf("inspect sqlite: %w", statErr)
 	}
-	return createStore(ctx, dbPath, extension, fingerprint, sqliteSchemaFingerprint)
+	return createStore(ctx, dbPath, fingerprint, fresh)
 }
 
 // migrateBaseCore brings a store recorded at baseCoreSchema with the same
@@ -268,11 +269,11 @@ func migrateBaseCore(ctx context.Context, db *sql.DB, extension Schema, fingerpr
 	if err != nil {
 		return false, err
 	}
-	baseSQLiteSchemaFingerprint, err := expectedSQLiteSchemaFingerprint(ctx, baseCoreSchema, extension, baseFingerprint)
+	base, err := freshSchemaFor(ctx, baseCoreSchema, extension, baseFingerprint)
 	if err != nil {
 		return false, err
 	}
-	if err := verifySchema(ctx, db, baseFingerprint, baseSQLiteSchemaFingerprint); err != nil {
+	if err := verifySchema(ctx, db, baseFingerprint, base.sqliteSchemaFingerprint); err != nil {
 		if errors.Is(err, ErrUnsupportedSchema) {
 			return false, nil
 		}
@@ -295,24 +296,42 @@ func migrateBaseCore(ctx context.Context, db *sql.DB, extension Schema, fingerpr
 	return true, verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint)
 }
 
-func createStore(ctx context.Context, dbPath string, extension Schema, fingerprint, sqliteSchemaFingerprint string) (*Store, error) {
+func createStore(ctx context.Context, dbPath, fingerprint string, fresh freshSchema) (*Store, error) {
+	if err := placeImage(dbPath, fresh.image); err != nil {
+		return nil, err
+	}
 	db, err := openSQLite(dbPath)
 	if err != nil {
 		return nil, err
 	}
-	if err := createSchema(ctx, db, coreSchema, extension, fingerprint); err != nil {
+	if err := verifySchema(ctx, db, fingerprint, fresh.sqliteSchemaFingerprint); err != nil {
 		_ = db.Close()
 		return nil, err
-	}
-	if err := verifySchema(ctx, db, fingerprint, sqliteSchemaFingerprint); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := os.Chmod(dbPath, 0o600); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("secure sqlite: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func placeImage(dbPath string, image []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dbPath), ".store-image-*")
+	if err != nil {
+		return fmt.Errorf("create sqlite: %w", err)
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(image); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write sqlite: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync sqlite: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close sqlite: %w", err)
+	}
+	if err := os.Link(tmp.Name(), dbPath); err != nil {
+		return fmt.Errorf("create sqlite: %w", err)
+	}
+	return nil
 }
 
 func openSQLite(dbPath string) (*sql.DB, error) {
@@ -350,21 +369,44 @@ func createSchema(ctx context.Context, db *sql.DB, core string, extension Schema
 	return nil
 }
 
-func expectedSQLiteSchemaFingerprint(ctx context.Context, core string, extension Schema, fingerprint string) (string, error) {
+type freshSchema struct {
+	sqliteSchemaFingerprint string
+	image                   []byte
+}
+
+var freshSchemas sync.Map
+
+func freshSchemaFor(ctx context.Context, core string, extension Schema, fingerprint string) (freshSchema, error) {
+	if built, ok := freshSchemas.Load(fingerprint); ok {
+		return built.(freshSchema), nil
+	}
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
-		return "", fmt.Errorf("open expected sqlite_schema: %w", err)
+		return freshSchema{}, fmt.Errorf("open expected sqlite_schema: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	defer func() { _ = db.Close() }()
 	if err := createSchema(ctx, db, core, extension, fingerprint); err != nil {
-		return "", fmt.Errorf("create expected sqlite_schema: %w", err)
+		return freshSchema{}, fmt.Errorf("create expected sqlite_schema: %w", err)
 	}
 	value, err := liveSQLiteSchemaFingerprint(ctx, db)
 	if err != nil {
-		return "", fmt.Errorf("fingerprint expected sqlite_schema: %w", err)
+		return freshSchema{}, fmt.Errorf("fingerprint expected sqlite_schema: %w", err)
 	}
-	return value, nil
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return freshSchema{}, fmt.Errorf("serialize expected sqlite_schema: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	built := freshSchema{sqliteSchemaFingerprint: value}
+	if err := conn.Raw(func(driverConn any) error {
+		built.image, err = driverConn.(interface{ Serialize() ([]byte, error) }).Serialize()
+		return err
+	}); err != nil {
+		return freshSchema{}, fmt.Errorf("serialize expected sqlite_schema: %w", err)
+	}
+	freshSchemas.Store(fingerprint, built)
+	return built, nil
 }
 
 func liveSQLiteSchemaFingerprint(ctx context.Context, db *sql.DB) (string, error) {
